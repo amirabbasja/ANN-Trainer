@@ -1,0 +1,196 @@
+"""Configuration validation, path portability, and secret-safe errors."""
+
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from pearl_trainer.config import ConfigError, DEFAULT_CONFIG, load_config
+
+
+class ConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.path = self.directory / "trainer.json"
+
+    def load(self, value):
+        self.path.write_text(json.dumps(value))
+        return load_config(self.path)
+
+    def test_defaults_and_empty_wallet_are_valid(self):
+        result = self.load({"version": 1})
+        self.assertEqual(result["mode"], "pool")
+        self.assertEqual(result["device"], "cuda:0")
+        self.assertEqual(result["official_source"], str(self.directory / ".official/pearl"))
+        self.assertEqual(result["training"]["output_dir"], str(self.directory / "artifacts"))
+        self.assertEqual(result["pool"]["host"], "prl.kryptex.network")
+        self.assertEqual(result["pool"]["port"], 7048)
+        self.assertFalse(result["pool"]["tls"])
+        self.assertEqual(result["pool"]["wallet"], "")
+        self.assertEqual(result["pool"]["password"], "x")
+        self.assertEqual(result["pool"]["protocol"], "auto")
+        self.assertEqual(result["pool"]["compression"], "none")
+        self.assertIsNone(result["pool"]["certificate_version"])
+        self.assertEqual(result["pool"]["agent"], "custom-pearl-trainer/0.1")
+        self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
+
+    def test_consensus_proof_input_limit_is_checked_before_gpu_work(self):
+        with self.assertRaisesRegex(ConfigError, "4 MiB"):
+            self.load({"version": 1, "training": {"k": 32384, "tile_h": 128, "tile_w": 2}})
+        valid = self.load({"version": 1, "training": {"k": 32256, "tile_h": 128, "tile_w": 2}})
+        self.assertEqual(valid["training"]["k"], 32256)
+
+    def test_all_filesystem_paths_are_relative_to_the_config_file(self):
+        result = self.load({
+            "version": 1, "official_source": "helpers/pearl",
+            "training": {"output_dir": "results"},
+            "pool": {"tls": True, "ca_file": "certs/pool.pem",
+                     "protocol_documentation": "docs/protocol.json"},
+            "node": {"ca_file": "certs/node.pem"},
+        })
+        self.assertEqual(result["official_source"], str(self.directory / "helpers/pearl"))
+        self.assertEqual(result["training"]["output_dir"], str(self.directory / "results"))
+        self.assertEqual(result["pool"]["ca_file"], str(self.directory / "certs/pool.pem"))
+        self.assertEqual(result["node"]["ca_file"], str(self.directory / "certs/node.pem"))
+        self.assertEqual(result["pool"]["protocol_documentation"], str(self.directory / "docs/protocol.json"))
+
+    def test_documentation_url_is_preserved_without_loading_it(self):
+        url = "https://pool.kryptex.com/en/prl#framing"
+        result = self.load({"version": 1, "pool": {"protocol_documentation": url}})
+        self.assertEqual(result["pool"]["protocol_documentation"], url)
+
+    def test_exported_example_defaults_can_be_loaded_without_mutation(self):
+        result = self.load(DEFAULT_CONFIG)
+        self.assertEqual(result["version"], 1)
+        self.assertEqual(DEFAULT_CONFIG["official_source"], ".official/pearl")
+        self.assertEqual(DEFAULT_CONFIG["training"]["output_dir"], "artifacts")
+
+    def test_explicit_pool_protocol_options_are_preserved(self):
+        result = self.load({"version": 1, "pool": {
+            "protocol": "kryptex", "compression": "gzip", "certificate_version": 3,
+            "agent": "my-custom-trainer/2", "wallet": "my-wallet", "worker": "rig2",
+            "password": "d=2097152",
+        }})
+        self.assertEqual(result["pool"]["protocol"], "kryptex")
+        self.assertEqual(result["pool"]["compression"], "gzip")
+        self.assertEqual(result["pool"]["certificate_version"], 3)
+        self.assertEqual(result["pool"]["agent"], "my-custom-trainer/2")
+        self.assertEqual(result["pool"]["wallet"], "my-wallet")
+        self.assertEqual(result["pool"]["password"], "d=2097152")
+        self.assertEqual(self.load({"version": 1, "pool": {"protocol": "pearlhash"}})["pool"]["protocol"], "pearlhash")
+
+    def test_invalid_protocol_compression_and_certificate_versions_are_rejected(self):
+        for field, values in {
+            "protocol": ["stratum", "Kryptex", True, None, []],
+            "compression": ["zstd", "auto", True, None, []],
+            "certificate_version": [True, False, "3", 0, -1, 4, 3.0],
+        }.items():
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaises(ConfigError):
+                    self.load({"version": 1, "pool": {field: value}})
+        for version in (None, 1, 2, 3):
+            with self.subTest(version=version):
+                self.assertEqual(self.load({"version": 1, "pool": {"certificate_version": version}})["pool"]["certificate_version"], version)
+
+    def test_agent_validation_does_not_echo_untrusted_content(self):
+        secret = "PRIVATE_CONFIGURATION_VALUE"
+        for agent in ("", "   ", "agent\n" + secret, "agent\x00", "x" * 129, None, 1):
+            with self.subTest(agent=agent), self.assertRaises(ConfigError) as caught:
+                self.load({"version": 1, "pool": {"agent": agent}})
+            self.assertNotIn(secret, str(caught.exception))
+
+    def test_solo_settings_and_passwords_are_preserved(self):
+        result = self.load({"version": 1, "mode": "solo", "device": "cuda:2",
+                            "node": {"username": "rpc-user", "password": "pass with spaces",
+                                     "address": "payout-address"},
+                            "training": {"max_batches": 10, "max_seconds": 1.5}})
+        self.assertEqual(result["mode"], "solo")
+        self.assertEqual(result["device"], "cuda:2")
+        self.assertEqual(result["node"]["password"], "pass with spaces")
+        self.assertEqual(result["training"]["max_seconds"], 1.5)
+
+    def test_version_is_explicit_and_only_version_one_is_accepted(self):
+        for value in ({}, {"version": True}, {"version": "1"}, {"version": 2}):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                self.load(value)
+
+    def test_unknown_keys_in_every_section_are_rejected(self):
+        for section in (None, "pool", "node", "training"):
+            value = {"version": 1}
+            if section is None:
+                value["misspelled"] = 1
+            else:
+                value[section] = {"misspelled": 1}
+            with self.subTest(section=section), self.assertRaisesRegex(ConfigError, "unknown field"):
+                self.load(value)
+
+    def test_booleans_are_never_accepted_as_numbers(self):
+        for section, field in (("training", "m"), ("training", "max_batches"),
+                               ("training", "max_seconds"), ("pool", "port"),
+                               ("pool", "read_timeout"), ("node", "poll_interval")):
+            with self.subTest(field=field), self.assertRaises(ConfigError):
+                self.load({"version": 1, section: {field: True}})
+
+    def test_numeric_ranges_and_nonfinite_numbers_are_rejected(self):
+        invalid = [
+            ("pool", "port", 0), ("pool", "port", 65536),
+            ("pool", "connect_timeout", 0), ("pool", "read_timeout", -1),
+            ("pool", "reconnect_delay", float("inf")),
+            ("node", "rpc_timeout", float("nan")),
+            ("training", "max_seconds", -1), ("training", "max_batches", 0.5),
+            ("training", "k", 2049), ("training", "m", 64),
+            ("training", "tile_h", 3), ("training", "tile_w", 128),
+        ]
+        for section, field, value in invalid:
+            with self.subTest(section=section, field=field, value=value), self.assertRaises(ConfigError):
+                self.load({"version": 1, section: {field: value}})
+
+    def test_host_accepts_names_and_ips_but_rejects_urls_and_credentials(self):
+        for host in ("prl.kryptex.network", "localhost", "127.0.0.1", "::1"):
+            with self.subTest(host=host):
+                self.assertEqual(self.load({"version": 1, "pool": {"host": host}})["pool"]["host"], host)
+        for host in ("stratum+tcp://prl.kryptex.network", "user:secret@prl.kryptex.network",
+                     "prl.kryptex.network:7048", "bad host", "a..b", "-bad.example"):
+            with self.subTest(host=host), self.assertRaises(ConfigError):
+                self.load({"version": 1, "pool": {"host": host}})
+
+    def test_tls_and_ca_settings_must_match(self):
+        for pool in ({"tls": "false"}, {"tls": 0}, {"ca_file": "ca.pem"}):
+            with self.subTest(pool=pool), self.assertRaises(ConfigError):
+                self.load({"version": 1, "pool": pool})
+        with self.assertRaises(ConfigError):
+            self.load({"version": 1, "node": {"rpc_url": "http://localhost:44107", "ca_file": "ca.pem"}})
+
+    def test_device_and_section_types_are_checked(self):
+        for changes in ({"mode": "unknown"}, {"device": "cpu"}, {"device": "cuda:-1"},
+                        {"pool": []}, {"training": None}, {"node": "rpc"}):
+            with self.subTest(changes=changes), self.assertRaises(ConfigError):
+                self.load({"version": 1, **changes})
+
+    def test_invalid_json_duplicates_and_unreadable_files_have_clean_errors(self):
+        for raw in ('{"version": 1,', '{"version": 1,"version": 1}',
+                    '{"version": 1,"pool":{"port":9000,"port":9001}}', '[1]'):
+            self.path.write_text(raw)
+            with self.subTest(raw=raw), self.assertRaises(ConfigError):
+                load_config(self.path)
+        self.path.unlink()
+        with self.assertRaisesRegex(ConfigError, "could not read"):
+            load_config(self.path)
+
+    def test_error_messages_do_not_echo_secrets(self):
+        secret = "DO_NOT_LEAK_THIS_SECRET"
+        for value in (
+            {"version": 1, "pool": {"host": f"user:{secret}@pool.example"}},
+            {"version": 1, "node": {"rpc_url": f"https://user:{secret}@node.example"}},
+            {"version": 1, "pool": {secret: "accidentally a field"}},
+            {"version": 1, "pool": {"password": {"bad": secret}}},
+        ):
+            with self.subTest(value=value), self.assertRaises(ConfigError) as caught:
+                self.load(value)
+            self.assertNotIn(secret, str(caught.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()
