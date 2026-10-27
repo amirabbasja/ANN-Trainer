@@ -1,0 +1,5 @@
+# Copy this file to links.txt, then paste one V2Ray share link per line.
+# Supported prefixes: vless://, vmess://, trojan://, ss://.
+# Blank lines and lines beginning with # are ignored.
+# Use actual links from your provider; no public or test credentials are included.
+# links.txt is ignored by Git because share links contain access credentials.
