@@ -9,6 +9,7 @@ import unittest
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import LRAEP_trainer
 from LRAEP_trainer import __main__ as cli
 from LRAEP_trainer.config import DEFAULT_CONFIG
 from LRAEP_trainer.paths import artifacts_dir
@@ -272,7 +273,7 @@ class DirectRuntimeProfileTests(unittest.TestCase):
         session.__enter__.return_value = session
         session.negotiated_gzip = False
         session.wait_job.return_value = JobSnapshot(PoolJob("job", bytes(76), 1, 3, 1), 1)
-        native = ModuleType("LRAEP_mining")
+        native = ModuleType("LRAEP_trainer.primitives")
         native.IncompleteBlockHeader = SimpleNamespace(from_bytes=MagicMock())
         before = copy.deepcopy(self.configuration)
         for miner, target, host in (("WR", "LRAEP_trainer.wr_client.WRSession", "wr.example"),
@@ -281,7 +282,8 @@ class DirectRuntimeProfileTests(unittest.TestCase):
             with self.subTest(miner=miner), \
                     patch.object(worker, "load_official_helpers"), \
                     patch.object(worker, "pool_share_target", return_value=1), \
-                    patch.dict(sys.modules, {"LRAEP_mining": native}), \
+                    patch.dict(sys.modules, {"LRAEP_trainer.primitives": native}), \
+                    patch.object(LRAEP_trainer, "primitives", native, create=True), \
                     patch(target, return_value=session) as factory:
                 self.assertEqual(worker.run_pool_training(self.configuration, login_only=True), 0)
             resolved = factory.call_args.args[0]

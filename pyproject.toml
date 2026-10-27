@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "LRAEP-trainer"
 version = "0.1.0"
-description = "LRAEP GPU miner with bundled official proof helpers"
+description = "GPU training with local protocol implementations"
 requires-python = ">=3.12"
 dynamic = ["dependencies"]
 
@@ -18,8 +18,8 @@ include-package-data = true
 packages = ["LRAEP_trainer", "LRAEP_helpers"]
 
 [tool.setuptools.package-data]
-LRAEP_trainer = ["cuda/*.cu", "cuda/*.cuh", "bin/*", "bin/**/*"]
-LRAEP_helpers = ["manifest.json", "README.md", "LICENSE*", "PROVENANCE*", "python/**/*.py", "rust/**/*"]
+LRAEP_trainer = ["*.cpp", "cuda/*.cu", "cuda/*.cuh", "bin/*", "bin/**/*"]
+LRAEP_helpers = ["manifest.json", "python/**/*.py"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

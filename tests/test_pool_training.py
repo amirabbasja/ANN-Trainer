@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
+import LRAEP_trainer
 from LRAEP_trainer import pool_training as worker
 from LRAEP_trainer.pool_client import JobSnapshot, PoolAuthenticationError, ShareResult
 from LRAEP_trainer.pool_protocol import PoolJob
@@ -59,9 +60,10 @@ class PoolLoopTests(unittest.TestCase):
             patch.object(worker, "verified_pool_share", return_value=(self.proof, bytes(32)))
         )
         self.header = SimpleNamespace(nbits=0x1D00FFFF)
-        native = ModuleType("LRAEP_mining")
+        native = ModuleType("LRAEP_trainer.primitives")
         native.IncompleteBlockHeader = SimpleNamespace(from_bytes=MagicMock(return_value=self.header))
-        self.stack.enter_context(patch.dict(sys.modules, {"LRAEP_mining": native}))
+        self.stack.enter_context(patch.dict(sys.modules, {"LRAEP_trainer.primitives": native}))
+        self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", native, create=True))
 
     def test_completed_last_batch_verifies_and_submits_at_share_target(self):
         self.assertEqual(worker.run_pool_training(self.configuration), 0)
@@ -243,7 +245,7 @@ class LocalGPUIntegrationTests(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[1]
         try:
             load_official_helpers(cls.root / "src" / "LRAEP_helpers")
-            import LRAEP_mining as pm
+            from LRAEP_trainer import primitives as pm
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.pm = pm

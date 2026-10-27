@@ -19,7 +19,7 @@ class NativeProtocolTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         try:
             protocol.load_official_helpers(root / "src" / "LRAEP_helpers")
-            import LRAEP_mining as pm
+            from LRAEP_trainer import primitives as pm
             from miner_base.commitment_hash import CommitmentHasher
             from miner_base.matrix_merkle_tree import MatrixMerkleTree
             from miner_base.noise_generation import NoiseGenerator

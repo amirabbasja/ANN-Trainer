@@ -51,7 +51,7 @@ class TemplateIntegrationTests(unittest.TestCase):
         try:
             from LRAEP_trainer.protocol import load_official_helpers
             load_official_helpers(source)
-            from bitcoinutils.bech32 import Encoding, bech32_encode, convertbits
+            from LRAEP_trainer.address import Encoding, bech32_encode, convertbits
         except ImportError as exc:
             raise unittest.SkipTest(f"official native/helper dependency unavailable: {exc}") from None
         cls.address = bech32_encode(

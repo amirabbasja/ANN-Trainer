@@ -1,7 +1,7 @@
 from copy import copy
 
 from miner_utils import get_logger
-from LRAEP_mining import (
+from LRAEP_trainer.primitives import (
     PlainProof,
     generate_proof_for_cert_version,
     verify_proof_for_cert_version,

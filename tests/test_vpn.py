@@ -140,34 +140,34 @@ class ManagedCoreTests(unittest.TestCase):
         self.process.poll.return_value = None
         self.process.wait.return_value = 0
 
-    def test_context_starts_private_authenticated_socks_and_removes_secrets(self):
+    def test_context_sends_private_authenticated_socks_config_only_through_stdin(self):
         captured = {}
         def start(args, **kwargs):
-            path = Path(args[-1])
-            captured['path'] = path
             captured['args'] = args
-            captured['config'] = json.loads(path.read_text())
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(args[1:], ['run', '-format', 'json', '-config', 'stdin:'])
             self.assertNotIn('shell', kwargs)
+            self.assertIs(kwargs['stdin'], subprocess.PIPE)
             self.assertIs(kwargs['stdout'], subprocess.DEVNULL)
             self.assertIs(kwargs['stderr'], subprocess.DEVNULL)
             return self.process
-        with patch.object(vpn.subprocess, 'Popen', side_effect=start), patch.object(vpn, '_ready', return_value=True):
+        with patch.object(vpn.subprocess, 'Popen', side_effect=start), \
+                patch.object(vpn, '_ready', return_value=True), \
+                patch.object(vpn.os, 'open', side_effect=AssertionError('no plaintext config files')):
             with vpn.ManagedVPN(self.settings) as endpoint:
+                configuration = json.loads(self.process.stdin.write.call_args.args[0])
+                self.process.stdin.close.assert_called_once()
                 self.assertIsInstance(endpoint, SocksProxy)
                 self.assertEqual(endpoint.host, '127.0.0.1')
                 self.assertNotIn(endpoint.password, repr(endpoint))
                 self.assertNotIn(endpoint.username, repr(endpoint))
-                inbound = captured['config']['inbounds'][0]
+                inbound = configuration['inbounds'][0]
                 self.assertEqual(inbound['listen'], '127.0.0.1')
                 self.assertEqual(inbound['settings']['accounts'], [{'user': endpoint.username, 'pass': endpoint.password}])
                 self.assertFalse(inbound['settings']['udp'])
-                self.assertEqual([out['protocol'] for out in captured['config']['outbounds']], ['vless'])
+                self.assertEqual([out['protocol'] for out in configuration['outbounds']], ['vless'])
                 self.assertNotIn(self.settings['link'], ' '.join(captured['args']))
             self.process.terminate.assert_called_once()
             self.process.wait.assert_called_once()
-            self.assertFalse(captured['path'].parent.exists())
 
     def test_startup_exit_fails_closed_and_reaps_process(self):
         self.process.poll.return_value = 2
@@ -176,16 +176,17 @@ class ManagedCoreTests(unittest.TestCase):
             with self.assertRaisesRegex(vpn.VPNError, 'exited'):
                 manager.__enter__()
         self.process.wait.assert_called_once()
-        self.assertIsNone(manager._temporary)
+        self.assertIsNone(manager.proxy)
         self.assertIsNone(manager.process)
 
-    def test_startup_timeout_terminates_core_and_cleans_temp_config(self):
+    def test_startup_timeout_terminates_core_and_closes_stdin(self):
         manager = vpn.ManagedVPN(self.settings)
         with patch.object(vpn.subprocess, 'Popen', return_value=self.process), patch.object(vpn, '_ready', return_value=False):
             with self.assertRaisesRegex(vpn.VPNError, 'timeout'):
                 manager.__enter__()
         self.process.terminate.assert_called_once()
-        self.assertIsNone(manager._temporary)
+        self.process.stdin.close.assert_called_once()
+        self.assertIsNone(manager.proxy)
         self.assertIsNone(manager.process)
 
     def test_unresponsive_core_is_killed_after_termination_timeout(self):
@@ -201,14 +202,30 @@ class ManagedCoreTests(unittest.TestCase):
             with self.assertRaises(vpn.VPNError) as caught:
                 manager.__enter__()
         self.assertNotIn(self.settings['link'], str(caught.exception))
-        self.assertIsNone(manager._temporary)
+        self.assertIsNone(manager.proxy)
 
-    def test_keyboard_interrupt_during_startup_cleans_temp_config(self):
+    def test_keyboard_interrupt_during_startup_cleans_proxy_state(self):
         manager = vpn.ManagedVPN(self.settings)
         with patch.object(vpn.subprocess, 'Popen', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 manager.__enter__()
-        self.assertIsNone(manager._temporary)
+        self.assertIsNone(manager.proxy)
+
+    def test_broken_config_pipe_fails_closed_without_exposing_credentials(self):
+        manager = vpn.ManagedVPN(self.settings)
+        self.process.stdin.write.side_effect = BrokenPipeError(self.settings['link'])
+        self.process.stdin.closed = False
+        with patch.object(vpn.subprocess, 'Popen', return_value=self.process), \
+                patch.object(vpn, '_ready') as ready:
+            with self.assertRaises(vpn.VPNError) as caught:
+                manager.__enter__()
+        self.assertNotIn(self.settings['link'], str(caught.exception))
+        ready.assert_not_called()
+        self.process.terminate.assert_called_once()
+        self.process.wait.assert_called_once()
+        self.process.stdin.close.assert_called_once()
+        self.assertIsNone(manager.process)
+        self.assertIsNone(manager.proxy)
 
     def test_explicit_core_takes_priority_over_bundle_and_path(self):
         with patch.object(vpn, 'bundled_xray',

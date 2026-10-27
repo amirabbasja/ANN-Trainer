@@ -30,7 +30,7 @@ class PreparationReferenceTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         try:
             load_official_helpers(root / "src" / "LRAEP_helpers")
-            import LRAEP_mining as pm
+            from LRAEP_trainer import primitives as pm
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.pm = pm

@@ -164,7 +164,7 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
         session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, pool)
     load_official_helpers(configuration["official_source"])
     validate_pool_identity(pool, selected_protocol)
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
 
     settings = configuration["training"]
     cfg = TrainingConfig(settings["m"], settings["n"], settings["k"],

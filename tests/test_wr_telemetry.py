@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
+import LRAEP_trainer
 from LRAEP_trainer import pool_training as worker
 from LRAEP_trainer.pool_client import JobSnapshot
 from LRAEP_trainer.pool_protocol import PoolJob
@@ -49,9 +50,10 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.monitor = self.stack.enter_context(patch.object(worker, 'GpuUtilization'))
         self.monitor.return_value.start.return_value.read.return_value = 37
         self.progress = self.stack.enter_context(patch.object(worker, 'LiveProgress'))
-        native = ModuleType('LRAEP_mining')
+        native = ModuleType('LRAEP_trainer.primitives')
         native.IncompleteBlockHeader = SimpleNamespace(from_bytes=MagicMock())
-        self.stack.enter_context(patch.dict(sys.modules, {'LRAEP_mining': native}))
+        self.stack.enter_context(patch.dict(sys.modules, {'LRAEP_trainer.primitives': native}))
+        self.stack.enter_context(patch.object(LRAEP_trainer, 'primitives', native, create=True))
 
     def report(self, gpu_name, hashrate):
         self.reports.append((self.now, gpu_name, hashrate))

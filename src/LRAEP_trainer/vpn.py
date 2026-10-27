@@ -19,7 +19,6 @@ import secrets
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -360,10 +359,9 @@ class ManagedVPN:
         self.link = settings.get("link", "") if link is None else link
         self.proxy: VPNProxy | None = None
         self.process: subprocess.Popen | None = None
-        self._temporary = None
 
     def __enter__(self) -> VPNProxy:
-        if self.process is not None or self._temporary is not None:
+        if self.process is not None:
             raise VPNError("VPN context is already active")
         outbound = parse_link(self.link)
         executable = self.settings.get("core_path")
@@ -389,9 +387,6 @@ class ManagedVPN:
         proxy = VPNProxy("127.0.0.1", port, secrets.token_hex(16), secrets.token_hex(24))
         self.proxy = proxy
         try:
-            self._temporary = tempfile.TemporaryDirectory(prefix="LRAEP-vpn-")
-            directory = Path(self._temporary.name)
-            directory.chmod(0o700)
             configuration = {
                 "log": {"loglevel": "none", "access": "none", "error": "none"},
                 "inbounds": [{"tag": "app", "listen": proxy.host, "port": proxy.port,
@@ -400,12 +395,12 @@ class ManagedVPN:
                 "outbounds": [outbound],
                 "routing": {"domainStrategy": "AsIs", "rules": [{"type": "field", "inboundTag": ["app"], "outboundTag": "vpn"}]},
             }
-            config_path = directory / "config.json"
-            descriptor = os.open(config_path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(configuration, handle)
-            self.process = subprocess.Popen([executable, "run", "-config", str(config_path)], stdin=subprocess.DEVNULL,
+            # Xray accepts JSON on stdin, so decoded VPN credentials never need
+            # a temporary plaintext configuration file or command-line argument.
+            self.process = subprocess.Popen([executable, "run", "-format", "json", "-config", "stdin:"], stdin=subprocess.PIPE,
                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+            self.process.stdin.write(json.dumps(configuration).encode("utf-8"))
+            self.process.stdin.close()
             deadline = time.monotonic() + startup
             while True:
                 if self.process.poll() is not None:
@@ -439,9 +434,11 @@ class ManagedVPN:
                     process.kill()
                     process.wait(timeout=2)
         finally:
-            if self._temporary is not None:
-                self._temporary.cleanup()
-                self._temporary = None
+            if process is not None and process.stdin is not None and not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
             self.proxy = None
 
     def __exit__(self, *_):

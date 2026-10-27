@@ -1,26 +1,15 @@
 from dataclasses import dataclass
-
-from LRAEP_mining import IncompleteBlockHeader
-
-# Size of proof_commitment in bytes
+from LRAEP_trainer.primitives import IncompleteBlockHeader
 PROOF_COMMITMENT_SIZE = 32
-
 
 @dataclass
 class LRAEPHeader:
-    """LRAEP block header wrapping IncompleteBlockHeader + proof_commitment."""
-
     incomplete_header: IncompleteBlockHeader
     proof_commitment: bytes | None = None
 
     def __post_init__(self):
-        if (
-            self.proof_commitment is not None
-            and len(self.proof_commitment) != PROOF_COMMITMENT_SIZE
-        ):
-            raise ValueError(
-                f"Proof commitment must be {PROOF_COMMITMENT_SIZE} bytes, got {len(self.proof_commitment)}"
-            )
+        if self.proof_commitment is not None and len(self.proof_commitment) != PROOF_COMMITMENT_SIZE:
+            raise ValueError(f'Proof commitment must be {PROOF_COMMITMENT_SIZE} bytes, got {len(self.proof_commitment)}')
 
     @property
     def version(self) -> int:
@@ -47,10 +36,10 @@ class LRAEPHeader:
         return IncompleteBlockHeader.SERIALIZED_SIZE + PROOF_COMMITMENT_SIZE
 
     @classmethod
-    def deserialize(cls, data: bytes) -> "LRAEPHeader":
+    def deserialize(cls, data: bytes) -> 'LRAEPHeader':
         header_size = IncompleteBlockHeader.SERIALIZED_SIZE
         header = IncompleteBlockHeader.from_bytes(data[:header_size])
-        proof_commitment = data[header_size : header_size + PROOF_COMMITMENT_SIZE]
+        proof_commitment = data[header_size:header_size + PROOF_COMMITMENT_SIZE]
         return cls(incomplete_header=header, proof_commitment=proof_commitment)
 
     def serialize_without_proof_commitment(self) -> bytes:
@@ -58,5 +47,5 @@ class LRAEPHeader:
 
     def serialize(self) -> bytes:
         if self.proof_commitment is None:
-            raise ValueError("Proof commitment is not set")
+            raise ValueError('Proof commitment is not set')
         return self.serialize_without_proof_commitment() + self.proof_commitment

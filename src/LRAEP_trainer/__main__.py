@@ -58,7 +58,7 @@ def require_cuda(device: str) -> None:
 
 def self_test(args) -> int:
     """Exercise all supported certificate versions without contacting a network."""
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
     from miner_base.noisy_gemm import NoisyGemm
 
     require_cuda(args.device)
@@ -109,7 +109,7 @@ def self_test(args) -> int:
 
 
 def train(args) -> int:
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
 
     require_cuda(args.device)
     if not args.address:
@@ -342,7 +342,7 @@ def _execute(args, configuration):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="LRAEP GPU miner for the PRL network")
-    parser.add_argument("--config", help="JSON configuration file; defaults to the application config.json")
+    parser.add_argument("--config", help="encrypted or plain JSON configuration; defaults to the application config.json")
     parser.add_argument("--official-source", default=argparse.SUPPRESS)
     parser.add_argument("--device", default=argparse.SUPPRESS)
     parser.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,

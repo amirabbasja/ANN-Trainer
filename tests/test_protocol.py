@@ -7,11 +7,6 @@ from blake3 import blake3
 
 from LRAEP_trainer.protocol import TrainingConfig, adjusted_target, matching_tiles
 
-try:
-    import LRAEP_mining
-except ImportError:
-    LRAEP_mining = None
-
 
 class TranscriptTargetTests(unittest.TestCase):
     def test_little_endian_target_is_inclusive(self):
@@ -37,8 +32,7 @@ class TranscriptTargetTests(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 TrainingConfig(**overrides)
 
-    @unittest.skipIf(LRAEP_mining is None, "build official helper to test target adjustment")
-    def test_official_target_scaling_and_overflow(self):
+    def test_target_scaling_and_overflow(self):
         config = TrainingConfig()
         factor = config.tile_h * config.tile_w * config.k
         self.assertEqual(adjusted_target(123456, config), 123456 * factor)

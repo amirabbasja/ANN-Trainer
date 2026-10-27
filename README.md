@@ -32,7 +32,71 @@ Maintain the app settings in `config.json`. The trainer finds this file beside
 available if you store the shared file elsewhere. `config.example.json` is the
 single public template; it contains both miner profiles with blank hosts.
 The private `config.json` is ignored by git because it can contain credentials.
-Relative paths resolve beside that file.
+Its complete document, including field names and values, can be stored encrypted.
+The trainer decrypts it into memory before validation and use; it does not write
+a decrypted copy. Relative paths still resolve beside the original config file.
+The public example and existing plaintext JSON configs remain readable.
+
+### Encrypted config and notebook
+
+Open [`config_manager.ipynb`](config_manager.ipynb) and select the **LRAEP
+trainer** kernel, or the project's `.venv/bin/python` interpreter in VS Code.
+Run its setup cells, then call `show_config()` to decrypt and print the config
+on command, or `update_from_dict(plain_dict)` to recursively merge a dictionary
+and save the result encrypted. `replace_from_dict(plain_dict)` replaces the full
+configuration. Running all cells without uncommenting the example commands does
+not print or change the config. Clear printed outputs before saving or sharing
+the notebook: editors may autosave plaintext output. The setup disables IPython
+history logging, and an optional `getpass` example keeps entered secrets out of
+cell source.
+
+Install the added encryption dependency with the project requirements:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements.txt
+```
+
+On another machine, register the named Python 3.12+ kernel if it is not available:
+
+```bash
+uv pip install --python .venv/bin/python ipykernel
+.venv/bin/python -m ipykernel install --user --name lraep-trainer --display-name 'LRAEP trainer'
+```
+
+Encryption uses authenticated Fernet tokens. Config operations use
+`LRAEP_CONFIG_KEY` when present; otherwise they read a separate `config.json.key`
+next to the selected config. The first encrypted save creates that key with
+owner-only permissions if it is missing. Reading an encrypted file never
+creates a replacement key. The key file is ignored by git. Keep a private backup
+of the key separately from the encrypted config; anyone who has both can decrypt
+it, and losing the key makes the config unreadable. To keep the key outside the
+project entirely, supply it through the process environment as
+`LRAEP_CONFIG_KEY`. Do not put the key in source code or the encrypted document.
+
+The Python API preserves original relative paths when updating a config:
+
+```python
+from LRAEP_trainer.config import (
+    encrypt_config_file, load_config, read_config, save_config, update_config,
+)
+
+# One-time migration of an existing plaintext file; no plaintext backup is made.
+encrypt_config_file("config.json")
+
+settings = load_config("config.json")  # Validated runtime values in memory.
+plain_dict = {"pool": {"worker": "Rig01"}}
+update_config("config.json", plain_dict)  # Preserve unspecified nested fields.
+# save_config("config.json", complete_dict) replaces the entire document.
+# read_config("config.json") returns the original dictionary without defaults.
+```
+
+`encode_string(value, key=key)` and `decode_string(token, key=key)` in
+`LRAEP_trainer.config_crypto` encrypt/decrypt UTF-8 strings. `generate_key()`
+returns a fresh Fernet key. String helpers require that explicit key or
+`LRAEP_CONFIG_KEY`; they do not infer an adjacent config key file. Config writes
+validate before replacing the file and write ciphertext atomically, with no
+plaintext temporary file. Wrong keys and altered ciphertext fail with a
+credential-safe error.
 
 KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
 section keeps both identities and separate connection settings:
@@ -200,11 +264,13 @@ continue to work. No default payout address is included.
 LRAEP can route pool TCP/TLS and node HTTP/HTTPS connections through a V2Ray
 share link using a managed local Xray core. Target DNS resolution also goes
 through the proxy, and connection failures never trigger a direct retry.
+The managed core receives its derived configuration through standard input;
+VPN credentials are not written to a plaintext temporary config file.
 
 Linux x86_64 includes the official Xray-core `v26.10.21` executable at
 `src/LRAEP_trainer/bin/linux-x86_64/xray`; no separate VPN-core installation
-is needed. Paste your share link into `vpn.link` in `config.json`, set
-`vpn.enabled` to `true`, and run:
+is needed. Use the config notebook to set `vpn.link` and `vpn.enabled: true`
+in your encrypted config, then run:
 
 ```bash
 .venv/bin/LRAEP --config config.json pool
@@ -270,27 +336,10 @@ Self-tests use synthetic headers and targets. They make no network requests.
 
 ## Set up on another machine
 
-Requirements: Python 3.12+, stable Rust/cargo, a C build toolchain, an NVIDIA
-CUDA GPU and driver, and CUDA-enabled PyTorch. Native kernels additionally
-require Linux, a compatible CUDA toolkit containing `nvcc`, and compute capability
-6.1 or later. Default matrices fit a 4 GB card. The native backend has been
-checked on a GTX 1650 (SM75). AMD/ROCm and
-Apple GPU operation have not been implemented or tested.
-
 ```bash
 python setup_helpers.py
 .venv/bin/python -m LRAEP_trainer self-test
 ```
-
-The setup script builds the bundled Rust helper at
-`src/LRAEP_helpers/rust/py-LRAEP-mining/Cargo.toml` with
-`maturin --release --locked`, installs its renamed `LRAEP_mining` extension,
-and installs this app in editable mode. It does not clone or fetch an upstream
-Git checkout. Python packages and Rust registry dependencies may be downloaded
-during the build. Other packages in `requirements.txt` are general Python
-libraries. An existing CUDA-enabled system PyTorch installation is reused by
-the local virtual environment. If PyTorch reports CUDA unavailable, install
-a CUDA-enabled PyTorch build before running the self-test.
 
 Linux x86_64 installations already include the optional VPN core. Its source
 and release attribution are recorded in [third-party notices](THIRD_PARTY_NOTICES.md);
@@ -429,14 +478,6 @@ note inform the custom client. Official PEARL proof helpers and their required
 proof-system dependencies are bundled; no external miner's GPU implementation
 or executable is used. Exact protocol references and limits are recorded in
 `docs/kex-protocol-review.md`.
-
-- [PEARL protocol website](https://pearlresearch.ai/network)
-- [Official repository and node setup](https://github.com/pearl-research-labs/pearl/tree/0798903bced203de8cfcb49441f44fd9b51b18eb)
-- [Python proof helper](https://github.com/pearl-research-labs/pearl/blob/0798903bced203de8cfcb49441f44fd9b51b18eb/py-pearl-mining/README.md)
-- [Reference noisy matrix arithmetic and transcript](https://github.com/pearl-research-labs/pearl/blob/0798903bced203de8cfcb49441f44fd9b51b18eb/miner/miner-base/src/miner_base/noisy_gemm.py)
-- [Commitments and V3 salts](https://github.com/pearl-research-labs/pearl/blob/0798903bced203de8cfcb49441f44fd9b51b18eb/miner/miner-base/src/miner_base/commitment_hash.py)
-- [Consensus limits and target adjustment](https://github.com/pearl-research-labs/pearl/blob/0798903bced203de8cfcb49441f44fd9b51b18eb/zk-pow/src/api/sanity_checks.rs)
-- [Official block proof construction](https://github.com/pearl-research-labs/pearl/blob/0798903bced203de8cfcb49441f44fd9b51b18eb/miner/pearl-gateway/src/pearl_gateway/proof_generator.py)
 
 The bundled helpers retain their upstream license notices in
 `src/LRAEP_helpers/`, including the PEARL ISC notice and the proof-system

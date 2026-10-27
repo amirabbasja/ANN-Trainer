@@ -14,7 +14,7 @@ from LRAEP_trainer.protocol import (
 )
 
 try:
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
 except ImportError:
     pm = None
 
@@ -60,7 +60,7 @@ class OfficialPoolShareTests(unittest.TestCase):
             raise unittest.SkipTest("CUDA device unavailable")
         try:
             load_official_helpers(source)
-            import LRAEP_mining as native
+            from LRAEP_trainer import primitives as native
         except ImportError as exc:
             raise unittest.SkipTest(f"official native/helper dependency unavailable: {exc}") from None
         cls.native = native

@@ -1,7 +1,6 @@
-# General computation/serialization dependencies; no trainer application.
 numpy>=1.24
 torch>=2.6
 blake3>=1.0.7
-bitcoin-utils>=0.7.0
 pydantic>=2.12.5
 loguru>=0.7.0
+cryptography>=46.0.0

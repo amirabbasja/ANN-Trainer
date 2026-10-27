@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
+import LRAEP_trainer
 from LRAEP_trainer import __main__ as cli
 
 
@@ -47,7 +48,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         # The real training implementation imports the native verifier and the
         # address helper lazily. Replace them before train() is entered, so
         # these tests never need native PEARL helpers or a real payout address.
-        pm = ModuleType("LRAEP_mining")
+        pm = ModuleType("LRAEP_trainer.primitives")
         self.verify = MagicMock(return_value=(True, "Verified"))
         pm.verify_plain_proof_for_cert_version = self.verify
         address_module = ModuleType("LRAEP_gateway.blockchain_utils.blockchain_utils")
@@ -57,11 +58,12 @@ class TrainingControlFlowTests(unittest.TestCase):
         blockchain_utils = ModuleType("LRAEP_gateway.blockchain_utils")
         blockchain_utils.__path__ = []
         self.stack.enter_context(patch.dict(sys.modules, {
-            "LRAEP_mining": pm,
+            "LRAEP_trainer.primitives": pm,
             "LRAEP_gateway": gateway,
             "LRAEP_gateway.blockchain_utils": blockchain_utils,
             "LRAEP_gateway.blockchain_utils.blockchain_utils": address_module,
         }))
+        self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", pm, create=True))
         self.stack.enter_context(patch.dict("os.environ", {
             "LRAEPD_RPC_USER": "test-user", "LRAEPD_RPC_PASSWORD": "test-password",
         }))

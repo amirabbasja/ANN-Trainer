@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.egg-info/
 config.json
+*.json.key
+.ipynb_checkpoints/
 /links.txt
 build/
 dist/

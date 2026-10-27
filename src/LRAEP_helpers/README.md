@@ -10,12 +10,6 @@ transcripts, Merkle proof construction, and the solo block/template serializers.
 Gateway servers, RPC clients, async miner services, node and wallet applications,
 web applications, and unrelated tools are omitted.
 
-The Rust subset builds the `LRAEP_mining` Python extension. It retains the local
-proof, hashing, and Plonky2 dependency closure required for native verification
-and optional ZK proof generation. Build with `setup_helpers.py` from the project
-root; no nested Git checkout or source download is required. Cargo still needs
-its locked third-party dependencies when they are not cached locally.
-
 Names containing `pearl` in source packages, classes, imports, and local crate
 identifiers have been changed to `LRAEP`. The underlying arithmetic, proof
 formats, network-facing values, and cryptographic domain-separation bytes remain

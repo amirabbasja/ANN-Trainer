@@ -1,7 +1,7 @@
 import torch
 from blake3 import blake3
 from LRAEP_gateway.comm.dataclasses import CommitmentHash
-from LRAEP_mining import MiningConfiguration
+from LRAEP_trainer.primitives import MiningConfiguration
 
 from .matrix_merkle_tree import MatrixMerkleTree
 

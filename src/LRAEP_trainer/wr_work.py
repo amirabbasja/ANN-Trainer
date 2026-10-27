@@ -49,7 +49,7 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
     bt = torch.full((config.n, config.k), SIGNAL_BASE,
                     dtype=torch.int8, device=destination)
     a[-1, -16:] = torch.from_numpy(np.frombuffer(tail, dtype=np.int8).copy()).to(destination)
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
 
     header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
     batch = prepare_signal_batch(header, 3, config, a, bt, device=device, native=native)
@@ -124,7 +124,7 @@ def reconstruct_wr_digest(header_bytes: bytes, share: WRShare) -> bytes:
     _validate_share(share)
     if not isinstance(header_bytes, bytes) or len(header_bytes) != 76:
         raise ValueError("PearlHash header must contain exactly 76 bytes")
-    import LRAEP_mining as pm
+    from LRAEP_trainer import primitives as pm
     from miner_base.commitment_hash import CommitmentHasher
     from miner_base.noisy_gemm import NoisyGemm
 
