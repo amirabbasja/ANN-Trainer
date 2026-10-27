@@ -6,4 +6,6 @@ config.json
 /links.txt
 build/
 dist/
-/kryptex miner/
+/KEX miner/
+/artifacts/
+/.runtime/

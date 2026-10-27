@@ -185,6 +185,12 @@ def run_vpn_check(configuration: dict, links_file: str | Path = "links.txt", *,
     if (type(timeout) not in (int, float) or not math.isfinite(timeout)
             or not 0 < timeout <= 60):
         raise ValueError("VPN test timeout must be positive and at most 60 seconds")
+    from .config import resolve_pool_settings
+    from .pool_training import validate_pool_endpoint
+
+    pool = resolve_pool_settings(configuration["pool"])
+    validate_pool_endpoint(pool)
+    configuration = dict(configuration, pool=pool)
     try:
         lines = Path(links_file).expanduser().read_text(encoding="utf-8-sig").splitlines()
     except (OSError, UnicodeError, TypeError, ValueError):

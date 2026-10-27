@@ -20,7 +20,7 @@ from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_target, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
 from . import native_cuda
-from .paths import DEFAULT_SOURCE, artifacts_dir
+from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
 
 LOG = logging.getLogger("LRAEP_trainer")
 
@@ -218,9 +218,12 @@ def train(args) -> int:
 
 def pool_check(configuration) -> int:
     """Check the advertised pool transport without guessing its login format."""
+    from .config import resolve_pool_settings
     from .pool_transport import PoolTransport
+    from .pool_training import validate_pool_endpoint
 
-    pool = configuration["pool"]
+    pool = resolve_pool_settings(configuration["pool"])
+    validate_pool_endpoint(pool)
     with PoolTransport(
         host=pool["host"], port=pool["port"], tls=pool["tls"],
         ca_file=pool["ca_file"], connect_timeout=pool["connect_timeout"],
@@ -292,13 +295,25 @@ def _network_scope(configuration):
 
 def _execute(args, configuration):
     if args.command == "vpn-check":
-        from .config import DEFAULT_CONFIG
+        from .config import DEFAULT_CONFIG, resolve_pool_settings
         from .vpn_check import run_vpn_check
 
         settings = configuration if configuration is not None else copy.deepcopy(DEFAULT_CONFIG)
+        settings = dict(settings, pool=resolve_pool_settings(settings["pool"], getattr(args, "miner", None)))
         links = args.links if args.links is not None else settings["vpn"]["links_file"]
         return run_vpn_check(settings, links, timeout=args.timeout,
                              attempts=args.attempts, output=args.output)
+    if args.command in ("pool", "pool-check", "pool-login-check"):
+        if configuration is None:
+            raise ValueError("pool commands require --config; edit config.json with your settings")
+        from .config import resolve_pool_settings
+        from .pool_training import validate_pool_endpoint, validate_pool_identity
+
+        pool_settings = resolve_pool_settings(configuration["pool"], getattr(args, "miner", None))
+        configuration = dict(configuration, pool=pool_settings)
+        validate_pool_endpoint(pool_settings)
+        if args.command != "pool-check":
+            validate_pool_identity(pool_settings, validate_address=False)
     network_configuration = configuration if args.command != "self-test" else None
     with _network_scope(network_configuration):
         if args.command in ("pool", "pool-check", "pool-login-check"):
@@ -327,9 +342,11 @@ def _execute(args, configuration):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="LRAEP GPU miner for the PRL network")
-    parser.add_argument("--config", help="JSON configuration file; paths are relative to this file")
+    parser.add_argument("--config", help="JSON configuration file; defaults to the application config.json")
     parser.add_argument("--official-source", default=argparse.SUPPRESS)
     parser.add_argument("--device", default=argparse.SUPPRESS)
+    parser.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+                        help="select KEX or WR and its connection settings from the shared configuration")
     commands = parser.add_subparsers(dest="command")
     check = commands.add_parser("self-test", help="compare GPU math and official proof verification offline")
     check.add_argument("--zk", action="store_true", help="also generate and verify a V3 ZK certificate")
@@ -342,10 +359,17 @@ def main(argv=None) -> int:
     run.add_argument("--refresh-interval", type=float, default=argparse.SUPPRESS)
     _add_training_arguments(run)
     run.add_argument("--no-submit", action="store_true", help="save certified blocks locally")
-    commands.add_parser("pool", help="train directly against a supported PEARL pool")
-    commands.add_parser("pool-check", help="check TCP/TLS transport from --config without sending a login")
-    commands.add_parser("pool-login-check", help="authenticate and receive one pool job without GPU work")
+    for name, help_text in (
+        ("pool", "train directly against a supported PEARL pool"),
+        ("pool-check", "check TCP/TLS transport from --config without sending a login"),
+        ("pool-login-check", "authenticate and receive one pool job without GPU work"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+                             help="select KEX or WR and its connection settings from the shared configuration")
     vpn = commands.add_parser("vpn-check", help="test V2Ray links through their tunnels without mining")
+    vpn.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+                     help="test the selected miner's pool connection settings")
     vpn.add_argument("--links", help="one V2Ray link per line; defaults to vpn.links_file or links.txt")
     vpn.add_argument("--attempts", type=int, default=3, help="pool connectivity attempts per link (1–20)")
     vpn.add_argument("--timeout", type=float, default=5, help="seconds per connection attempt (up to 60)")
@@ -355,7 +379,12 @@ def main(argv=None) -> int:
     try:
         from .config import load_config
 
-        configuration = load_config(args.config) if args.config else None
+        selected_config = args.config
+        if selected_config is None and args.command != "self-test":
+            canonical = default_config_path()
+            if canonical.is_file():
+                selected_config = canonical
+        configuration = load_config(selected_config) if selected_config else None
         if args.command is None:
             if configuration is None:
                 parser.error("specify a command, or use --config to select the configured mode")

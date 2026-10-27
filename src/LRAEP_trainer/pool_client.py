@@ -1,4 +1,4 @@
-"""Concurrent Kryptex session for the custom PEARL trainer.
+"""Concurrent KEX session for the custom PEARL trainer.
 
 Only network framing and job lifecycle live here. GPU work and official
 PEARL proof generation are performed by the caller after authentication.
@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from .pool_protocol import KryptexDialect, PoolJob, PoolProtocolError
+from .pool_protocol import KEXDialect, PoolJob, PoolProtocolError
 from .pool_transport import MAX_IO, PoolConnectionError, PoolTransport
 
 
@@ -80,6 +80,7 @@ class PoolSession:
     with the same configured host; pool redirect targets are never followed.
     """
 
+    AUTH_METHOD = "mining.authorize"
     MAX_FRAME_BYTES = MAX_IO
     MAX_PENDING_SUBMISSIONS = 64
 
@@ -89,12 +90,7 @@ class PoolSession:
         compression = self.settings.get("compression", "none")
         if compression not in ("none", "gzip"):
             raise PoolProtocolError("Pool compression must be none or gzip")
-        self.dialect = KryptexDialect(
-            wallet=self.settings["wallet"], worker=self.settings.get("worker", ""),
-            password=self.settings.get("password", "x"),
-            agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
-            request_gzip=compression == "gzip",
-        )
+        self.dialect = self._create_dialect()
         self.transport = PoolTransport(
             host=self.settings["host"], port=self.settings["port"],
             tls=self.settings.get("tls", False), ca_file=self.settings.get("ca_file"),
@@ -115,6 +111,15 @@ class PoolSession:
         self._negotiated_gzip = False
         self._reader: threading.Thread | None = None
         self._stop_watcher: threading.Thread | None = None
+
+    def _create_dialect(self) -> KEXDialect:
+        """Select this session's identity without reading another pool's field."""
+        return KEXDialect(
+            KEX_uname=self.settings.get("KEX_uname", ""), worker=self.settings.get("worker", ""),
+            password=self.settings.get("password", "x"),
+            agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
+            request_gzip=self.settings.get("compression", "none") == "gzip",
+        )
 
     @property
     def negotiated_gzip(self) -> bool:
@@ -139,7 +144,7 @@ class PoolSession:
         try:
             self.transport.open()
             requests = self.dialect.auth_requests(start_id=self._next_id)
-            self._auth_id = next(r["id"] for r in requests if r["method"] == "mining.authorize")
+            self._auth_id = next(r["id"] for r in requests if r["method"] == self.AUTH_METHOD)
             self._next_id = max(r["id"] for r in requests) + 1
             self._reader = threading.Thread(target=self._read_loop, name="LRAEP-pool-reader", daemon=True)
             self._stop_watcher = threading.Thread(target=self._watch_stop, name="LRAEP-pool-stop", daemon=True)

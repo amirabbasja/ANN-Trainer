@@ -1,62 +1,88 @@
 # LRAEP GPU trainer
 
 LRAEP is a Python client for the PEARL network with a native CUDA search loop
-and a Kryptex pool connection. A bundled subset of PEARL's official
+and selectable Kryptex or WildRig/PearlHash pool connections. A bundled subset of PEARL's official
 helpers supplies deterministic noise, commitments, Merkle proofs, and proof
 verification. The helper packages use LRAEP names; their upstream authorship
 and license notices are retained. Solo operation also supports a `pearld`
 node. No external trainer application is required or launched.
+
+For brevity, source code, filenames, configuration values and CLI choices use
+**KEX** for **Kryptex** and **WR** for **WildRig**. Full names are kept in README
+files for explanation and source attribution. Use `pool.protocol: "KEX"` or
+`"WR"`, or `pool --miner KEX` / `pool --miner WR`. Older full-name protocol
+values and filenames have been replaced; automatic selection by hostname has
+been removed.
+
+Bundled source and public configuration templates contain no real pool
+addresses. The `pool.KEX.host` and `pool.WR.host` fields are blank: supply the host, port, identity
+and TLS settings in your own private configuration. Existing private endpoint
+and account settings are retained. The endpoint table below is a human
+reference; it is not loaded by the program.
 
 Here, **neural network training** names the PEARL work loop. The generated
 workload is integer matrix multiplication; it does not fit a neural network,
 update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
 
-## Configuration file and Kryptex connection
+## One configuration file
 
-The Python entry point is `ann_trainer.py`. Start the miner from this directory:
+Maintain the app settings in `config.json`. The trainer finds this file beside
+`ann_trainer.py`, even when launched from another directory. `--config` remains
+available if you store the shared file elsewhere. `config.example.json` is the
+single public template; it contains both miner profiles with blank hosts.
+The private `config.json` is ignored by git because it can contain credentials.
+Relative paths resolve beside that file.
 
-```bash
-.venv/bin/python ann_trainer.py --config config.json pool
+KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
+section keeps both identities and separate connection settings:
+
+```json
+"pool": {
+  "protocol": "KEX",
+  "KEX_uname": "krxYOURID",
+  "WR_wallet": "prl1YOUR_PEARL_ADDRESS",
+  "worker": "Rig01",
+  "KEX": {"host": "", "port": 8048, "tls": true},
+  "WR": {"host": "", "port": 9000, "tls": false, "certificate_version": 3}
+}
 ```
 
-It accepts the same configuration, VPN settings, and commands as `LRAEP` and
-`python -m LRAEP_trainer`, including `vpn-check`, `pool-login-check`, and `self-test`.
+`--miner KEX` selects `pool.KEX` and `pool.KEX_uname`; `--miner WR` selects
+`pool.WR` and `pool.WR_wallet`. Without that option, `pool.protocol` selects
+the default miner. The worker, password, timeouts and unknown-request settings
+are shared. Each connection profile can set `host`, `port`, `tls`, `ca_file`,
+`compression`, `certificate_version` and `protocol_documentation`.
+A missing selected profile or host produces an error before networking starts;
+the other miner's connection settings are never used as a fallback.
 
-Kryptex job reception and share submission are implemented in this project's
-Python client. Pearlhash currently supports TCP/TLS diagnostics only: its
-custom job/share protocol remains unknown. To inspect your own WildRig session
-against Pearlhash, see [`docs/wildrig-wire-probe.md`](docs/wildrig-wire-probe.md).
+Run either miner with the same file:
 
-Edit `config.json` to set the pool endpoint, payout wallet, worker name,
-password, TCP/TLS settings, timeouts, GPU, and matrix sizes. A shareable template
-is in `config.example.json`. The local `config.json` is ignored by git because
-it may contain account or RPC credentials. Relative paths resolve from the
-configuration file's directory. Run the commands below from `/workspace/trainer`;
-the configuration file itself may be stored elsewhere.
+```bash
+.venv/bin/python ann_trainer.py pool --miner KEX
+.venv/bin/python ann_trainer.py pool --miner WR
+```
 
-The [Kryptex PEARL pool page](https://pool.kryptex.com/en/prl) lists
-`prl.kryptex.network:7048` for TCP and port `8048` for TLS. The main configuration
-uses verified TLS on port `8048`. The portable `config.example.json` uses TCP;
-for a TLS template, use `config.tls.example.json`, or set `pool.tls` to `true`
-and `pool.port` to `8048`. Certificate and hostname verification remain enabled.
+KEX uses the Kryptex protocol. WR implements the recovered WildRig/PearlHash
+protocol in this Python/CUDA client and does not launch WildRig. `KEX_uname`
+accepts your Kryptex Mining Username or a PEARL receiving address. `WR_wallet`
+takes your PEARL receiving address for PearlHash. Keep each identity separate
+from `pool.worker`; the client constructs the appropriate login.
 
-Endpoint configurations are available for Kryptex's global and Hong Kong servers:
+These endpoints are human references for your private profile settings:
 
-| Configuration | Endpoint | TLS |
-|---|---|---|
-| Local `config.json` | `prl.kryptex.network:8048` | Yes |
-| `config.example.json` | `prl.kryptex.network:7048` | No |
-| `config.tls.example.json` | `prl.kryptex.network:8048` | Yes |
-| `config.hk.example.json` | `prl-hk.kryptex.network:7048` | No |
-| `config.hk-tls.example.json` | `prl-hk.kryptex.network:8048` | Yes |
-| `config.global.example.json` | `prl.kryptex.network:7048` | No |
+| Profile | Reference host | Port | TLS |
+|---|---|---|---|
+| KEX global | `prl.kryptex.network` | `8048` | Yes |
+| KEX global TCP | `prl.kryptex.network` | `7048` | No |
+| KEX Hong Kong | `prl-hk.kryptex.network` | `8048` | Yes |
+| WR/PearlHash captured endpoint | `pool.pearlhash.xyz` | `9000` | No |
 
-Choose a configuration with `--config` and fill in `pool.wallet` and
-`pool.worker`. Keep the wallet address and worker label separate; the client
-constructs the pool login. `config.kryptex.example.json` selects verified TLS
-and the Kryptex protocol explicitly. The host contains only the hostname;
-the `tls` and `port` fields represent `stratum+ssl://` connection settings.
+See the [Kryptex pool page](https://pool.kryptex.com/en/prl) and
+[WR work and unknown-request guide](docs/wr-training.md). The public template
+contains no real pool hostname. The former `pool.wallet` field is replaced by
+`KEX_uname` and `WR_wallet`; older flat connection settings still load, while
+the shared template and private config use profiles for switching miners.
 
 Start with these checks from `/workspace/trainer`:
 
@@ -77,9 +103,20 @@ client with:
 With `mode` set to `"pool"`, omitting the subcommand starts the same pool
 training loop. A full node and node RPC credentials are unnecessary in pool
 mode. The client uses the received header and certificate version, applies
-PEARL's official share-target adjustment, verifies candidate proofs, and submits
-them to the pool. A matching reply with literal `result: true` and no error is
+PEARL's official share-target adjustment, and verifies candidates locally.
+Kryptex receives native proofs; PearlHash receives compact nonce/index witnesses.
+A matching reply with literal `result: true` and no error is
 counted as accepted. A missing reply is not counted as acceptance.
+PearlHash also requires `status: 1` on a matching submission acknowledgement.
+Login and telemetry acknowledgements never count as accepted shares.
+
+The miner choice selects the matching connection profile and identity in
+the shared configuration:
+
+```bash
+.venv/bin/python ann_trainer.py pool --miner WR
+.venv/bin/python ann_trainer.py pool --miner KEX
+```
 
 `training.max_seconds` bounds a pool session using a stop timer, including
 authentication and share-acknowledgement waits. CPU/GPU work already in a
@@ -108,18 +145,31 @@ terminals show additional counters. Redirected output writes only the final
 status, rather than a line for every batch. `Ctrl+C` finishes the status row
 and stops the sampler along with the miner.
 
+For WR/PearlHash, the client also reports the selected GPU's name and measured
+rate using `report_info`. It registers the GPU after login, updates the rate
+after the first completed batch, then about every 10 seconds during the first
+two minutes and every two minutes afterward. Each report logs the rate sent
+and its request ID so it can be compared with the dashboard.
+The wire rate uses raw H/s and the same average as the console. These reports
+supply connected-worker GPU information; their acknowledgements never count
+as accepted mining shares. Pool credit still depends on accepted shares.
+
 Pool protocol options:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `protocol` | `"auto"` | Select the known host's adapter, or explicitly select `"kryptex"` or `"pearlhash"`. Pearlhash training is unsupported. |
-| `compression` | `"none"` | Native uncompressed proof bytes; `"gzip"` requests the pool's optional gzip session. |
-| `certificate_version` | `null` | Use the explicit job field. An integer `1`, `2`, or `3` is a fallback only when a job omits it. Unknown versions fail. |
+| `protocol` | `"KEX"` | Explicitly select `"KEX"` or `"WR"`; `"pearlhash"` is an alias for `"WR"`. Hostnames do not select an adapter. |
+| `KEX_uname` | `""` | KEX Mining Username or PEARL receiving address, used only by KEX. |
+| `WR_wallet` | `""` | PEARL receiving address, used only by WR/PearlHash. |
+| `KEX.compression` / `WR.compression` | `"none"` | Native uncompressed proof bytes; `"gzip"` requests the pool's optional gzip session. |
+| `KEX.certificate_version` / `WR.certificate_version` | `null` | Use the explicit job field. An integer `1`, `2`, or `3` is a fallback only when a job omits it. Unknown versions fail. |
 | `agent` | `"LRAEP-trainer/0.1"` | Client identifier sent during authentication. |
+| `stop_on_unknown_request` | `true` | Record unknown PearlHash messages, stop work, close the connection, and report an error without reconnecting. |
+| `unknown_request_dir` | `null` | Diagnostic directory, relative to the config file. Defaults to `training.output_dir/unknown-pool-requests`. |
 
 Gzip is used only after the pool confirms `type: "v2"` in a successful
 authentication reply. Otherwise proofs remain uncompressed. This session
-version does not change PEARL's native proof serialization. The pool's
+version does not change PEARL's native proof serialization. Each profile's
 `protocol_documentation` setting records a reference; it is never executed.
 
 Kryptex uses static difficulty `2097152` by default. Optional password `d=N`
@@ -151,13 +201,21 @@ LRAEP can route pool TCP/TLS and node HTTP/HTTPS connections through a V2Ray
 share link using a managed local Xray core. Target DNS resolution also goes
 through the proxy, and connection failures never trigger a direct retry.
 
-Install the pinned core once, paste your share link into `vpn.link` in
-`config.json`, and set `vpn.enabled` to `true`:
+Linux x86_64 includes the official Xray-core `v26.10.21` executable at
+`src/LRAEP_trainer/bin/linux-x86_64/xray`; no separate VPN-core installation
+is needed. Paste your share link into `vpn.link` in `config.json`, set
+`vpn.enabled` to `true`, and run:
 
 ```bash
-.venv/bin/python setup_vpn.py
 .venv/bin/LRAEP --config config.json pool
 ```
+
+Leave `vpn.core_path` as `null` to select the bundled core first, followed by
+an executable on `PATH` or in the application data directory when no bundle
+supports the platform. An explicit `vpn.core_path` selects your chosen core.
+The optional `setup_vpn.py` installer remains available for Linux arm64 or a
+separate installation; other platforms need a compatible executable selected
+with `vpn.core_path`.
 
 To compare links, put one configuration per line in the ignored `links.txt`
 file, then run:
@@ -174,6 +232,8 @@ See [VPN setup, supported links, and report interpretation](docs/vpn.md).
 ## Ready in this workspace
 
 The local `.venv` and bundled `src/LRAEP_helpers` helper subset are installed.
+The Linux x86_64 Xray VPN core, its original MPL-2.0 license, and checksum
+manifest are included under `src/LRAEP_trainer/bin/` and packaged with the app.
 The pool client automatically selects the native CUDA DP4A backend for 8×8
 hash tiles. Startup reports `Mining backend: native CUDA DP4A`. The first run
 builds this project's CUDA sources with `nvcc`; later runs reuse the app's
@@ -231,6 +291,10 @@ during the build. Other packages in `requirements.txt` are general Python
 libraries. An existing CUDA-enabled system PyTorch installation is reused by
 the local virtual environment. If PyTorch reports CUDA unavailable, install
 a CUDA-enabled PyTorch build before running the self-test.
+
+Linux x86_64 installations already include the optional VPN core. Its source
+and release attribution are recorded in [third-party notices](THIRD_PARTY_NOTICES.md);
+platform alternatives are described in the [VPN guide](docs/vpn.md).
 
 After setup, `.venv/bin/LRAEP` is an equivalent entry point:
 
@@ -364,7 +428,7 @@ implementing pool networking. Public wire captures and Kryptex's published gzip
 note inform the custom client. Official PEARL proof helpers and their required
 proof-system dependencies are bundled; no external miner's GPU implementation
 or executable is used. Exact protocol references and limits are recorded in
-`docs/kryptex-protocol-review.md`.
+`docs/kex-protocol-review.md`.
 
 - [PEARL protocol website](https://pearlresearch.ai/network)
 - [Official repository and node setup](https://github.com/pearl-research-labs/pearl/tree/0798903bced203de8cfcb49441f44fd9b51b18eb)
@@ -378,3 +442,20 @@ The bundled helpers retain their upstream license notices in
 `src/LRAEP_helpers/`, including the PEARL ISC notice and the proof-system
 dependency licenses. See `THIRD_PARTY_NOTICES.md` and
 `src/LRAEP_helpers/README.md` for attribution and vendoring details.
+
+## Pool reference links
+
+Full upstream names and addresses are confined to README documentation.
+The abbreviated source documents refer here when an original URL contains
+a full name. These links are references, not runtime endpoint defaults.
+
+- [Upstream pool reference 1](https://github.com/xXGuilasXx/spark-pearl-miner/blob/65365633e3bff61b0f29d72109622dd22ff5a379/docs/protocol/kryptex.md)
+- [Upstream pool reference 2](https://github.com/xXGuilasXx/spark-pearl-miner/blob/65365633e3bff61b0f29d72109622dd22ff5a379/tests/fixtures/capture-kryptex-8048-authorize.jsonl)
+- [Upstream pool reference 3](https://pool.kryptex.com/articles/pearl-fp8-fork-en)
+- [Upstream pool reference 4](https://pool.kryptex.com/openapi.yaml)
+
+## External research workspace
+
+WR research source labels refer to the sibling `/workspace/wildrig-checker`
+workspace. For example, `wr-checker/captures/...` in fixture provenance means
+that workspace's `captures/...` directory. It is not a runtime dependency.

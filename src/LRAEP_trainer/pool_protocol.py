@@ -1,12 +1,12 @@
-"""Kryptex's PEARL message framing, independent of transport and GPU code.
+"""KEX's PEARL message framing, independent of transport and GPU code.
 
 Protocol references only:
-* Kryptex's published gzip note, gist eaaf4332dbc5ca99d0a78f24a733fffe,
+* KEX's published gzip note, gist eaaf4332dbc5ca99d0a78f24a733fffe,
   revision 45cad9645bd9cd57655851fa823e1299eb4d1a0a.
 * Captured TLS messages in spark-pearl-miner, revision
   65365633e3bff61b0f29d72109622dd22ff5a379,
-  tests/fixtures/capture-kryptex-8048-authorize.jsonl.
-* That revision's docs/protocol/kryptex.md for submission fields.
+  tests/fixtures/capture-kex-8048-authorize.jsonl.
+* That revision's docs/protocol/kex.md for submission fields.
 
 All proof construction and matrix arithmetic remain in PEARL's official
 helpers and this project's own GPU implementation.
@@ -91,7 +91,7 @@ class PoolJob:
             raise PoolProtocolError("target must fit in 256 bits")
 
 
-class KryptexDialect:
+class KEXDialect:
     """Build and validate PEARL Stratum requests without opening a connection.
 
     The default session sends uncompressed native PEARL PlainProof bytes.
@@ -101,26 +101,26 @@ class KryptexDialect:
 
     def __init__(
         self,
-        wallet: str,
+        KEX_uname: str,
         worker: str,
         password: str = "x",
         agent: str = DEFAULT_AGENT,
         request_gzip: bool = False,
     ) -> None:
-        self.wallet = _text(wallet, "wallet", 256)
+        self.KEX_uname = _text(KEX_uname, "KEX_uname", 256)
         self.worker = _text(worker, "worker", 128, allow_empty=True)
         self.password = _text(password, "password", 1024, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
-        if any(c.isspace() for c in self.wallet + self.worker):
-            raise PoolProtocolError("wallet and worker must contain no whitespace")
+        if any(c.isspace() for c in self.KEX_uname + self.worker):
+            raise PoolProtocolError("KEX_uname and worker must contain no whitespace")
         if type(request_gzip) is not bool:
             raise PoolProtocolError("request_gzip must be a boolean")
         self.request_gzip = request_gzip
 
     @property
     def login(self) -> str:
-        # Dot-separated login is present in captured Kryptex authorize/submit.
-        return f"{self.wallet}.{self.worker}" if self.worker else self.wallet
+        # Dot-separated login is present in captured KEX authorize/submit.
+        return f"{self.KEX_uname}.{self.worker}" if self.worker else self.KEX_uname
 
     def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
         """Return handshake frames; a silent subscribe must not delay authorize."""

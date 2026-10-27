@@ -23,7 +23,7 @@ import tempfile
 import time
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from .paths import artifacts_dir
+from .paths import artifacts_dir, bundled_xray
 from .network import SocksProxy
 
 
@@ -372,7 +372,8 @@ class ManagedVPN:
             if not Path(executable).is_file() or not os.access(executable, os.X_OK):
                 raise VPNError("configured Xray core executable is unavailable")
         else:
-            executable = shutil.which("xray")
+            core = bundled_xray()
+            executable = str(core) if core is not None else shutil.which("xray")
             if not executable:
                 bundled = artifacts_dir().parent / "bin" / ("xray.exe" if os.name == "nt" else "xray")
                 if bundled.is_file() and os.access(bundled, os.X_OK):

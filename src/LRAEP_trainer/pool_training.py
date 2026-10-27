@@ -3,6 +3,7 @@
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import logging
+from pathlib import Path
 import signal
 import threading
 import time
@@ -18,6 +19,9 @@ from .telemetry import GpuUtilization
 from . import native_cuda
 
 LOG = logging.getLogger("LRAEP_trainer")
+WR_REPORT_INTERVAL = 120.0
+WR_STARTUP_REPORT_INTERVAL = 10.0
+WR_STARTUP_REPORT_WINDOW = 120.0
 
 
 @dataclass
@@ -30,22 +34,32 @@ class PoolTrainingStats:
     stale: int = 0
 
 
-def pool_status(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float,
-                gpu_utilization: int | None) -> str:
-    """Report local average PEARL work, counting one int8 MAC per hash unit.
+def pool_hashrate(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float) -> float:
+    """Return completed PEARL matrix work per second in raw pool H/s units.
 
     At rank 128 each hash tile contributes tile_h * tile_w * k units to
     the target scaling. For our fully tiled matrices this is m * n * k
     per completed batch, rather than the number of final BLAKE3 tickets.
     """
-    rate = stats.batches * cfg.m * cfg.n * cfg.k / max(elapsed, 0.001)
+    return stats.batches * cfg.m * cfg.n * cfg.k / max(elapsed, 0.001)
+
+
+def format_hashrate(rate: float) -> str:
+    """Use identical display units for local work and the rate sent to WR."""
     units = ("H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s")
     unit = 0
     while rate >= 1000 and unit < len(units) - 1:
         rate /= 1000
         unit += 1
+    return f"{rate:.2f} {units[unit]}"
+
+
+def pool_status(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float,
+                gpu_utilization: int | None) -> str:
+    """Display the same sustained work rate used by WR's GPU reports."""
+    rate = format_hashrate(pool_hashrate(stats, cfg, elapsed))
     utilization = "N/A" if gpu_utilization is None else f"{gpu_utilization}%"
-    return (f"Hashrate(avg) {rate:.2f} {units[unit]} | GPU {utilization} | "
+    return (f"Hashrate(avg) {rate} | GPU {utilization} | "
             f"accepted={stats.accepted} rejected={stats.rejected} | "
             f"submitted={stats.submitted} batches={stats.batches} "
             f"attempts={stats.attempts} stale={stats.stale}")
@@ -53,41 +67,50 @@ def pool_status(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float,
 
 def select_pool_protocol(settings: dict) -> str:
     """Select only an explicitly supported dialect; never guess a custom one."""
-    selected = settings.get("protocol", "auto")
-    host = settings["host"].lower().rstrip(".")
+    selected = settings.get("protocol", "KEX")
     if selected == "auto":
-        if host == "prl.kryptex.network" or (
-            host.startswith("prl-") and host.endswith(".kryptex.network")
-        ):
-            selected = "kryptex"
-        elif host == "pool.pearlhash.xyz" or host.endswith(".pearlhash.net"):
-            selected = "pearlhash"
-        else:
-            raise ValueError("unknown pool dialect; set pool.protocol for a documented compatible endpoint")
+        raise ValueError("pool.protocol must explicitly select KEX or WR; automatic detection is unavailable")
     if selected == "pearlhash":
-        raise RuntimeError(
-            "Pearlhash uses a separate, undocumented protocol. Its job/share adapter "
-            "is not implemented; pool-check can test transport only. Kryptex is supported."
-        )
-    if selected != "kryptex":
-        raise ValueError("pool.protocol must select auto, kryptex, or pearlhash")
+        selected = "WR"
+    if selected not in ("KEX", "WR"):
+        raise ValueError("pool.protocol must select KEX or WR")
     return selected
 
 
-def validate_pool_identity(settings: dict) -> None:
+def validate_pool_endpoint(settings: dict) -> None:
+    """Require the user's endpoint before helper setup or any network activity."""
+    host = settings.get("host", "")
+    if not isinstance(host, str) or not host.strip():
+        profile = "WR" if settings.get("protocol") in ("WR", "pearlhash") else "KEX"
+        raise ValueError(
+            f"fill pool.host for a flat configuration, or pool.{profile}.host in the shared configuration, "
+            "with your pool hostname or IP address"
+        )
+
+
+def validate_pool_identity(settings: dict, selected_protocol: str | None = None, *,
+                           validate_address: bool = True) -> None:
     """Check configuration before loading helpers or opening a connection."""
-    wallet = settings.get("wallet", "")
+    selected = select_pool_protocol(settings if selected_protocol is None else {"protocol": selected_protocol})
+    identity_field = "WR_wallet" if selected == "WR" else "KEX_uname"
+    identity = settings.get(identity_field, "")
     worker = settings.get("worker", "")
-    if not isinstance(wallet, str) or not wallet.strip():
-        raise ValueError("fill pool.wallet in your configuration with your payout address or Kryptex account")
-    if any(character.isspace() for character in wallet + worker):
-        raise ValueError("pool.wallet and pool.worker must not contain whitespace")
-    if wallet.startswith("solo:"):
+    if not isinstance(identity, str) or not identity.strip():
+        description = "WR payout address" if selected == "WR" else "KEX username or payout address"
+        raise ValueError(f"fill pool.{identity_field} in your configuration with your {description}")
+    if not isinstance(worker, str):
+        raise ValueError("pool.worker must be a string")
+    if any(character.isspace() for character in identity + worker):
+        raise ValueError(f"pool.{identity_field} and pool.worker must not contain whitespace")
+    if identity.startswith("solo:"):
         raise ValueError("remove the solo: prefix to use the requested pool training mode")
-    if wallet.startswith("prl1"):
+    if validate_address and identity.startswith("prl1"):
         from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
 
-        get_script_pubkey_from_p2tr_address(wallet)
+        try:
+            get_script_pubkey_from_p2tr_address(identity)
+        except ValueError:
+            raise ValueError(f"pool.{identity_field} must contain a valid PEARL Taproot address") from None
 
 
 @contextmanager
@@ -112,28 +135,41 @@ def _signal_stop(stopped, time_limit=0):
 
 
 def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
-    """Authenticate, process live jobs, and submit verified native PEARL proofs.
+    """Authenticate, process live jobs, and submit verified pool-specific work.
 
     ``login_only`` stops after the first authenticated job and does no GPU work.
     Continuous sessions reconnect after transport failures, invalidating every
     job and pending submission from the disconnected session.
     """
+    from .config import resolve_pool_settings
     from .pool_client import (PoolAuthenticationError, PoolCompatibilityError,
                               PoolSession, StalePoolJob)
     from .pool_transport import PoolConnectionError
 
-    pool = configuration["pool"]
-    select_pool_protocol(pool)
-    # Empty configuration has a useful error before any helper initialization.
-    if not pool.get("wallet", "").strip():
-        raise ValueError("fill pool.wallet in your configuration with your payout address or Kryptex account")
+    pool = resolve_pool_settings(configuration["pool"])
+    selected_protocol = select_pool_protocol(pool)
+    validate_pool_endpoint(pool)
+    validate_pool_identity(pool, selected_protocol, validate_address=False)
+    session_class = PoolSession
+    session_options = {}
+    if selected_protocol == "WR":
+        from .pool_diagnostics import UnknownRequestRecorder
+        from .wr_client import WRSession
+        from .wr_work import prepare_wr_batch, verified_wr_share
+
+        session_class = WRSession
+        diagnostic_dir = pool.get("unknown_request_dir") or (
+            Path(configuration["training"]["output_dir"]) / "unknown-pool-requests"
+        )
+        session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, pool)
     load_official_helpers(configuration["official_source"])
-    validate_pool_identity(pool)
+    validate_pool_identity(pool, selected_protocol)
     import LRAEP_mining as pm
 
     settings = configuration["training"]
     cfg = TrainingConfig(settings["m"], settings["n"], settings["k"],
                          settings["tile_h"], settings["tile_w"])
+    gpu_name = None
     if not login_only:
         device = torch.device(configuration["device"])
         if device.type != "cuda" or not torch.cuda.is_available():
@@ -142,7 +178,8 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
         # starts; CUDA's implicit current-device selection is thread-local.
         if device.index is None:
             device = torch.device("cuda", torch.cuda.current_device())
-        LOG.info("GPU: %s", torch.cuda.get_device_name(device))
+        gpu_name = torch.cuda.get_device_name(device)
+        LOG.info("GPU: %s", gpu_name)
     use_native = (not login_only and (cfg.tile_h, cfg.tile_w) == (8, 8)
                   and native_cuda.available(configuration["device"]))
     if not login_only:
@@ -177,17 +214,30 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
             progress.clear()
             LOG.log(level, message, *args)
 
+        def report_gpu(session, sample_time):
+            rate = pool_hashrate(stats, cfg, sample_time - started)
+            request_id = session.report_info(gpu_name, rate)
+            log(logging.INFO, "PearlHash GPU report sent: %s (request=%d)",
+                format_hashrate(rate), request_id)
+
         update_progress(force=True)
         while not finished():
+            session = None
             try:
                 session_settings = dict(pool)
                 if limit > 0:
                     remaining = max(0.001, limit - (time.monotonic() - started))
                     session_settings["connect_timeout"] = min(pool["connect_timeout"], remaining)
-                with PoolSession(session_settings, stop_event=stopped) as session:
+                session = session_class(session_settings, stop_event=stopped, **session_options)
+                with session:
                     log(logging.INFO, "Pool authenticated at %s:%d; proof compression=%s",
                         pool["host"], pool["port"],
                         "gzip" if session.negotiated_gzip else "none")
+                    report_connection_started = time.monotonic()
+                    report_started = report_connection_started
+                    reported_work = False
+                    if selected_protocol == "WR" and not login_only:
+                        report_gpu(session, report_started)
                     previous_generation = None
                     job_deadline = time.monotonic() + pool["read_timeout"]
                     while not finished():
@@ -199,8 +249,11 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
                             continue
                         job = snapshot.job
                         if snapshot.generation != previous_generation:
-                            log(logging.INFO, "Pool job=%s height=%d certificate=V%d",
-                                job.job_id, job.height, job.cert_version)
+                            if selected_protocol == "WR":
+                                log(logging.INFO, "PearlHash job=%s generation=%d", job.job_id, job.cert_version)
+                            else:
+                                log(logging.INFO, "Pool job=%s height=%d certificate=V%d",
+                                    job.job_id, job.height, job.cert_version)
                             previous_generation = snapshot.generation
                             job_deadline = time.monotonic() + pool["read_timeout"]
                         header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
@@ -210,9 +263,13 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
                                 len(job.header_bytes), target.bit_length())
                             return 0
 
-                        batch = prepare_batch(header, job.cert_version, cfg, rng,
-                                              device=configuration["device"], gpu_signals=True,
-                                              native=use_native)
+                        if selected_protocol == "WR":
+                            batch = prepare_wr_batch(job, cfg, rng,
+                                                          device=configuration["device"], native=use_native)
+                        else:
+                            batch = prepare_batch(header, job.cert_version, cfg, rng,
+                                                  device=configuration["device"], gpu_signals=True,
+                                                  native=use_native)
                         if expired() or not session.is_current(snapshot):
                             continue
                         cancelled = lambda: expired() or not session.is_current(snapshot)
@@ -222,20 +279,33 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
                             continue
                         stats.batches += 1
                         stats.attempts += (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
+                        if selected_protocol == "WR":
+                            now = time.monotonic()
+                            interval = (WR_STARTUP_REPORT_INTERVAL
+                                        if now - report_connection_started < WR_STARTUP_REPORT_WINDOW
+                                        else WR_REPORT_INTERVAL)
+                            if not reported_work or now - report_started >= interval:
+                                report_gpu(session, now)
+                                report_started = now
+                                reported_work = True
                         # Limits stop the next batch; completed work remains
                         # eligible for submission, as in the solo training loop.
                         for row, col, digest in matches:
                             if expired() or not session.is_current(snapshot):
                                 stats.stale += 1
                                 break
-                            proof, _ = verified_pool_share(
-                                batch, header, job.cert_version, row, col, digest, target,
-                            )
+                            if selected_protocol == "WR":
+                                submission = verified_wr_share(batch, row, col, digest, target)
+                            else:
+                                proof, _ = verified_pool_share(
+                                    batch, header, job.cert_version, row, col, digest, target,
+                                )
+                                submission = proof.to_base64()
                             if expired() or not session.is_current(snapshot):
                                 stats.stale += 1
                                 break
                             try:
-                                result = session.submit(snapshot, proof.to_base64())
+                                result = session.submit(snapshot, submission)
                             except StalePoolJob:
                                 stats.stale += 1
                                 break
@@ -247,9 +317,22 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
                                 stats.rejected += 1
                                 log(logging.WARNING, "Pool rejected training share job=%s: %s", job.job_id, result.error)
                         update_progress()
+                    if selected_protocol == "WR":
+                        # Unknown messages cancel GPU work via the stop event.
+                        # Raise before close() or a normal exit can hide them.
+                        session.raise_if_failed()
             except (PoolAuthenticationError, PoolCompatibilityError):
                 raise
             except PoolConnectionError as exc:
+                if selected_protocol == "WR" and session is not None:
+                    # A timer may close the transport while an unknown request
+                    # is being recorded. Preserve its permanent failure.
+                    try:
+                        session.raise_if_failed()
+                    except PoolCompatibilityError:
+                        raise
+                    except PoolConnectionError:
+                        pass
                 if stopped.is_set():
                     break
                 if login_only:

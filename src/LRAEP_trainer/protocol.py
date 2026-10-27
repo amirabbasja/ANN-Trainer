@@ -147,9 +147,6 @@ def prepare_batch(header, cert_version: int, config: TrainingConfig,
     ``gpu_signals`` draws int7 signals with a private CUDA generator seeded
     from ``rng``; the default preserves the original NumPy signal sequence.
     """
-    from miner_base.commitment_hash import CommitmentHasher
-    from miner_base.matrix_merkle_tree import MatrixMerkleTree
-
     if cert_version not in (1, 2, 3):
         raise ValueError(f"unsupported PEARL certificate version {cert_version}")
     destination = torch.device(device)
@@ -164,14 +161,38 @@ def prepare_batch(header, cert_version: int, config: TrainingConfig,
                                  dtype=torch.int8, device=destination, generator=generator)
         bt_device = torch.randint(-64, 64, (config.n, config.k),
                                   dtype=torch.int8, device=destination, generator=generator)
-        if native:
-            a, bt = a_device, bt_device
-        else:
-            a, bt = a_device.cpu(), bt_device.cpu()
     else:
         a = torch.from_numpy(rng.integers(-64, 64, (config.m, config.k), dtype=np.int8))
         bt = torch.from_numpy(rng.integers(-64, 64, (config.n, config.k), dtype=np.int8))
         a_device, bt_device = a, bt
+    return prepare_signal_batch(header, cert_version, config, a_device, bt_device,
+                                device=device, native=native)
+
+
+def prepare_signal_batch(header, cert_version: int, config: TrainingConfig,
+                         a: torch.Tensor, bt: torch.Tensor, *,
+                         device: str | torch.device = "cpu", native: bool = False) -> TrainingBatch:
+    """Commit caller-generated signals with the official noise derivation.
+
+    The full signal shapes bind the V3 commitment. A pool may reserve a final
+    nonce row outside ``config.m`` searchable rows; callers then slice the
+    noisy search view and retain the full signals for Merkle verification.
+    """
+    from miner_base.commitment_hash import CommitmentHasher
+    from miner_base.matrix_merkle_tree import MatrixMerkleTree
+
+    if cert_version not in (1, 2, 3):
+        raise ValueError(f"unsupported PEARL certificate version {cert_version}")
+    if (not isinstance(a, torch.Tensor) or not isinstance(bt, torch.Tensor)
+            or a.dtype != torch.int8 or bt.dtype != torch.int8
+            or a.ndim != 2 or bt.ndim != 2 or a.shape[1] != config.k
+            or bt.shape[1] != config.k or a.shape[0] < config.m or bt.shape[0] < config.n):
+        raise ValueError("signal matrices must cover the configured int8 training dimensions")
+    destination = torch.device(device)
+    actual_m, actual_n = a.shape[0], bt.shape[0]
+    a_device, bt_device = a, bt
+    if not native:
+        a, bt = a.cpu(), bt.cpu()
     key = CommitmentHasher.get_key(bytes(header.to_bytes()), config.official_config())
     if native:
         if destination.type != "cuda":
@@ -184,7 +205,7 @@ def prepare_batch(header, cert_version: int, config: TrainingConfig,
         b_tree = DeferredMerkleTree(bt_device, key, b_root)
         commitment = CommitmentHasher.commitment_hash_from_merkle_roots(
             a_root, b_root, key,
-            salted_dims=(config.m, config.n) if cert_version == 3 else None,
+            salted_dims=(actual_m, actual_n) if cert_version == 3 else None,
         )
         a_noised, bt_noised = native_cuda.add_noise(
             a_device, bt_device, commitment.noise_seed_A, commitment.noise_seed_B,
@@ -195,7 +216,7 @@ def prepare_batch(header, cert_version: int, config: TrainingConfig,
     b_tree = MatrixMerkleTree(bt, key)
     commitment = CommitmentHasher.commitment_hash_from_merkle_roots(
         a_tree.root, b_tree.root, key,
-        salted_dims=(config.m, config.n) if cert_version == 3 else None,
+        salted_dims=(actual_m, actual_n) if cert_version == 3 else None,
     )
     if destination.type == "cuda":
         # Official permutation factors contain one +1 and one -1. Preserve
@@ -203,14 +224,14 @@ def prepare_batch(header, cert_version: int, config: TrainingConfig,
         # dense factors and float32 rank-128 noise products entirely.
         factors = generate_sparse_noise_factors(
             commitment.noise_seed_A, commitment.noise_seed_B,
-            config.m, config.k, config.n,
+            actual_m, config.k, actual_n,
         )
         a_noised, b_noised = gpu_add_sparse_noise(a_device, bt_device, *factors, device=device)
     else:
         # Keep the independent exact-integer CPU path for callers and checks.
         al, ar, bl, br = generate_noise_factors(
             commitment.noise_seed_A, commitment.noise_seed_B,
-            config.m, config.k, config.n,
+            actual_m, config.k, actual_n,
         )
         a_noised = a + (al.to(torch.int32) @ ar.to(torch.int32)).to(torch.int8)
         b_noised = bt.T + (bl.to(torch.int32) @ br.to(torch.int32)).to(torch.int8)

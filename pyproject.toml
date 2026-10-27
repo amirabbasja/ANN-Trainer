@@ -18,7 +18,7 @@ include-package-data = true
 packages = ["LRAEP_trainer", "LRAEP_helpers"]
 
 [tool.setuptools.package-data]
-LRAEP_trainer = ["cuda/*.cu", "cuda/*.cuh"]
+LRAEP_trainer = ["cuda/*.cu", "cuda/*.cuh", "bin/*", "bin/**/*"]
 LRAEP_helpers = ["manifest.json", "README.md", "LICENSE*", "PROVENANCE*", "python/**/*.py", "rust/**/*"]
 
 [tool.setuptools.dynamic]

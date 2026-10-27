@@ -14,21 +14,33 @@
     "output_dir": "~/.local/share/LRAEP/artifacts"
   },
   "pool": {
-    "host": "prl.kryptex.network",
-    "port": 7048,
-    "tls": false,
-    "ca_file": null,
-    "wallet": "",
     "worker": "rig-01",
     "password": "x",
     "connect_timeout": 15,
     "read_timeout": 60,
     "reconnect_delay": 3,
-    "protocol_documentation": "https://pool.kryptex.com/en/prl",
-    "protocol": "auto",
-    "compression": "none",
-    "certificate_version": null,
-    "agent": "LRAEP-trainer/0.1"
+    "protocol": "KEX",
+    "agent": "LRAEP-trainer/0.1",
+    "KEX_uname": "",
+    "WR_wallet": "",
+    "KEX": {
+      "host": "",
+      "port": 8048,
+      "tls": true,
+      "ca_file": null,
+      "compression": "none",
+      "certificate_version": null,
+      "protocol_documentation": null
+    },
+    "WR": {
+      "host": "",
+      "port": 9000,
+      "tls": false,
+      "ca_file": null,
+      "compression": "none",
+      "certificate_version": 3,
+      "protocol_documentation": null
+    }
   },
   "node": {
     "rpc_url": "https://127.0.0.1:44107",

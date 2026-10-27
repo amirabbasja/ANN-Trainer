@@ -33,14 +33,22 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## Optional Xray VPN core
 
 The optional VPN feature starts an unmodified official Xray-core executable.
-`setup_vpn.py` installs release `v26.10.21` after checking its pinned archive
-SHA-256 checksum. The binary is installed outside this project's source tree;
-it is not renamed or presented as LRAEP-authored code.
+The Linux x86_64 build of release `v26.10.21` is redistributed at
+`src/LRAEP_trainer/bin/linux-x86_64/xray`. Its version, upstream release
+provenance, and checksums are recorded in `src/LRAEP_trainer/bin/manifest.json`.
+It is not renamed or presented as LRAEP-authored code.
 
-Xray-core is distributed under the Mozilla Public License Version 2.0. The
-installer retains the release archive's original license text as
-`Xray-LICENSE` beside the executable, by default under
-`~/.local/share/LRAEP/bin/`. This project does not modify that license text.
+Xray-core is distributed under the Mozilla Public License Version 2.0.
+The original release license text is included at
+`src/LRAEP_trainer/bin/Xray-LICENSE` and shipped with the executable in
+application distributions. The corresponding source code is available from
+the versioned upstream source link below. This project does not modify the
+executable, its source code, or its license text.
+
+The optional `setup_vpn.py` installer retains the same pinned release for
+Linux x86_64 and arm64 installations. It verifies the official archive's
+SHA-256 checksum and preserves `Xray-LICENSE` beside the installed executable,
+by default under `~/.local/share/LRAEP/bin/`.
 
 - Source: https://github.com/XTLS/Xray-core/tree/v26.10.21
 - Release: https://github.com/XTLS/Xray-core/releases/tag/v26.10.21
@@ -54,7 +62,7 @@ their proof-system dependencies are bundled as described above. No external
 miner's executable, GPU implementation, or networking client implementation
 is vendored or required at runtime.
 
-- Kryptex's public gzip and difficulty notes by Max Malysh:
+- KEX's public gzip and difficulty notes by Max Malysh:
   https://gist.github.com/maxmalysh/eaaf4332dbc5ca99d0a78f24a733fffe/45cad9645bd9cd57655851fa823e1299eb4d1a0a
   and https://gist.github.com/maxmalysh/f4c29f532e650a114b317e234f1393fb/ad76fb08751477ca70f20434025ffdf8cc2dd955.
   No license is stated in the notes; only protocol facts are referenced.
@@ -66,5 +74,5 @@ is vendored or required at runtime.
   `3d4cc7dadbd1de98ba20e9beb162806a0e70266b`: earlier pool wire survey.
   https://github.com/Breakwater-ecosystem/pearl-metal-miner/tree/3d4cc7dadbd1de98ba20e9beb162806a0e70266b
 
-See `docs/kryptex-protocol-review.md` for the scope and evidentiary limits of
+See `docs/kex-protocol-review.md` for the scope and evidentiary limits of
 these references.
