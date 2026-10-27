@@ -6,7 +6,8 @@ control and the selected pool, while printing timestamped JSON-line events for
 both directions. No packet capture permissions, TLS interception certificate,
 or WildRig source code are needed.
 
-The Pearlhash example configuration currently lists `pool.pearlhash.xyz:9000`
+The optional `config.LRAEPhash.example.json` template for the external Pearlhash
+pool lists `pool.pearlhash.xyz:9000`
 with plain TCP. Verify the actual host, port, and TLS setting in **your** WildRig
 configuration before using the commands below.
 

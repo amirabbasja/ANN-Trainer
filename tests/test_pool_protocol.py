@@ -4,7 +4,7 @@ import base64
 import gzip
 import unittest
 
-from pearl_trainer.pool_protocol import KryptexDialect, PoolJob, PoolProtocolError
+from LRAEP_trainer.pool_protocol import KryptexDialect, PoolJob, PoolProtocolError
 
 
 # A real, redacted-wallet Kryptex TLS capture from 2026-09-26, pinned in

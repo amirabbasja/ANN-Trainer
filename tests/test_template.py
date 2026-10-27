@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from pearl_trainer.node import NodeClient
+from LRAEP_trainer.node import NodeClient
 
 
 def double_sha(data):
@@ -43,13 +43,13 @@ class TemplateIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         source = Path(os.environ.get(
-            "PEARL_OFFICIAL_SOURCE",
-            str(Path(__file__).resolve().parents[1] / ".official" / "pearl"),
+            "LRAEP_OFFICIAL_SOURCE",
+            str(Path(__file__).resolve().parents[1] / "src" / "LRAEP_helpers"),
         ))
         if not source.exists():
             raise unittest.SkipTest("pinned official PEARL helper checkout is unavailable")
         try:
-            from pearl_trainer.protocol import load_official_helpers
+            from LRAEP_trainer.protocol import load_official_helpers
             load_official_helpers(source)
             from bitcoinutils.bech32 import Encoding, bech32_encode, convertbits
         except ImportError as exc:

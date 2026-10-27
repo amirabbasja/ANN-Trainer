@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from pearl_trainer import telemetry
+from LRAEP_trainer import telemetry
 
 
 UUID_ONE = "356f34b2-260b-075e-a59b-34fd9402b132"

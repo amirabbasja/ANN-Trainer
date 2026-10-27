@@ -8,8 +8,8 @@ from blake3 import blake3
 import numpy as np
 import torch
 
-from pearl_trainer import protocol
-from pearl_trainer.gpu import gpu_transcripts
+from LRAEP_trainer import protocol
+from LRAEP_trainer.gpu import gpu_transcripts
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA device unavailable")
@@ -18,14 +18,14 @@ class NativeProtocolTests(unittest.TestCase):
     def setUpClass(cls):
         root = Path(__file__).resolve().parents[1]
         try:
-            protocol.load_official_helpers(root / ".official" / "pearl")
-            import pearl_mining as pm
+            protocol.load_official_helpers(root / "src" / "LRAEP_helpers")
+            import LRAEP_mining as pm
             from miner_base.commitment_hash import CommitmentHasher
             from miner_base.matrix_merkle_tree import MatrixMerkleTree
             from miner_base.noise_generation import NoiseGenerator
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
-        from pearl_trainer import native_cuda
+        from LRAEP_trainer import native_cuda
 
         native_cuda.load_native("cuda:0")
         cls.native = native_cuda

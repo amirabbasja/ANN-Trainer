@@ -1,8 +1,9 @@
 .venv/
-.official/
-.native/
 __pycache__/
 *.pyc
-artifacts/
 *.egg-info/
 config.json
+/links.txt
+build/
+dist/
+/kryptex miner/

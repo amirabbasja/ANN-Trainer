@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from pearl_trainer.progress import LiveProgress
+from LRAEP_trainer.progress import LiveProgress
 
 
 class TerminalStream(io.StringIO):
@@ -15,7 +15,7 @@ class TerminalStream(io.StringIO):
 
 class ProgressTests(unittest.TestCase):
     def setUp(self):
-        self.width = patch("pearl_trainer.progress.shutil.get_terminal_size",
+        self.width = patch("LRAEP_trainer.progress.shutil.get_terminal_size",
                            return_value=os.terminal_size((120, 24)))
         self.terminal_size = self.width.start()
         self.addCleanup(self.width.stop)
@@ -33,7 +33,7 @@ class ProgressTests(unittest.TestCase):
 
     def test_throttle_still_keeps_the_latest_status_for_close(self):
         stream = TerminalStream()
-        with patch("pearl_trainer.progress.time.monotonic", side_effect=[10, 10.1, 11.1]):
+        with patch("LRAEP_trainer.progress.time.monotonic", side_effect=[10, 10.1, 11.1]):
             progress = LiveProgress(stream)
             progress.update("one")
             progress.update("two")
@@ -43,7 +43,7 @@ class ProgressTests(unittest.TestCase):
         progress.close()
 
         stream = TerminalStream()
-        with patch("pearl_trainer.progress.time.monotonic", side_effect=[20, 20.1]):
+        with patch("LRAEP_trainer.progress.time.monotonic", side_effect=[20, 20.1]):
             with LiveProgress(stream) as progress:
                 progress.update("old")
                 progress.update("new")
@@ -51,7 +51,7 @@ class ProgressTests(unittest.TestCase):
 
     def test_clear_allows_logs_then_immediate_status_redraw(self):
         stream = TerminalStream()
-        with patch("pearl_trainer.progress.time.monotonic", side_effect=[10, 10.1]):
+        with patch("LRAEP_trainer.progress.time.monotonic", side_effect=[10, 10.1]):
             with LiveProgress(stream) as progress:
                 progress.update("old status")
                 progress.clear()

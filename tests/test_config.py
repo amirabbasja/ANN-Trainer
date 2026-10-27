@@ -5,7 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pearl_trainer.config import ConfigError, DEFAULT_CONFIG, load_config
+from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config
+from LRAEP_trainer.paths import artifacts_dir
 
 
 class ConfigTests(unittest.TestCase):
@@ -23,8 +24,8 @@ class ConfigTests(unittest.TestCase):
         result = self.load({"version": 1})
         self.assertEqual(result["mode"], "pool")
         self.assertEqual(result["device"], "cuda:0")
-        self.assertEqual(result["official_source"], str(self.directory / ".official/pearl"))
-        self.assertEqual(result["training"]["output_dir"], str(self.directory / "artifacts"))
+        self.assertEqual(result["official_source"], str(self.directory / "src/LRAEP_helpers"))
+        self.assertEqual(result["training"]["output_dir"], str(artifacts_dir().resolve()))
         self.assertEqual(result["pool"]["host"], "prl.kryptex.network")
         self.assertEqual(result["pool"]["port"], 7048)
         self.assertFalse(result["pool"]["tls"])
@@ -33,7 +34,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["pool"]["protocol"], "auto")
         self.assertEqual(result["pool"]["compression"], "none")
         self.assertIsNone(result["pool"]["certificate_version"])
-        self.assertEqual(result["pool"]["agent"], "custom-pearl-trainer/0.1")
+        self.assertEqual(result["pool"]["agent"], "LRAEP-trainer/0.1")
         self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
 
     def test_consensus_proof_input_limit_is_checked_before_gpu_work(self):
@@ -44,13 +45,13 @@ class ConfigTests(unittest.TestCase):
 
     def test_all_filesystem_paths_are_relative_to_the_config_file(self):
         result = self.load({
-            "version": 1, "official_source": "helpers/pearl",
+            "version": 1, "official_source": "helpers/LRAEP",
             "training": {"output_dir": "results"},
             "pool": {"tls": True, "ca_file": "certs/pool.pem",
                      "protocol_documentation": "docs/protocol.json"},
             "node": {"ca_file": "certs/node.pem"},
         })
-        self.assertEqual(result["official_source"], str(self.directory / "helpers/pearl"))
+        self.assertEqual(result["official_source"], str(self.directory / "helpers/LRAEP"))
         self.assertEqual(result["training"]["output_dir"], str(self.directory / "results"))
         self.assertEqual(result["pool"]["ca_file"], str(self.directory / "certs/pool.pem"))
         self.assertEqual(result["node"]["ca_file"], str(self.directory / "certs/node.pem"))
@@ -64,8 +65,8 @@ class ConfigTests(unittest.TestCase):
     def test_exported_example_defaults_can_be_loaded_without_mutation(self):
         result = self.load(DEFAULT_CONFIG)
         self.assertEqual(result["version"], 1)
-        self.assertEqual(DEFAULT_CONFIG["official_source"], ".official/pearl")
-        self.assertEqual(DEFAULT_CONFIG["training"]["output_dir"], "artifacts")
+        self.assertEqual(DEFAULT_CONFIG["official_source"], "src/LRAEP_helpers")
+        self.assertEqual(DEFAULT_CONFIG["training"]["output_dir"], str(artifacts_dir()))
 
     def test_explicit_pool_protocol_options_are_preserved(self):
         result = self.load({"version": 1, "pool": {

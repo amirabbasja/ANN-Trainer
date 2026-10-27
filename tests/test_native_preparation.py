@@ -14,23 +14,23 @@ class NativePreparationTests(unittest.TestCase):
     def setUpClass(cls):
         if not torch.cuda.is_available():
             raise unittest.SkipTest("CUDA unavailable")
-        from pearl_trainer.native_cuda import load_native
-        from pearl_trainer.protocol import load_official_helpers
+        from LRAEP_trainer.native_cuda import load_native
+        from LRAEP_trainer.protocol import load_official_helpers
 
         cls.lib = load_native()
         root = Path(__file__).resolve().parents[1]
         try:
-            load_official_helpers(root / ".official" / "pearl")
+            load_official_helpers(root / "src" / "LRAEP_helpers")
             from miner_base.noise_generation import NoiseGenerator
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.reference = NoiseGenerator(noise_rank=128)
         pointer = ctypes.c_void_p
         integer = ctypes.c_int
-        cls.lib.pearl_noise_factors.argtypes = [integer, integer, integer] + [pointer] * 7
-        cls.lib.pearl_noise_factors.restype = integer
-        cls.lib.pearl_apply_noise.argtypes = [pointer, pointer, integer, integer, integer] + [pointer] * 7
-        cls.lib.pearl_apply_noise.restype = integer
+        cls.lib.LRAEP_noise_factors.argtypes = [integer, integer, integer] + [pointer] * 7
+        cls.lib.LRAEP_noise_factors.restype = integer
+        cls.lib.LRAEP_apply_noise.argtypes = [pointer, pointer, integer, integer, integer] + [pointer] * 7
+        cls.lib.LRAEP_apply_noise.restype = integer
         cls.previous_threads = torch.get_num_threads()
         torch.set_num_threads(min(4, cls.previous_threads))
         cls.addClassCleanup(torch.set_num_threads, cls.previous_threads)
@@ -47,7 +47,7 @@ class NativePreparationTests(unittest.TestCase):
         ai = torch.empty((k, 2), dtype=torch.int32, device="cuda")
         bi = torch.empty((k, 2), dtype=torch.int32, device="cuda")
         stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
-        code = self.lib.pearl_noise_factors(
+        code = self.lib.LRAEP_noise_factors(
             m, n, k, self.pointer(key_a), self.pointer(key_b),
             self.pointer(al), self.pointer(brt), self.pointer(ai), self.pointer(bi), stream,
         )
@@ -61,7 +61,7 @@ class NativePreparationTests(unittest.TestCase):
         out_a = torch.empty_like(a)
         out_bt = torch.empty_like(bt)
         stream = ctypes.c_void_p(torch.cuda.current_stream().cuda_stream)
-        code = self.lib.pearl_apply_noise(
+        code = self.lib.LRAEP_apply_noise(
             self.pointer(a), self.pointer(bt), m, n, k,
             self.pointer(factors.al), self.pointer(factors.brt),
             self.pointer(factors.ai), self.pointer(factors.bi),
@@ -131,8 +131,8 @@ class NativePreparationTests(unittest.TestCase):
 
     def test_invalid_dimensions_fail_before_a_kernel_launch(self):
         null = ctypes.c_void_p()
-        self.assertNotEqual(self.lib.pearl_noise_factors(0, 128, 128, *([null] * 7)), 0)
-        self.assertNotEqual(self.lib.pearl_apply_noise(null, null, 128, 0, 128,
+        self.assertNotEqual(self.lib.LRAEP_noise_factors(0, 128, 128, *([null] * 7)), 0)
+        self.assertNotEqual(self.lib.LRAEP_apply_noise(null, null, 128, 0, 128,
                                                      *([null] * 7)), 0)
 
 

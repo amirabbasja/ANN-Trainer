@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import torch
 
-from pearl_trainer.gpu import (TrainingCancelled, gpu_add_noise,
+from LRAEP_trainer.gpu import (TrainingCancelled, gpu_add_noise,
                                gpu_add_sparse_noise, gpu_transcripts)
 
 
@@ -219,7 +219,7 @@ class TestGPUTranscripts(unittest.TestCase):
         rng = np.random.default_rng(422)
         a = rng.integers(-128, 128, (8, 2176), dtype=np.int8)
         b = rng.integers(-128, 128, (2176, 8), dtype=np.int8)
-        with patch("pearl_trainer.gpu._TRANSCRIPT_SCRATCH_BYTES", 1):
+        with patch("LRAEP_trainer.gpu._TRANSCRIPT_SCRATCH_BYTES", 1):
             np.testing.assert_array_equal(gpu_transcripts(a, b), scalar_transcripts(a, b))
 
     def test_non_power_of_two_tile_area(self):

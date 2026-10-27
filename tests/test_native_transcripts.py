@@ -27,7 +27,7 @@ class NativeTranscriptTests(unittest.TestCase):
     def setUpClass(cls):
         # Import lazily: systems without CUDA or the optional compiler should
         # still be able to discover and run the CPU test suite.
-        from pearl_trainer.native_cuda import NativeUnavailable, load_native, transcripts_device
+        from LRAEP_trainer.native_cuda import NativeUnavailable, load_native, transcripts_device
 
         try:
             load_native("cuda:0")

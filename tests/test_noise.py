@@ -7,9 +7,9 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from pearl_trainer import noise
-from pearl_trainer.noise import generate_noise_factors, generate_sparse_noise_factors
-from pearl_trainer.protocol import load_official_helpers
+from LRAEP_trainer import noise
+from LRAEP_trainer.noise import generate_noise_factors, generate_sparse_noise_factors
+from LRAEP_trainer.protocol import load_official_helpers
 
 
 class NoiseFactorTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class NoiseFactorTests(unittest.TestCase):
     def setUpClass(cls):
         root = Path(__file__).resolve().parents[1]
         try:
-            load_official_helpers(root / ".official" / "pearl")
+            load_official_helpers(root / "src" / "LRAEP_helpers")
             from miner_base.noise_generation import NoiseGenerator
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None

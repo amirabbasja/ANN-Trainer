@@ -8,7 +8,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from pearl_trainer.node import NodeClient, NodeError, _RejectRedirects
+from LRAEP_trainer.node import NodeClient, NodeError, _RejectRedirects
 
 
 class NodeClientTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class NodeClientTests(unittest.TestCase):
     def reply(self, result=None, *, error=None, request_id=1):
         return io.BytesIO(json.dumps({"id": request_id, "result": result, "error": error}).encode())
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_authenticated_request_and_template_shape(self, urlopen):
         urlopen.return_value = self.reply({"height": 123})
         self.assertEqual(self.client.raw_template(), {"height": 123})
@@ -31,7 +31,7 @@ class NodeClientTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(authorization.split()[1]), b"rpc-name:secret-password")
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 30)
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_null_submit_result_is_accepted(self, urlopen):
         urlopen.return_value = self.reply(None)
         self.assertIsNone(self.client.submit(b"\x01\x02"))
@@ -39,7 +39,7 @@ class NodeClientTests(unittest.TestCase):
         self.assertEqual(body["method"], "submitblock")
         self.assertEqual(body["params"], ["0102"])
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_every_non_null_submit_result_is_rejection(self, urlopen):
         for result in ["bad-proof", False, "", {}, 0]:
             with self.subTest(result=result):
@@ -48,7 +48,7 @@ class NodeClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(NodeError, "rejected"):
                     self.client.submit(b"block")
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_rpc_error_redacts_credentials(self, urlopen):
         urlopen.return_value = self.reply(error={"code": -1, "message": "rpc-name secret-password"})
         with self.assertRaises(NodeError) as caught:
@@ -57,14 +57,14 @@ class NodeClientTests(unittest.TestCase):
         self.assertNotIn("rpc-name", str(caught.exception))
         self.assertIn("[redacted]", str(caught.exception))
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_transport_error_redacts_credentials(self, urlopen):
         urlopen.side_effect = urllib.error.URLError("secret-password unavailable")
         with self.assertRaises(NodeError) as caught:
             self.client.rpc("getbestblockhash")
         self.assertNotIn("secret-password", str(caught.exception))
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_http_error_does_not_expose_body_or_reason(self, urlopen):
         urlopen.side_effect = urllib.error.HTTPError(
             self.client.url, 401, "secret-password", {}, io.BytesIO(b"secret-password")
@@ -73,7 +73,7 @@ class NodeClientTests(unittest.TestCase):
             self.client.rpc("getbestblockhash")
         self.assertNotIn("secret-password", str(caught.exception))
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_invalid_responses_are_rejected(self, urlopen):
         bad_replies = [b"not JSON", b"[]", b'{"id": 9, "result": null}', b'{"id": 1}', b'{"id": true,"result":null}']
         for raw in bad_replies:
@@ -83,20 +83,20 @@ class NodeClientTests(unittest.TestCase):
                 with self.assertRaises(NodeError):
                     self.client.rpc("getbestblockhash")
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_bounded_response(self, urlopen):
         self.client.MAX_RESPONSE_BYTES = 20
         urlopen.return_value = io.BytesIO(b"x" * 21)
         with self.assertRaisesRegex(NodeError, "size limit"):
             self.client.rpc("getbestblockhash")
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_request_ids_increase(self, urlopen):
         urlopen.side_effect = [self.reply("aa" * 32), self.reply("bb" * 32, request_id=2)]
         self.assertEqual(self.client.best_hash(), "aa" * 32)
         self.assertEqual(self.client.best_hash(), "bb" * 32)
 
-    @patch("pearl_trainer.node.urllib.request.OpenerDirector.open")
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_invalid_best_hash(self, urlopen):
         urlopen.return_value = self.reply("z" * 64)
         with self.assertRaisesRegex(NodeError, "invalid best block hash"):

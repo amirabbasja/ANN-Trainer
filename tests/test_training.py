@@ -10,7 +10,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from pearl_trainer import __main__ as cli
+from LRAEP_trainer import __main__ as cli
 
 
 class TrainingControlFlowTests(unittest.TestCase):
@@ -47,23 +47,23 @@ class TrainingControlFlowTests(unittest.TestCase):
         # The real training implementation imports the native verifier and the
         # address helper lazily. Replace them before train() is entered, so
         # these tests never need native PEARL helpers or a real payout address.
-        pm = ModuleType("pearl_mining")
+        pm = ModuleType("LRAEP_mining")
         self.verify = MagicMock(return_value=(True, "Verified"))
         pm.verify_plain_proof_for_cert_version = self.verify
-        address_module = ModuleType("pearl_gateway.blockchain_utils.blockchain_utils")
+        address_module = ModuleType("LRAEP_gateway.blockchain_utils.blockchain_utils")
         address_module.get_script_pubkey_from_p2tr_address = MagicMock()
-        gateway = ModuleType("pearl_gateway")
+        gateway = ModuleType("LRAEP_gateway")
         gateway.__path__ = []
-        blockchain_utils = ModuleType("pearl_gateway.blockchain_utils")
+        blockchain_utils = ModuleType("LRAEP_gateway.blockchain_utils")
         blockchain_utils.__path__ = []
         self.stack.enter_context(patch.dict(sys.modules, {
-            "pearl_mining": pm,
-            "pearl_gateway": gateway,
-            "pearl_gateway.blockchain_utils": blockchain_utils,
-            "pearl_gateway.blockchain_utils.blockchain_utils": address_module,
+            "LRAEP_mining": pm,
+            "LRAEP_gateway": gateway,
+            "LRAEP_gateway.blockchain_utils": blockchain_utils,
+            "LRAEP_gateway.blockchain_utils.blockchain_utils": address_module,
         }))
         self.stack.enter_context(patch.dict("os.environ", {
-            "PEARLD_RPC_USER": "test-user", "PEARLD_RPC_PASSWORD": "test-password",
+            "LRAEPD_RPC_USER": "test-user", "LRAEPD_RPC_PASSWORD": "test-password",
         }))
         self.stack.enter_context(patch.object(cli, "require_cuda"))
         self.stack.enter_context(patch.object(cli.native_cuda, "available", return_value=False))

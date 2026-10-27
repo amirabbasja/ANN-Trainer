@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import torch
 
-from pearl_trainer.protocol import TrainingConfig, load_official_helpers, prepare_batch
+from LRAEP_trainer.protocol import TrainingConfig, load_official_helpers, prepare_batch
 
 
 class FullRangeSignals:
@@ -29,8 +29,8 @@ class PreparationReferenceTests(unittest.TestCase):
     def setUpClass(cls):
         root = Path(__file__).resolve().parents[1]
         try:
-            load_official_helpers(root / ".official" / "pearl")
-            import pearl_mining as pm
+            load_official_helpers(root / "src" / "LRAEP_helpers")
+            import LRAEP_mining as pm
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.pm = pm

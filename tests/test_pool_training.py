@@ -14,11 +14,11 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-from pearl_trainer.config import DEFAULT_CONFIG
-from pearl_trainer import pool_training as worker
-from pearl_trainer.pool_client import JobSnapshot, PoolAuthenticationError, ShareResult
-from pearl_trainer.pool_protocol import PoolJob
-from pearl_trainer.protocol import TrainingConfig
+from LRAEP_trainer.config import DEFAULT_CONFIG
+from LRAEP_trainer import pool_training as worker
+from LRAEP_trainer.pool_client import JobSnapshot, PoolAuthenticationError, ShareResult
+from LRAEP_trainer.pool_protocol import PoolJob
+from LRAEP_trainer.protocol import TrainingConfig
 
 
 class PoolLoopTests(unittest.TestCase):
@@ -38,7 +38,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.is_current.return_value = True
         self.session.submit.return_value = ShareResult(True, None)
         self.factory = self.stack.enter_context(
-            patch("pearl_trainer.pool_client.PoolSession", return_value=self.session)
+            patch("LRAEP_trainer.pool_client.PoolSession", return_value=self.session)
         )
         self.stack.enter_context(patch.object(worker, "load_official_helpers"))
         self.stack.enter_context(patch.object(worker.torch.cuda, "is_available", return_value=True))
@@ -58,9 +58,9 @@ class PoolLoopTests(unittest.TestCase):
             patch.object(worker, "verified_pool_share", return_value=(self.proof, bytes(32)))
         )
         self.header = SimpleNamespace(nbits=0x1D00FFFF)
-        native = ModuleType("pearl_mining")
+        native = ModuleType("LRAEP_mining")
         native.IncompleteBlockHeader = SimpleNamespace(from_bytes=MagicMock(return_value=self.header))
-        self.stack.enter_context(patch.dict(sys.modules, {"pearl_mining": native}))
+        self.stack.enter_context(patch.dict(sys.modules, {"LRAEP_mining": native}))
 
     def test_completed_last_batch_verifies_and_submits_at_share_target(self):
         self.assertEqual(worker.run_pool_training(self.configuration), 0)
@@ -151,7 +151,7 @@ class PoolLoopTests(unittest.TestCase):
         self.factory.assert_not_called()
 
     def test_time_limit_interrupts_a_waiting_authentication(self):
-        from pearl_trainer.pool_transport import PoolConnectionError
+        from LRAEP_trainer.pool_transport import PoolConnectionError
 
         self.configuration["training"]["max_seconds"] = 0.05
 
@@ -169,7 +169,7 @@ class PoolLoopTests(unittest.TestCase):
         self.search.assert_not_called()
 
     def test_unsupported_pool_messages_stop_without_reconnect(self):
-        from pearl_trainer.pool_client import PoolCompatibilityError
+        from LRAEP_trainer.pool_client import PoolCompatibilityError
 
         self.session.wait_job.side_effect = PoolCompatibilityError("unsupported certificate")
         with self.assertRaises(PoolCompatibilityError):
@@ -179,7 +179,7 @@ class PoolLoopTests(unittest.TestCase):
 
 
 class PoolStatusTests(unittest.TestCase):
-    def test_rate_uses_pearl_mac_work_units_instead_of_tile_attempts_or_double_ops(self):
+    def test_rate_uses_LRAEP_mac_work_units_instead_of_tile_attempts_or_double_ops(self):
         cfg = TrainingConfig(m=128, n=128, k=2048)
         stats = worker.PoolTrainingStats(batches=2, attempts=512, submitted=3,
                                          accepted=2, rejected=1, stale=4)
@@ -200,21 +200,21 @@ class LocalGPUIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         from pathlib import Path
         import torch
-        from pearl_trainer.protocol import load_official_helpers
+        from LRAEP_trainer.protocol import load_official_helpers
 
         if not torch.cuda.is_available():
             raise unittest.SkipTest("CUDA unavailable")
         cls.root = Path(__file__).resolve().parents[1]
         try:
-            load_official_helpers(cls.root / ".official" / "pearl")
-            import pearl_mining as pm
+            load_official_helpers(cls.root / "src" / "LRAEP_helpers")
+            import LRAEP_mining as pm
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.pm = pm
 
     def check_exchange(self, compression, *, m=128, n=128, k=2048):
         cfg = copy.deepcopy(DEFAULT_CONFIG)
-        cfg["official_source"] = str(self.root / ".official" / "pearl")
+        cfg["official_source"] = str(self.root / "src" / "LRAEP_helpers")
         cfg["training"].update(m=m, n=n, k=k, max_batches=1, max_seconds=15)
         cfg["pool"].update(protocol="kryptex", host="127.0.0.1", tls=False,
                            wallet="local-test-account", worker="gpu-test",

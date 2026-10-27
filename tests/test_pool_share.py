@@ -7,14 +7,14 @@ import unittest
 import numpy as np
 import torch
 
-from pearl_trainer.gpu import gpu_transcripts
-from pearl_trainer.protocol import (
+from LRAEP_trainer.gpu import gpu_transcripts
+from LRAEP_trainer.protocol import (
     TrainingConfig, load_official_helpers, matching_tiles, pool_share_target,
     prepare_batch, verified_pool_share,
 )
 
 try:
-    import pearl_mining as pm
+    import LRAEP_mining as pm
 except ImportError:
     pm = None
 
@@ -51,8 +51,8 @@ class OfficialPoolShareTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         source = Path(os.environ.get(
-            "PEARL_OFFICIAL_SOURCE",
-            str(Path(__file__).resolve().parents[1] / ".official" / "pearl"),
+            "LRAEP_OFFICIAL_SOURCE",
+            str(Path(__file__).resolve().parents[1] / "src" / "LRAEP_helpers"),
         ))
         if not source.exists():
             raise unittest.SkipTest("pinned official PEARL helper checkout unavailable")
@@ -60,7 +60,7 @@ class OfficialPoolShareTests(unittest.TestCase):
             raise unittest.SkipTest("CUDA device unavailable")
         try:
             load_official_helpers(source)
-            import pearl_mining as native
+            import LRAEP_mining as native
         except ImportError as exc:
             raise unittest.SkipTest(f"official native/helper dependency unavailable: {exc}") from None
         cls.native = native

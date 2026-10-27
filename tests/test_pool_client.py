@@ -9,10 +9,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pearl_trainer.pool_client import (
+from LRAEP_trainer.pool_client import (
     PoolAuthenticationError, PoolCompatibilityError, PoolSession, ShareResult, StalePoolJob,
 )
-from pearl_trainer.pool_transport import PoolConnectionError
+from LRAEP_trainer.pool_transport import PoolConnectionError
 
 
 def job_message(job_id="job-1", *, cert=3, target="1234"):
@@ -460,7 +460,7 @@ class PoolSessionTests(unittest.TestCase):
             reader.close()
         with MockPool(script) as pool, PoolSession(pool.settings()) as session:
             snapshot = session.wait_job(1)
-            with patch("pearl_trainer.pool_client.PoolTransport") as transport:
+            with patch("LRAEP_trainer.pool_client.PoolTransport") as transport:
                 session._handle({"method": "client.reconnect", "params": ["untrusted.example", 9999]})
                 transport.assert_not_called()
             self.assertFalse(session.is_current(snapshot))

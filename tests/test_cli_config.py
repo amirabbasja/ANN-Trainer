@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from pearl_trainer import __main__ as cli
-from pearl_trainer.config import DEFAULT_CONFIG
+from LRAEP_trainer import __main__ as cli
+from LRAEP_trainer.config import DEFAULT_CONFIG
+from LRAEP_trainer.paths import artifacts_dir
 
 
 class ConfigDispatchTests(unittest.TestCase):
@@ -25,7 +26,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.settings["pool"].update(host="localhost", port=19000,
                                      connect_timeout=2, read_timeout=3)
         self.write_config()
-        with patch("pearl_trainer.pool_transport.PoolTransport") as transport, \
+        with patch("LRAEP_trainer.pool_transport.PoolTransport") as transport, \
                 patch.object(cli, "load_official_helpers") as helpers, \
                 patch.object(cli, "require_cuda") as cuda:
             self.assertEqual(cli.main(["--config", str(self.file), "pool-check"]), 0)
@@ -40,7 +41,7 @@ class ConfigDispatchTests(unittest.TestCase):
 
     def test_pool_mode_requires_payout_identity_before_gpu_or_network(self):
         self.write_config()
-        with patch("pearl_trainer.pool_transport.PoolTransport") as transport, \
+        with patch("LRAEP_trainer.pool_transport.PoolTransport") as transport, \
                 patch.object(cli, "load_official_helpers") as helpers, \
                 self.assertLogs(cli.LOG, level="ERROR") as messages:
             self.assertEqual(cli.main(["--config", str(self.file)]), 1)
@@ -52,7 +53,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.settings["pool"]["host"] = "pool.pearlhash.xyz"
         self.settings["pool"]["protocol"] = "pearlhash"
         self.write_config()
-        with patch("pearl_trainer.pool_transport.PoolTransport") as transport, \
+        with patch("LRAEP_trainer.pool_transport.PoolTransport") as transport, \
                 self.assertLogs(cli.LOG, level="ERROR") as messages:
             self.assertEqual(cli.main(["--config", str(self.file)]), 1)
         self.assertIn("Pearlhash uses a separate", " ".join(messages.output))
@@ -85,8 +86,8 @@ class ConfigDispatchTests(unittest.TestCase):
         self.assertEqual(args.rpc_username, "file-user")
         self.assertEqual(args.rpc_password, "file-password")
         self.assertEqual(args.address, "file-address")
-        self.assertEqual(args.output_dir, str(self.file.parent / "artifacts"))
-        helpers.assert_called_once_with(str(self.file.parent / ".official/pearl"))
+        self.assertEqual(args.output_dir, str(artifacts_dir().resolve()))
+        helpers.assert_called_once_with(str(self.file.parent / "src/LRAEP_helpers"))
 
     def test_solo_mode_without_subcommand_runs_solo_training(self):
         self.settings["mode"] = "solo"

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "mode": "pool",
-  "official_source": ".official/pearl",
+  "official_source": "src/LRAEP_helpers",
   "device": "cuda:0",
   "pool": {
     "host": "prl.kryptex.network",
@@ -18,6 +18,14 @@
     "protocol": "kryptex",
     "compression": "none",
     "certificate_version": null,
-    "agent": "custom-pearl-trainer/0.1"
+    "agent": "LRAEP-trainer/0.1"
+  },
+  "vpn": {
+    "enabled": false,
+    "link": "",
+    "core_path": null,
+    "startup_timeout": 10,
+    "links_file": "links.txt",
+    "check_url": "https://api.ipify.org"
   }
 }

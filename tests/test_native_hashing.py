@@ -12,12 +12,12 @@ import torch
 class NativeHashingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from pearl_trainer.native_cuda import load_native
+        from LRAEP_trainer.native_cuda import load_native
 
         cls.library = load_native()
         if cls.library is None:
             raise unittest.SkipTest("native CUDA helper unavailable")
-        cls.hash_candidates = cls.library.pearl_hash_candidates
+        cls.hash_candidates = cls.library.LRAEP_hash_candidates
         cls.hash_candidates.argtypes = [
             ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,

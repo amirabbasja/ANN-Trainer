@@ -1,11 +1,13 @@
-# Kryptex PEARL wire protocol and implementation evidence
+# LRAEP Kryptex wire protocol and implementation evidence
 
 Reviewed October 25, 2026. The user authorized **"Allow protocol references
 only"** after the original restriction to PEARL's official helpers. This
 permits reading public networking documentation and captured messages; it
 does not authorize using an external trainer application. GPU arithmetic and
 proof construction continue to use this project's code and official PEARL
-helpers.
+helpers. The required upstream subset is now bundled under
+`src/LRAEP_helpers` with LRAEP package names, retained attribution, and a source
+checksum manifest. The rename leaves network and proof bytes unchanged.
 
 ## Pinned references
 
@@ -32,7 +34,7 @@ The subscribe request may receive no reply; authorization must not wait for it.
 Optional gzip uses one object-form authorization:
 
 ```json
-{"id":1,"method":"mining.authorize","params":{"wallet":"WALLET.worker","agent":"custom-pearl-trainer/0.1","password":"x","type":"v2"}}
+{"id":1,"method":"mining.authorize","params":{"wallet":"WALLET.worker","agent":"LRAEP-trainer/0.1","password":"x","type":"v2"}}
 ```
 
 Only a successful matching reply explicitly confirming `type: "v2"` enables

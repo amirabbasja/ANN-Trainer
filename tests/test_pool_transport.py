@@ -6,7 +6,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from pearl_trainer.pool_transport import MAX_IO, PoolConnectionError, PoolTransport
+from LRAEP_trainer.pool_transport import MAX_IO, PoolConnectionError, PoolTransport
 
 
 class PoolTransportTests(unittest.TestCase):
@@ -36,7 +36,7 @@ class PoolTransportTests(unittest.TestCase):
         with self.assertRaises(PoolConnectionError):
             PoolTransport("localhost", 9000, ca_file="ca.pem")
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_no_handshake_no_framing_and_fragmented_reads(self, connect):
         connection = connect.return_value
         connection.recv.side_effect = [b"\x00", b"ab\n", b"\xff"]
@@ -53,7 +53,7 @@ class PoolTransportTests(unittest.TestCase):
             self.assertIsNone(transport.tls_version)
         connection.close.assert_called_once()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_verified_tls_context_and_hostname(self, connect):
         # A real default context proves that verification is enabled.
         real_context = ssl.create_default_context()
@@ -63,7 +63,7 @@ class PoolTransportTests(unittest.TestCase):
         secured = Mock()
         secured.version.return_value = "TLSv1.3"
         context.wrap_socket = Mock(return_value=secured)
-        with patch("pearl_trainer.pool_transport.ssl.create_default_context", return_value=context) as create:
+        with patch("LRAEP_trainer.pool_transport.ssl.create_default_context", return_value=context) as create:
             with PoolTransport("pool.pearlhash.xyz", 9443, tls=True, ca_file="custom.pem") as transport:
                 create.assert_called_once_with(cafile="custom.pem")
                 context.wrap_socket.assert_called_once_with(connect.return_value, server_hostname="pool.pearlhash.xyz")
@@ -71,26 +71,26 @@ class PoolTransportTests(unittest.TestCase):
                 secured.sendall.assert_not_called()
         secured.close.assert_called_once()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_tls_failure_closes_and_does_not_fallback(self, connect):
         context = Mock()
         context.wrap_socket.side_effect = ssl.SSLCertVerificationError("private certificate detail")
-        with patch("pearl_trainer.pool_transport.ssl.create_default_context", return_value=context):
+        with patch("LRAEP_trainer.pool_transport.ssl.create_default_context", return_value=context):
             with self.assertRaisesRegex(PoolConnectionError, "TLS verification") as caught:
                 PoolTransport("localhost", 9443, tls=True).open()
         connect.assert_called_once()
         connect.return_value.close.assert_called_once()
         self.assertNotIn("private", str(caught.exception))
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection", side_effect=TimeoutError("secret detail"))
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection", side_effect=TimeoutError("secret detail"))
     def test_connect_timeout_is_sanitized(self, connect):
         with self.assertRaisesRegex(PoolConnectionError, "timed out") as caught:
             PoolTransport("localhost", 9000).open()
         self.assertNotIn("secret", str(caught.exception))
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_tls_ca_failure_does_not_connect(self, connect):
-        with patch("pearl_trainer.pool_transport.ssl.create_default_context", side_effect=OSError("private path")):
+        with patch("LRAEP_trainer.pool_transport.ssl.create_default_context", side_effect=OSError("private path")):
             with self.assertRaisesRegex(PoolConnectionError, "certificate authorities") as caught:
                 PoolTransport("localhost", 9443, tls=True, ca_file="missing.pem").open()
         self.assertNotIn("private", str(caught.exception))
@@ -102,7 +102,7 @@ class PoolTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(PoolConnectionError, "not open"):
                 operation()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_io_failure_closes_connection(self, connect):
         for method in ["send", "receive"]:
             for error in [TimeoutError("secret"), ConnectionResetError("secret")]:
@@ -118,7 +118,7 @@ class PoolTransportTests(unittest.TestCase):
                     with self.assertRaisesRegex(PoolConnectionError, "not open"):
                         transport.receive()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_eof_is_distinct_from_a_fragment(self, connect):
         connect.return_value.recv.return_value = b""
         transport = PoolTransport("localhost", 9000).open()
@@ -126,7 +126,7 @@ class PoolTransportTests(unittest.TestCase):
             transport.receive()
         connect.return_value.close.assert_called_once()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_io_size_bounds(self, connect):
         with PoolTransport("localhost", 9000) as transport:
             for value in [0, -1, True, 1.5, MAX_IO + 1]:
@@ -138,7 +138,7 @@ class PoolTransportTests(unittest.TestCase):
             connect.return_value.recv.assert_not_called()
             connect.return_value.sendall.assert_not_called()
 
-    @patch("pearl_trainer.pool_transport.socket.create_connection")
+    @patch("LRAEP_trainer.pool_transport.socket.create_connection")
     def test_open_and_close_are_idempotent(self, connect):
         transport = PoolTransport("localhost", 9000)
         self.assertIs(transport.open(), transport)

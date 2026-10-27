@@ -5,12 +5,12 @@ import unittest
 import numpy as np
 from blake3 import blake3
 
-from pearl_trainer.protocol import TrainingConfig, adjusted_target, matching_tiles
+from LRAEP_trainer.protocol import TrainingConfig, adjusted_target, matching_tiles
 
 try:
-    import pearl_mining
+    import LRAEP_mining
 except ImportError:
-    pearl_mining = None
+    LRAEP_mining = None
 
 
 class TranscriptTargetTests(unittest.TestCase):
@@ -37,7 +37,7 @@ class TranscriptTargetTests(unittest.TestCase):
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 TrainingConfig(**overrides)
 
-    @unittest.skipIf(pearl_mining is None, "build official helper to test target adjustment")
+    @unittest.skipIf(LRAEP_mining is None, "build official helper to test target adjustment")
     def test_official_target_scaling_and_overflow(self):
         config = TrainingConfig()
         factor = config.tile_h * config.tile_w * config.k

@@ -11,15 +11,15 @@ import torch
 class NativeMerkleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from pearl_trainer.protocol import load_official_helpers
+        from LRAEP_trainer.protocol import load_official_helpers
 
         root = Path(__file__).resolve().parents[1]
         try:
-            load_official_helpers(root / ".official" / "pearl")
+            load_official_helpers(root / "src" / "LRAEP_helpers")
             from miner_base.matrix_merkle_tree import MatrixMerkleTree
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
-        from pearl_trainer import native_cuda
+        from LRAEP_trainer import native_cuda
 
         native_cuda.load_native("cuda:0")
         cls.native = native_cuda

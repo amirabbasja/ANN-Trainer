@@ -1,8 +1,10 @@
-# Standalone client for Pearlhash and Kryptex
+# LRAEP client for Kryptex and Pearlhash diagnostics
 
-The custom Python client implements Kryptex authentication, incoming jobs,
+The LRAEP Python client implements Kryptex authentication, incoming jobs,
 GPU work, official PEARL proof verification, and share submission. It uses
-Python libraries and PEARL's official helper files. It launches no external
+Python libraries and a renamed subset of PEARL's official helper files bundled
+in `src/LRAEP_helpers`. Their original license and provenance notices remain
+included. It launches no external
 trainer application. Pearlhash training remains unsupported because its
 custom job/share wire schema has not been established.
 
@@ -23,10 +25,10 @@ is never disabled.
 Run from `/workspace/trainer`:
 
 ```bash
-.venv/bin/python -m pearl_trainer --config config.json self-test
-.venv/bin/python -m pearl_trainer --config config.json pool-check
-.venv/bin/python -m pearl_trainer --config config.json pool-login-check
-.venv/bin/python -m pearl_trainer --config config.json pool
+.venv/bin/python -m LRAEP_trainer --config config.json self-test
+.venv/bin/python -m LRAEP_trainer --config config.json pool-check
+.venv/bin/python -m LRAEP_trainer --config config.json pool-login-check
+.venv/bin/python -m LRAEP_trainer --config config.json pool
 ```
 
 - `self-test`: offline GPU arithmetic and official proof checks.
@@ -53,7 +55,7 @@ not the native PEARL PlainProof structure.
 A configured `1`, `2`, or `3` is a fallback for a missing field. An explicit
 unknown job version is rejected. No activation height is hardcoded.
 
-`pool.agent` defaults to `custom-pearl-trainer/0.1`. The configuration's
+`pool.agent` defaults to `LRAEP-trainer/0.1`. The configuration's
 `protocol_documentation` value is informational and is never run as code.
 
 Kryptex's default/minimum static difficulty is `2097152`. A password `d=N`
@@ -62,15 +64,17 @@ in the job and applies the official matrix-work/rank adjustment.
 
 ## Evidence and remaining limits
 
-The user authorized reading published protocol references only. Networking
-was implemented independently from the permitted message specifications and
-captures listed in `kryptex-protocol-review.md`; no third-party trainer
-application, GPU kernel, or proof algorithm was used.
+The user authorized reading published protocol references only for pool
+networking. Networking was implemented independently from the permitted
+message specifications and captures listed in `kryptex-protocol-review.md`.
+Official PEARL proof helpers and their required dependencies are bundled;
+no external miner application, GPU implementation, or networking client is used.
 
 Mock sessions and offline official proof checks do not establish live account
-credit. The provided wallet field is empty. Authentication, accepted shares,
-account credit, and payouts must be checked after configuring your own wallet.
-A successful TCP check alone does not establish those results.
+credit. Shareable templates leave the wallet empty. The local user's wallet
+is configured, and verified TLS authentication and live V3 job reception have
+been confirmed. No live accepted share, credited balance, or payout has been
+confirmed. A successful TCP check alone does not establish those results.
 
 For Pearlhash, its operator must still provide the login, job, target,
 certificate-version, and proof-submission formats. Its dashboard statistics
