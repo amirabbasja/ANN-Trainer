@@ -17,7 +17,7 @@ class PoolTransportTests(unittest.TestCase):
             self.assertNotIn("secret", str(caught.exception))
 
     def test_valid_hosts_and_ipv6(self):
-        for host in ["pool.pearlhash.xyz", "localhost", "127.0.0.1", "::1", "[::1]", "pool.example."]:
+        for host in ["pool.example", "localhost", "127.0.0.1", "::1", "[::1]", "pool.example."]:
             with self.subTest(host=host):
                 transport = PoolTransport(host, 9000)
                 self.assertTrue(transport.endpoint.endswith(":9000"))
@@ -40,8 +40,8 @@ class PoolTransportTests(unittest.TestCase):
     def test_no_handshake_no_framing_and_fragmented_reads(self, connect):
         connection = connect.return_value
         connection.recv.side_effect = [b"\x00", b"ab\n", b"\xff"]
-        with PoolTransport("pool.pearlhash.xyz", 9000, connect_timeout=3, read_timeout=7) as transport:
-            connect.assert_called_once_with(("pool.pearlhash.xyz", 9000), timeout=3)
+        with PoolTransport("pool.example", 9000, connect_timeout=3, read_timeout=7) as transport:
+            connect.assert_called_once_with(("pool.example", 9000), timeout=3)
             connection.settimeout.assert_called_once_with(7)
             connection.sendall.assert_not_called()
             payload = b"\x00opaque\n\xff"
@@ -64,9 +64,9 @@ class PoolTransportTests(unittest.TestCase):
         secured.version.return_value = "TLSv1.3"
         context.wrap_socket = Mock(return_value=secured)
         with patch("LRAEP_trainer.pool_transport.ssl.create_default_context", return_value=context) as create:
-            with PoolTransport("pool.pearlhash.xyz", 9443, tls=True, ca_file="custom.pem") as transport:
+            with PoolTransport("pool.example", 9443, tls=True, ca_file="custom.pem") as transport:
                 create.assert_called_once_with(cafile="custom.pem")
-                context.wrap_socket.assert_called_once_with(connect.return_value, server_hostname="pool.pearlhash.xyz")
+                context.wrap_socket.assert_called_once_with(connect.return_value, server_hostname="pool.example")
                 self.assertEqual(transport.tls_version, "TLSv1.3")
                 secured.sendall.assert_not_called()
         secured.close.assert_called_once()

@@ -20,21 +20,26 @@ class ConfigTests(unittest.TestCase):
         self.path.write_text(json.dumps(value))
         return load_config(self.path)
 
-    def test_defaults_and_empty_wallet_are_valid(self):
+    def test_defaults_and_empty_pool_identities_are_valid(self):
         result = self.load({"version": 1})
         self.assertEqual(result["mode"], "pool")
         self.assertEqual(result["device"], "cuda:0")
         self.assertEqual(result["official_source"], str(self.directory / "src/LRAEP_helpers"))
         self.assertEqual(result["training"]["output_dir"], str(artifacts_dir().resolve()))
-        self.assertEqual(result["pool"]["host"], "prl.kryptex.network")
+        self.assertEqual(result["pool"]["host"], "")
         self.assertEqual(result["pool"]["port"], 7048)
         self.assertFalse(result["pool"]["tls"])
-        self.assertEqual(result["pool"]["wallet"], "")
+        self.assertEqual(result["pool"]["WR_wallet"], "")
+        self.assertEqual(result["pool"]["KEX_uname"], "")
+        self.assertNotIn("wallet", result["pool"])
         self.assertEqual(result["pool"]["password"], "x")
-        self.assertEqual(result["pool"]["protocol"], "auto")
+        self.assertEqual(result["pool"]["protocol"], "KEX")
+        self.assertIsNone(result["pool"]["protocol_documentation"])
         self.assertEqual(result["pool"]["compression"], "none")
         self.assertIsNone(result["pool"]["certificate_version"])
         self.assertEqual(result["pool"]["agent"], "LRAEP-trainer/0.1")
+        self.assertTrue(result["pool"]["stop_on_unknown_request"])
+        self.assertIsNone(result["pool"]["unknown_request_dir"])
         self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
 
     def test_consensus_proof_input_limit_is_checked_before_gpu_work(self):
@@ -58,7 +63,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["pool"]["protocol_documentation"], str(self.directory / "docs/protocol.json"))
 
     def test_documentation_url_is_preserved_without_loading_it(self):
-        url = "https://pool.kryptex.com/en/prl#framing"
+        url = "https://pool.example/en/prl#framing"
         result = self.load({"version": 1, "pool": {"protocol_documentation": url}})
         self.assertEqual(result["pool"]["protocol_documentation"], url)
 
@@ -70,21 +75,89 @@ class ConfigTests(unittest.TestCase):
 
     def test_explicit_pool_protocol_options_are_preserved(self):
         result = self.load({"version": 1, "pool": {
-            "protocol": "kryptex", "compression": "gzip", "certificate_version": 3,
-            "agent": "my-custom-trainer/2", "wallet": "my-wallet", "worker": "rig2",
+            "protocol": "KEX", "compression": "gzip", "certificate_version": 3,
+            "agent": "my-custom-trainer/2", "KEX_uname": "my-account", "WR_wallet": "my-wr-address",
+            "worker": "rig2",
             "password": "d=2097152",
         }})
-        self.assertEqual(result["pool"]["protocol"], "kryptex")
+        self.assertEqual(result["pool"]["protocol"], "KEX")
         self.assertEqual(result["pool"]["compression"], "gzip")
         self.assertEqual(result["pool"]["certificate_version"], 3)
         self.assertEqual(result["pool"]["agent"], "my-custom-trainer/2")
-        self.assertEqual(result["pool"]["wallet"], "my-wallet")
+        self.assertEqual(result["pool"]["KEX_uname"], "my-account")
+        self.assertEqual(result["pool"]["WR_wallet"], "my-wr-address")
         self.assertEqual(result["pool"]["password"], "d=2097152")
-        self.assertEqual(self.load({"version": 1, "pool": {"protocol": "pearlhash"}})["pool"]["protocol"], "pearlhash")
+        self.assertEqual(self.load({"version": 1, "pool": {"protocol": "pearlhash"}})["pool"]["protocol"], "WR")
+        self.assertEqual(self.load({"version": 1, "pool": {"protocol": "WR"}})["pool"]["protocol"], "WR")
+
+    def test_pool_identity_fields_are_separate_and_case_sensitive(self):
+        for protocol in ("KEX", "WR"):
+            loaded = self.load({"version": 1, "pool": {
+                "protocol": protocol, "KEX_uname": "kex-account", "WR_wallet": "wr-payout-address",
+            }})
+            self.assertEqual(loaded["pool"]["KEX_uname"], "kex-account")
+            self.assertEqual(loaded["pool"]["WR_wallet"], "wr-payout-address")
+        for field in ("wallet", "kex_uname", "wr_wallet", "KEX_wallet", "WR_uname"):
+            with self.subTest(field=field), self.assertRaisesRegex(ConfigError, "unknown field") as caught:
+                self.load({"version": 1, "pool": {field: "PRIVATE_IDENTITY"}})
+            self.assertNotIn("PRIVATE_IDENTITY", str(caught.exception))
+
+    def test_pool_identity_fields_require_strings_without_controls(self):
+        for field in ("KEX_uname", "WR_wallet"):
+            for value in (None, True, 17, [], {}, "PRIVATE_IDENTITY\n"):
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ConfigError, field) as caught:
+                    self.load({"version": 1, "pool": {field: value}})
+                self.assertNotIn("PRIVATE_IDENTITY", str(caught.exception))
+
+    def test_pool_profiles_resolve_paths_beside_one_configuration_file(self):
+        loaded = self.load({"version": 1, "pool": {
+            "KEX": {"host": "kex.pool.example", "port": 8048, "tls": True,
+                    "ca_file": "certs/kex.pem", "compression": "gzip",
+                    "protocol_documentation": "docs/kex.md"},
+            "WR": {"host": "wr.pool.example", "port": 9000, "certificate_version": 3,
+                   "protocol_documentation": "https://docs.example/wr#protocol"},
+        }})
+        self.assertEqual(loaded["pool"]["KEX"]["ca_file"], str(self.directory / "certs/kex.pem"))
+        self.assertEqual(loaded["pool"]["KEX"]["protocol_documentation"], str(self.directory / "docs/kex.md"))
+        self.assertEqual(loaded["pool"]["WR"]["protocol_documentation"], "https://docs.example/wr#protocol")
+        self.assertEqual(loaded["pool"]["WR"]["certificate_version"], 3)
+        self.assertFalse(loaded["pool"]["WR"]["tls"])
+
+    def test_inactive_pool_profiles_are_validated_with_safe_field_errors(self):
+        for field, value in (("host", "user:PRIVATE_PROFILE_VALUE@pool.example"), ("port", True),
+                             ("port", 65536), ("tls", 0), ("ca_file", 7),
+                             ("compression", "unknown"), ("certificate_version", True),
+                             ("certificate_version", 4),
+                             ("protocol_documentation", "https://user:PRIVATE_PROFILE_VALUE@docs.example")):
+            with self.subTest(field=field), self.assertRaisesRegex(ConfigError, f"pool.WR.{field}") as caught:
+                self.load({"version": 1, "pool": {"protocol": "KEX", "WR": {field: value}}})
+            self.assertNotIn("PRIVATE_PROFILE_VALUE", str(caught.exception))
+        with self.assertRaisesRegex(ConfigError, "pool.WR.ca_file requires pool.WR.tls"):
+            self.load({"version": 1, "pool": {"WR": {"ca_file": "cert.pem"}}})
+
+    def test_pool_profiles_only_allow_connection_settings(self):
+        for field in ("WR_wallet", "KEX_uname", "worker", "password", "protocol", "PRIVATE_PROFILE_FIELD"):
+            with self.subTest(field=field), self.assertRaisesRegex(ConfigError, "pool.WR contains an unknown field") as caught:
+                self.load({"version": 1, "pool": {"WR": {field: "PRIVATE_PROFILE_VALUE"}}})
+            self.assertNotIn("PRIVATE_PROFILE_VALUE", str(caught.exception))
+            self.assertNotIn("PRIVATE_PROFILE_FIELD", str(caught.exception))
+        for value in (None, [], "profile", True):
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "pool.KEX must be an object"):
+                self.load({"version": 1, "pool": {"KEX": value}})
+
+    def test_unknown_request_settings_have_strict_types_and_relative_paths(self):
+        result = self.load({"version": 1, "pool": {
+            "stop_on_unknown_request": False, "unknown_request_dir": "records/unknown",
+        }})
+        self.assertFalse(result["pool"]["stop_on_unknown_request"])
+        self.assertEqual(result["pool"]["unknown_request_dir"], str(self.directory / "records/unknown"))
+        for value in (0, 1, None, "true", []):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                self.load({"version": 1, "pool": {"stop_on_unknown_request": value}})
 
     def test_invalid_protocol_compression_and_certificate_versions_are_rejected(self):
         for field, values in {
-            "protocol": ["stratum", "Kryptex", True, None, []],
+            "protocol": ["stratum", "kex", "wr", True, None, []],
             "compression": ["zstd", "auto", True, None, []],
             "certificate_version": [True, False, "3", 0, -1, 4, 3.0],
         }.items():
@@ -149,13 +222,17 @@ class ConfigTests(unittest.TestCase):
                 self.load({"version": 1, section: {field: value}})
 
     def test_host_accepts_names_and_ips_but_rejects_urls_and_credentials(self):
-        for host in ("prl.kryptex.network", "localhost", "127.0.0.1", "::1"):
+        for host in ("", "pool.example", "localhost", "127.0.0.1", "::1"):
             with self.subTest(host=host):
                 self.assertEqual(self.load({"version": 1, "pool": {"host": host}})["pool"]["host"], host)
-        for host in ("stratum+tcp://prl.kryptex.network", "user:secret@prl.kryptex.network",
-                     "prl.kryptex.network:7048", "bad host", "a..b", "-bad.example"):
+        for host in ("stratum+tcp://pool.example", "user:secret@pool.example",
+                     "pool.example:7048", "bad host", " ", "a..b", "-bad.example"):
             with self.subTest(host=host), self.assertRaises(ConfigError):
                 self.load({"version": 1, "pool": {"host": host}})
+
+    def test_automatic_pool_detection_requires_explicit_adapter_selection(self):
+        with self.assertRaisesRegex(ConfigError, "explicitly select KEX or WR"):
+            self.load({"version": 1, "pool": {"protocol": "auto", "host": "pool.example"}})
 
     def test_tls_and_ca_settings_must_match(self):
         for pool in ({"tls": "false"}, {"tls": 0}, {"ca_file": "ca.pem"}):

@@ -26,7 +26,8 @@ class PoolLoopTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.configuration = copy.deepcopy(DEFAULT_CONFIG)
-        self.configuration["pool"].update(protocol="kryptex", wallet="test-account",
+        self.configuration["pool"].update(protocol="KEX", host="pool.example", KEX_uname="test-account",
+                                           WR_wallet="wr-test-wallet",
                                            worker="test-rig", reconnect_delay=0)
         self.configuration["training"].update(m=128, n=128, max_batches=1)
         self.job = PoolJob("job-one", bytes(76), 130000, 3, 1234)
@@ -144,9 +145,44 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_not_called()
         self.monitor.assert_not_called()
 
-    def test_pearlhash_never_falls_back_to_kryptex_dialect(self):
-        self.configuration["pool"].update(protocol="auto", host="pool.pearlhash.xyz")
-        with self.assertRaisesRegex(RuntimeError, "Pearlhash"):
+    def test_pearlhash_login_selects_its_own_adapter_without_gpu(self):
+        self.configuration["pool"].update(protocol="WR", host="pool.example")
+        with patch("LRAEP_trainer.wr_client.WRSession", return_value=self.session) as wr:
+            self.assertEqual(worker.run_pool_training(self.configuration, login_only=True), 0)
+        wr.assert_called_once()
+        self.factory.assert_not_called()
+        self.prepare.assert_not_called()
+
+    def test_wr_alias_and_host_selection(self):
+        for protocol, expected in (("WR", "WR"), ("pearlhash", "WR"), ("KEX", "KEX")):
+            for host in ("pool.example", "localhost", "127.0.0.1"):
+                with self.subTest(protocol=protocol, host=host):
+                    self.assertEqual(worker.select_pool_protocol({"host": host, "protocol": protocol}), expected)
+        with self.assertRaisesRegex(ValueError, "explicitly select KEX or WR"):
+            worker.select_pool_protocol({"host": "pool.example", "protocol": "auto"})
+        for protocol in ("kex", "wr", "unknown", None):
+            with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, "KEX or WR"):
+                worker.select_pool_protocol({"host": "pool.example", "protocol": protocol})
+
+    def test_missing_pool_endpoint_stops_before_helpers_or_session(self):
+        self.configuration["pool"]["host"] = ""
+        with self.assertRaisesRegex(ValueError, "fill pool.host"):
+            worker.run_pool_training(self.configuration)
+        worker.load_official_helpers.assert_not_called()
+        self.factory.assert_not_called()
+        self.prepare.assert_not_called()
+
+    def test_unknown_wr_request_stop_cannot_be_reported_as_normal_completion(self):
+        from LRAEP_trainer.pool_client import PoolCompatibilityError
+
+        self.configuration["pool"].update(protocol="WR", host="pool.example")
+        def start(_settings, stop_event, **_options):
+            self.prepare.side_effect = lambda *_a, **_kw: stop_event.set()
+            self.session.raise_if_failed.side_effect = PoolCompatibilityError("Unknown PearlHash request; training stopped")
+            return self.session
+        with patch("LRAEP_trainer.wr_client.WRSession", side_effect=start), \
+                patch("LRAEP_trainer.wr_work.prepare_wr_batch", self.prepare), \
+                self.assertRaisesRegex(PoolCompatibilityError, "Unknown PearlHash"):
             worker.run_pool_training(self.configuration)
         self.factory.assert_not_called()
 
@@ -216,8 +252,8 @@ class LocalGPUIntegrationTests(unittest.TestCase):
         cfg = copy.deepcopy(DEFAULT_CONFIG)
         cfg["official_source"] = str(self.root / "src" / "LRAEP_helpers")
         cfg["training"].update(m=m, n=n, k=k, max_batches=1, max_seconds=15)
-        cfg["pool"].update(protocol="kryptex", host="127.0.0.1", tls=False,
-                           wallet="local-test-account", worker="gpu-test",
+        cfg["pool"].update(protocol="KEX", host="127.0.0.1", tls=False,
+                           KEX_uname="local-test-account", worker="gpu-test",
                            compression=compression, connect_timeout=3, read_timeout=5)
         header = self.pm.IncompleteBlockHeader(
             version=1, prev_block=bytes(32), merkle_root=bytes(32),
@@ -244,7 +280,7 @@ class LocalGPUIntegrationTests(unittest.TestCase):
                     connection.settimeout(10)
                     request = json.loads(stream.readline())
                     if request["method"] == "mining.subscribe":
-                        # Real Kryptex may never acknowledge this request.
+                        # Real KEX may never acknowledge this request.
                         request = json.loads(stream.readline())
                     self.assertEqual(request["method"], "mining.authorize")
                     reply = {"id": request["id"], "result": True, "error": None}

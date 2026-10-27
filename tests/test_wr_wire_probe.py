@@ -1,4 +1,4 @@
-"""Offline tests for the WildRig wire probe, using a local mock pool."""
+"""Offline tests for the WR wire probe, using a local mock pool."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import threading
 import unittest
 from contextlib import redirect_stdout
 
-from tools.wildrig_wire_probe import Events, Inspector, Relay, main, redact
+from tools.wr_wire_probe import Events, Inspector, Relay, main, redact
 
 
-class WildrigWireProbeTests(unittest.TestCase):
+class WRWireProbeTests(unittest.TestCase):
     def test_redaction_preserves_shape(self):
         message = {"method": "login", "params": {"wallet": "private-label",
                                                    "proof": "abcdefghij"}}

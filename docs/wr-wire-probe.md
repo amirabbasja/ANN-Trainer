@@ -1,39 +1,38 @@
-# Inspect WildRig's Pearlhash wire exchange
+# Inspect WR's Pearlhash wire exchange
 
-`tools/wildrig_wire_probe.py` is a **local TCP relay**, not a Pearlhash protocol
-implementation. It forwards bytes unchanged between a WildRig instance you
+`tools/wr_wire_probe.py` is a **local TCP relay**, not a Pearlhash protocol
+implementation. It forwards bytes unchanged between a WR instance you
 control and the selected pool, while printing timestamped JSON-line events for
 both directions. No packet capture permissions, TLS interception certificate,
-or WildRig source code are needed.
+or WR source code are needed.
 
-The optional `config.LRAEPhash.example.json` template for the external Pearlhash
-pool lists `pool.pearlhash.xyz:9000`
-with plain TCP. Verify the actual host, port, and TLS setting in **your** WildRig
-configuration before using the commands below.
+The shared `config.json` stores the WR connection under `pool.WR`.
+Verify its host, port and TLS settings before using the commands below.
+`config.example.json` is the single public template and leaves hosts blank.
 
 From `/workspace/trainer`:
 
 ```bash
 # Optional: test that the real endpoint accepts a TCP connection; no login sent.
-python3 tools/wildrig_wire_probe.py \
-  --upstream-host pool.pearlhash.xyz --upstream-port 9000 --check-only
+python3 tools/wr_wire_probe.py \
+  --upstream-host <POOL_HOST> --upstream-port 9000 --check-only
 
 # In one terminal, run the relay (bound only to 127.0.0.1:19000).
-python3 tools/wildrig_wire_probe.py \
-  --upstream-host pool.pearlhash.xyz --upstream-port 9000
+python3 tools/wr_wire_probe.py \
+  --upstream-host <POOL_HOST> --upstream-port 9000
 ```
 
-Then, **in your existing WildRig command/config**, change only the pool endpoint
+Then, **in your existing WR command/config**, change only the pool endpoint
 to `stratum+tcp://127.0.0.1:19000` (or `127.0.0.1:19000`, depending on its
 configuration format). Keep the wallet/worker/password you already use; don't
-copy private credentials into the probe's command line. If WildRig has a separate
+copy private credentials into the probe's command line. If WR has a separate
 SSL/TLS setting, disable it **only for its local loopback connection**. Leave
-WildRig running to observe subsequent job updates and, if it finds a share,
+WR running to observe subsequent job updates and, if it finds a share,
 submission and acknowledgement. Stop the probe with Ctrl+C. Nothing changes in
 the trainer's `config.json`.
 
 If the **real** pool endpoint uses TLS, pass `--upstream-tls` (and, if needed,
-`--ca-file /path/to/ca.pem`) to **both** probe commands, but keep the WildRig
+`--ca-file /path/to/ca.pem`) to **both** probe commands, but keep the WR
 connection to the local relay plain TCP. The probe verifies the upstream
 certificate and hostname; it does not accept miner-side TLS. The loopback hop
 is unencrypted, so do not bind or forward the probe to a public interface.
@@ -55,5 +54,5 @@ unexpected credential fields may still put identifying data in the output. Do
 not publish captures without reviewing them. For an **unredacted** local trace
 (including non-JSON bytes as hex), explicitly add `--show-raw` and keep the
 output private. `--field-limit N` changes the display truncation length, not
-the forwarded data. A pool may send no new job for a while, and WildRig will
+the forwarded data. A pool may send no new job for a while, and WR will
 not submit a share until it finds one.

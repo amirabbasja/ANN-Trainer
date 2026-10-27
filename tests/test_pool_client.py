@@ -1,4 +1,4 @@
-"""Kryptex session tests using local sockets and no GPU or remote pool."""
+"""KEX session tests using local sockets and no GPU or remote pool."""
 
 import base64
 import json
@@ -13,6 +13,7 @@ from LRAEP_trainer.pool_client import (
     PoolAuthenticationError, PoolCompatibilityError, PoolSession, ShareResult, StalePoolJob,
 )
 from LRAEP_trainer.pool_transport import PoolConnectionError
+from LRAEP_trainer.pool_protocol import PoolProtocolError
 
 
 def job_message(job_id="job-1", *, cert=3, target="1234"):
@@ -67,7 +68,7 @@ class MockPool:
         return {
             "host": "127.0.0.1", "port": self.port, "tls": False,
             "connect_timeout": 2, "read_timeout": 3,
-            "wallet": "prl1ptest", "worker": "rig", "password": "secret",
+            "KEX_uname": "prl1ptest", "worker": "rig", "password": "secret",
             **extra,
         }
 
@@ -102,6 +103,19 @@ def authorize(peer, *, gzip_reply=False, notify=True):
 
 
 class PoolSessionTests(unittest.TestCase):
+    def test_kex_session_uses_only_kex_identity(self):
+        settings = {"host": "127.0.0.1", "port": 19000, "KEX_uname": "kex-user",
+                    "WR_wallet": "wr-address", "worker": "Rig01"}
+        session = PoolSession(settings)
+        self.addCleanup(session.close)
+        self.assertEqual(session.dialect.auth_requests()[-1]["params"], ["kex-user.Rig01", "x"])
+
+    def test_kex_missing_identity_never_falls_back_to_wr_or_legacy_wallet(self):
+        for other_fields in ({"WR_wallet": "wr-address"}, {"wallet": "legacy-address"},
+                             {"KEX_uname": "", "WR_wallet": "wr-address"}):
+            with self.subTest(other_fields=other_fields), self.assertRaisesRegex(PoolProtocolError, "KEX_uname"):
+                PoolSession({"host": "127.0.0.1", "port": 19000, "worker": "Rig01", **other_fields})
+
     def test_silent_subscribe_auth_and_strict_share_replies(self):
         captured = queue.Queue()
 
@@ -292,7 +306,7 @@ class PoolSessionTests(unittest.TestCase):
         with MockPool(script) as pool, patch.object(PoolSession, "MAX_FRAME_BYTES", 99):
             # The outgoing subscribe/auth still fit the selected cap.
             with self.assertRaises(PoolConnectionError):
-                PoolSession(pool.settings(wallet="w", worker="")).open()
+                PoolSession(pool.settings(KEX_uname="w", worker="")).open()
 
     def test_gzip_requires_matching_auth_ack(self):
         for acknowledge in [False, True]:
@@ -304,6 +318,9 @@ class PoolSessionTests(unittest.TestCase):
                     finish.wait(2)
                     reader.close()
                 with MockPool(script) as pool, PoolSession(pool.settings(compression="gzip")) as session:
+                    # Wait until the mock's complete initial job was sent
+                    # before closing; the auth reply can wake open() first.
+                    self.assertIsNotNone(session.wait_job(1))
                     self.assertEqual(session.negotiated_gzip, acknowledge)
                     finish.set()
 

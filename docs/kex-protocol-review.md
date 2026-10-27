@@ -1,4 +1,4 @@
-# LRAEP Kryptex wire protocol and implementation evidence
+# LRAEP KEX wire protocol and implementation evidence
 
 Reviewed October 25, 2026. The user authorized **"Allow protocol references
 only"** after the original restriction to PEARL's official helpers. This
@@ -13,11 +13,11 @@ checksum manifest. The rename leaves network and proof bytes unchanged.
 
 | Source | Evidence |
 |---|---|
-| [Kryptex CEO Max Malysh's gzip specification](https://gist.github.com/maxmalysh/eaaf4332dbc5ca99d0a78f24a733fffe/45cad9645bd9cd57655851fa823e1299eb4d1a0a) | Object authorization fields, `type: "v2"` confirmation, gzip wrapper (`wbits=31`). Public note; no license is stated in the note. |
-| [Kryptex difficulty note](https://gist.github.com/maxmalysh/f4c29f532e650a114b317e234f1393fb/ad76fb08751477ca70f20434025ffdf8cc2dd955) | `password: "d=N"` or an empty password for the default difficulty. Public note; no license is stated in the note. |
-| [Captured Kryptex TLS session](https://github.com/xXGuilasXx/spark-pearl-miner/blob/65365633e3bff61b0f29d72109622dd22ff5a379/tests/fixtures/capture-kryptex-8048-authorize.jsonl) | Redacted login, literal successful auth reply, exact V3 header/target job fields. Repository: Apache-2.0. |
-| [Kryptex dialect description](https://github.com/xXGuilasXx/spark-pearl-miner/blob/65365633e3bff61b0f29d72109622dd22ff5a379/docs/protocol/kryptex.md) | Submission object and observed target convention; authors report live accepted shares for their implementation. Their result is not a live validation of this project. Repository: Apache-2.0. |
-| [Earlier pool survey](https://github.com/Breakwater-ecosystem/pearl-metal-miner/blob/3d4cc7dadbd1de98ba20e9beb162806a0e70266b/docs/research/2026-08-10-pool-survey.md) | Independent subscribe/authorize/job observations. Its Kryptex share submission was not confirmed live; later evidence above is stronger. Repository: Apache-2.0. |
+| [KEX CEO Max Malysh's gzip specification](https://gist.github.com/maxmalysh/eaaf4332dbc5ca99d0a78f24a733fffe/45cad9645bd9cd57655851fa823e1299eb4d1a0a) | Object authorization fields, `type: "v2"` confirmation, gzip wrapper (`wbits=31`). Public note; no license is stated in the note. |
+| [KEX difficulty note](https://gist.github.com/maxmalysh/f4c29f532e650a114b317e234f1393fb/ad76fb08751477ca70f20434025ffdf8cc2dd955) | `password: "d=N"` or an empty password for the default difficulty. Public note; no license is stated in the note. |
+| [Captured KEX TLS session](../README.md#pool-reference-links) | Redacted login, literal successful auth reply, exact V3 header/target job fields. Repository: Apache-2.0. |
+| [KEX dialect description](../README.md#pool-reference-links) | Submission object and observed target convention; authors report live accepted shares for their implementation. Their result is not a live validation of this project. Repository: Apache-2.0. |
+| [Earlier pool survey](https://github.com/Breakwater-ecosystem/pearl-metal-miner/blob/3d4cc7dadbd1de98ba20e9beb162806a0e70266b/docs/research/2026-08-10-pool-survey.md) | Independent subscribe/authorize/job observations. Its KEX share submission was not confirmed live; later evidence above is stronger. Repository: Apache-2.0. |
 
 These are protocol references. Their applications and GPU/proof source were
 not used to implement the computation. No third-party client implementation
@@ -72,15 +72,15 @@ fallback. No fork height is hardcoded.
 This project checks protocol parsing, authentication/compression negotiation,
 share encoding, stale-work handling, and acceptance semantics with local tests.
 The GPU path is compared with official PEARL reference math and native proof
-verification. Transport checks reached Kryptex TCP and verified TLS endpoints.
+verification. Transport checks reached KEX TCP and verified TLS endpoints.
 The user's payout identity is configured locally, and TLS authentication and
 live V3 job reception have been confirmed. No live accepted share or credited
 user balance has been confirmed. Native CUDA acceleration preserves the same
-Kryptex wire adapter; complete proof exchanges are checked with a local pool
+KEX wire adapter; complete proof exchanges are checked with a local pool
 whose server verifies proofs using PEARL's official native helper.
 
-Kryptex's [OpenAPI specification](https://pool.kryptex.com/openapi.yaml) is
+KEX's [OpenAPI specification](../README.md#pool-reference-links) is
 for monitoring. It is not used as a substitute for the Stratum exchange.
-Its [FP8 notice](https://pool.kryptex.com/articles/pearl-fp8-fork-en), updated
+Its [FP8 notice](../README.md#pool-reference-links), updated
 October 7, describes a draft with no activation date or block set. Runtime
 certificate-version validation remains the compatibility check.

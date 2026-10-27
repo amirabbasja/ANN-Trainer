@@ -4,10 +4,10 @@ import base64
 import gzip
 import unittest
 
-from LRAEP_trainer.pool_protocol import KryptexDialect, PoolJob, PoolProtocolError
+from LRAEP_trainer.pool_protocol import KEXDialect, PoolJob, PoolProtocolError
 
 
-# A real, redacted-wallet Kryptex TLS capture from 2026-09-26, pinned in
+# A real, redacted-wallet KEX TLS capture from 2026-09-26, pinned in
 # spark-pearl-miner 65365633e3bff61b0f29d72109622dd22ff5a379.
 CAPTURED_JOB = {
     "header": "000000200744ad4ffd147f89b5a2561e8aceb08a57a657f118c8decf385e658bbcbee9df9ee575bcd77d8901894f6f9e6e0b15cd490b5b6d7f211d0eaa6ecd630ccd6a2add0fb86a6a910018",
@@ -18,9 +18,9 @@ CAPTURED_JOB = {
 }
 
 
-class KryptexProtocolTests(unittest.TestCase):
+class KEXProtocolTests(unittest.TestCase):
     def setUp(self):
-        self.dialect = KryptexDialect("public-wallet", "rig0", agent="our-client/1")
+        self.dialect = KEXDialect("public-wallet", "rig0", agent="our-client/1")
 
     def test_capture_preserves_header_bytes_and_base_target(self):
         job = self.dialect.parse_job(CAPTURED_JOB)
@@ -43,7 +43,7 @@ class KryptexProtocolTests(unittest.TestCase):
         })
 
     def test_operator_gzip_spec_login_and_ack(self):
-        dialect = KryptexDialect("public-wallet", "rig0", password="d=2097152", agent="our-client/1", request_gzip=True)
+        dialect = KEXDialect("public-wallet", "rig0", password="d=2097152", agent="our-client/1", request_gzip=True)
         self.assertEqual(dialect.auth_requests(start_id=7), [{
             "jsonrpc": "2.0", "id": 7, "method": "mining.authorize", "params": {
                 "wallet": "public-wallet.rig0", "agent": "our-client/1", "password": "d=2097152", "type": "v2",
@@ -80,7 +80,7 @@ class KryptexProtocolTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(request["params"]["plain_proof"]), raw)
 
     def test_gzip_wraps_official_bytes_only_after_negotiation(self):
-        dialect = KryptexDialect("public-wallet", "rig0", request_gzip=True)
+        dialect = KEXDialect("public-wallet", "rig0", request_gzip=True)
         job = dialect.parse_job(CAPTURED_JOB)
         raw = b"opaque official bincode proof\x00" * 100
         b64 = base64.b64encode(raw).decode()
@@ -138,7 +138,7 @@ class KryptexProtocolTests(unittest.TestCase):
                 self.dialect.auth_requests(value)
         for wallet, worker in [("wallet\n", "worker"), ("wallet", "wo rker"), ("", "worker")]:
             with self.subTest(wallet=wallet, worker=worker), self.assertRaises(PoolProtocolError):
-                KryptexDialect(wallet, worker)
+                KEXDialect(wallet, worker)
 
 
 if __name__ == "__main__":

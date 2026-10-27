@@ -1,6 +1,7 @@
 """Application files remain independent of the shell's working directory."""
 
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,26 @@ from LRAEP_trainer import paths
 
 
 class ApplicationPathTests(unittest.TestCase):
+    def test_shared_checkout_config_is_found_independently_of_current_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary) / "trainer"
+            source = project / "src" / "LRAEP_trainer" / "paths.py"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            (project / "ann_trainer.py").touch()
+            with patch.object(paths, "__file__", str(source)), \
+                    patch.object(Path, "cwd", return_value=Path(temporary) / "elsewhere"):
+                self.assertEqual(paths.default_config_path(), project / "config.json")
+
+    def test_installed_package_uses_the_current_directory_shared_config(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "installed" / "site-packages" / "LRAEP_trainer" / "paths.py"
+            source.parent.mkdir(parents=True)
+            source.touch()
+            directory = Path(temporary) / "working"
+            with patch.object(paths, "__file__", str(source)), patch.object(Path, "cwd", return_value=directory):
+                self.assertEqual(paths.default_config_path(), directory / "config.json")
+
     def test_helpers_are_located_beside_the_installed_package(self):
         expected = Path(paths.__file__).resolve().parents[1] / "LRAEP_helpers"
         self.assertEqual(paths.DEFAULT_SOURCE, expected)

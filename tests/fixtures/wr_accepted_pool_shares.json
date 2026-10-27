@@ -1,0 +1,191 @@
+[
+  {
+    "source_capture": "shares-20261026T203339Z-27408",
+    "connection": 1,
+    "request_time_utc": "2026-10-27T01:54:21.149+00:00",
+    "response_time_utc": "2026-10-27T01:54:21.374+00:00",
+    "request_line": 162,
+    "response_line": 298,
+    "request": {
+      "id": 322,
+      "method": "submit",
+      "params": [
+        {
+          "a_rows": [
+            176,
+            177,
+            184,
+            185,
+            240,
+            241,
+            248,
+            249
+          ],
+          "b_cols": [
+            185344,
+            185345,
+            185352,
+            185353,
+            185376,
+            185377,
+            185384,
+            185385,
+            185408,
+            185409,
+            185416,
+            185417,
+            185440,
+            185441,
+            185448,
+            185449
+          ],
+          "k": 8192,
+          "m": 4097,
+          "miner_nonce": "0200000000000000",
+          "n": 262144,
+          "nonce": "0200000000000000",
+          "rank": 128,
+          "sb": 1,
+          "sb_p": [],
+          "tail_mode": 1,
+          "tile_h": 8,
+          "tile_w": 16,
+          "worker_nonce": "f8d10b2c6c027fee"
+        }
+      ]
+    },
+    "response": {
+      "status": 1,
+      "id": 322,
+      "result": true
+    },
+    "request_wire": "3cd3208fcc7d74856bdba19b078db3cef77047de6b3b935bd7b293c9801fc22749baee4b10c66e2d83ecc2779e666c36f17c839dec6e2ad765d0a59e1990a997be351784232b9d4988f5c595c559d43347f8bb002c873f6de6d4d6398c1b2402b7379494836b31d071d4a19d008da09ba7371a832328914c97f2c288d853d5385cfca308499e2e388e9b886dca0a266daa3e9992846728cd78d9a79d0599bd92aa311b813635984191f3c092c55ad83e5ffbb8154093283b8d879564c70c2a6db723909f826b29d965d0aa9c0195a8febe2644933521984096ebd3c9cb51d43b52fda31b1cc2736acbe8d73a915a7b7bbc2d9195876f2dd179d1a2990591a193a2340d9d2d778b4396f1c395dd5fcc2905a5e15a1489272d89858965cf092e69b63f9197876f2dd16bcdb0db54cffa81a8351d89233bda1b86fdc088cb1882541be8b5622c873f7bd8ded50a92567a3ca435908b952b748d2cbefa8b0f99bd81e66d43d4506e8b4395f1dd869e0492600eb8d0571ec57e6a9b8d9b33c75d2f69e43dc291d46f2fd62f84f78b48fceca9",
+    "response_wire": "71e0411342dbae493c395db301398c500a816c1b0ddaef6778215f310a8fee4f3564673be05d58"
+  },
+  {
+    "source_capture": "shares-20261026T203339Z-27408",
+    "connection": 1,
+    "request_time_utc": "2026-10-27T03:57:23.362+00:00",
+    "response_time_utc": "2026-10-27T03:57:23.585+00:00",
+    "request_line": 224,
+    "response_line": 413,
+    "request": {
+      "id": 445,
+      "method": "submit",
+      "params": [
+        {
+          "a_rows": [
+            1664,
+            1665,
+            1672,
+            1673,
+            1728,
+            1729,
+            1736,
+            1737
+          ],
+          "b_cols": [
+            13584,
+            13585,
+            13592,
+            13593,
+            13616,
+            13617,
+            13624,
+            13625,
+            13648,
+            13649,
+            13656,
+            13657,
+            13680,
+            13681,
+            13688,
+            13689
+          ],
+          "k": 8192,
+          "m": 4097,
+          "miner_nonce": "1400000000000000",
+          "n": 262144,
+          "nonce": "1400000000000000",
+          "rank": 128,
+          "sb": 1,
+          "sb_p": [],
+          "tail_mode": 1,
+          "tile_h": 8,
+          "tile_w": 16,
+          "worker_nonce": "f8d10b2c6c027fee"
+        }
+      ]
+    },
+    "response": {
+      "status": 1,
+      "id": 445,
+      "result": true
+    },
+    "request_wire": "65a09b0a5da433129a7486560bb62436d782e95dd92648700bf1c4152bfc3698a2416b542f73679fac7d551e35791cf96ccec8657db76c408c62835408af2a6a84c1b31e8c32456154b5914a7aa42583b2082617792d2291a7111d0b090a4cf444de853355a4602d897d875a0ab6376887ceb41e8c37476b4aa8974b77b12798b1023c177832258ea0171910651558a42f91db6c10b46f5a897d845606b6376884c2b81e8c3744674ea8974b74bd2398b1023c1e7e32258ea01e1f10651558ae2391db6c10be632b946cd94004a2376280daa35f9f3e466241b38a5a2fe17ad1f26e6449207d719fac041f0864165ea62b8dda6f16b66a46887e904e1cf4246180c0b30389305e7016ebc81b27aa2e96b1053a167e2e248da6161e0c64165ea63991c82d47e83154827f805a12b8753990ccb01e9f77100d08a69c231fa436c0e1586679237170d8b41c1f10765207fa7ee2827d1cbe7654cc27de0761ed246183c0ad10ca6b00391df6f9162de677d1a20b2840767a258df4144d0a37165ca17dd88f7d5bdb277c",
+    "response_wire": "627bf753d4b91259878171e7b5ad8cfd26d5085f3849ed5cf4ab6fbd8c3dba84a3a4273be092d8"
+  },
+  {
+    "source_capture": "shares-20261026T203339Z-27408",
+    "connection": 1,
+    "request_time_utc": "2026-10-27T04:16:23.158+00:00",
+    "response_time_utc": "2026-10-27T04:16:23.381+00:00",
+    "request_line": 234,
+    "response_line": 429,
+    "request": {
+      "id": 464,
+      "method": "submit",
+      "params": [
+        {
+          "a_rows": [
+            3072,
+            3073,
+            3080,
+            3081,
+            3136,
+            3137,
+            3144,
+            3145
+          ],
+          "b_cols": [
+            211728,
+            211729,
+            211736,
+            211737,
+            211760,
+            211761,
+            211768,
+            211769,
+            211792,
+            211793,
+            211800,
+            211801,
+            211824,
+            211825,
+            211832,
+            211833
+          ],
+          "k": 8192,
+          "m": 4097,
+          "miner_nonce": "6600000000000000",
+          "n": 262144,
+          "nonce": "6600000000000000",
+          "rank": 128,
+          "sb": 1,
+          "sb_p": [],
+          "tail_mode": 1,
+          "tile_h": 8,
+          "tile_w": 16,
+          "worker_nonce": "f8d10b2c6c027fee"
+        }
+      ]
+    },
+    "response": {
+      "status": 1,
+      "id": 464,
+      "result": true
+    },
+    "request_wire": "ae5e465cc510612078847fd4e04aa68a2eefb32be016764a8f77ce914bbc6e03d4bc3d02bd7ecba666e55306542f9d0bc8f7b0cde5013873689278d2e355a8d47ba3eb68b7047459d0319dcf14e47f1ec5fb7043ed278ca86f8f1c11685ccd06e0e7fd9bcd10321f688f7ad5e65ea8d57aaaec76bd187e59cd359fca0efa7d1ec1ff6b5cee2289b36a8e04160441d8528ea8a0c68f053e7c768c7ad3e350bdcb79aaea73bd06605acd339bc511e47e1ec7f46c40f02189b5648e19080741de5c8db0bec58f0330766f9279d3e55eb7d567a9ea75bc077f35d020c7de18f07d16c4e07e1dfe298cb46589040658198101cddbfc98d0516d66609c7dd4e456b4d77babeb74b4047c58cc328ed000a66e15c4fa6e41e82794a632d146475052d54689b2a2c78e0238746a8e7bd2e456b4d769b7f936e55a274ac6339ec40eea3f4dd4f66d5cfe60dadb2c9c127f685ccd10deedfea8d35d6c2178847acef612ed8b2ec4b366be0c604a886bc0997dbf6e15c7fa7052ab7ccaef39cc774a5a1e8c019dbeb09186563974388c28d4b756b6d02dfebe66f9693162",
+    "response_wire": "a6775421b87b884b1d23978847010e31c01216ddbeefb5b748e94d0124ce9dcf459955f172063c"
+  }
+]

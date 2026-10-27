@@ -1,4 +1,4 @@
-"""Local, transparent WildRig-to-pool TCP relay for observing pool messages.
+"""Local, transparent WR-to-pool TCP relay for observing pool messages.
 
 Only point a miner you control at this listener. The relay does not generate
 mining requests or submit shares; it forwards exactly what the miner sends.
@@ -21,7 +21,7 @@ MAX_LINE = 8 * 1024 * 1024
 BUFFER_SIZE = 64 * 1024
 SENSITIVE_KEYS = {
     "address", "api_key", "authorization", "login", "pass", "password",
-    "secret", "token", "user", "username", "wallet", "worker",
+    "secret", "token", "user", "username", "wallet", "worker", "wr_wallet", "kex_uname",
 }
 
 
@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-host", required=True, help="Real pool hostname")
     parser.add_argument("--upstream-port", type=int, required=True, help="Real pool port")
     parser.add_argument("--upstream-tls", action="store_true",
-                        help="Verify TLS to the real pool (local WildRig side stays plain TCP)")
+                        help="Verify TLS to the real pool (local WR side stays plain TCP)")
     parser.add_argument("--ca-file", help="Custom CA file for upstream TLS")
     parser.add_argument("--listen-port", type=int, default=19000,
                         help="Local plain TCP listener port (default: 19000)")

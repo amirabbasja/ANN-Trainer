@@ -75,7 +75,10 @@ class VPNCommandTests(unittest.TestCase):
         self.path = self.directory / "config.json"
         self.settings = copy.deepcopy(DEFAULT_CONFIG)
         self.settings["vpn"].update(enabled=True, link="vless://SECRET@vpn.example:443")
-        self.settings["pool"]["wallet"] = "public-test-wallet"
+        self.settings["pool"].pop("KEX", None)
+        self.settings["pool"].pop("WR", None)
+        self.settings["pool"]["KEX_uname"] = "public-test-wallet"
+        self.settings["pool"]["host"] = "pool.example"
         self.proxy = SocksProxy("127.0.0.1", 19080, "private-user", "private-password")
         self.managed = MagicMock()
         self.managed.__enter__.return_value = self.proxy
@@ -183,6 +186,46 @@ class VPNCommandTests(unittest.TestCase):
         self.assertEqual(operation.call_args.args[1], str(self.directory / "private/links.txt"))
         self.assertEqual(operation.call_args.kwargs, {"timeout": 5, "attempts": 3, "output": None})
 
+    def test_vpn_check_miner_flag_selects_profile_from_same_config_in_both_positions(self):
+        self.settings["pool"].update(
+            protocol="KEX", WR_wallet="wr-only-wallet", KEX_uname="kex-only-name",
+            KEX={"host": "kex.example", "port": 8048, "tls": True, "ca_file": None},
+            WR={"host": "wr.example", "port": 9000, "tls": False, "ca_file": None},
+        )
+        self.write()
+        original = self.path.read_text()
+        for command in (["--miner", "WR", "vpn-check"], ["vpn-check", "--miner", "WR"]):
+            with self.subTest(command=command), \
+                 patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
+                 patch("LRAEP_trainer.vpn_check.run_vpn_check", return_value=0) as operation:
+                self.assertEqual(cli.main(self.arguments(command)), 0)
+            selected = operation.call_args.args[0]
+            pool = selected["pool"]
+            self.assertEqual((pool["protocol"], pool["host"], pool["port"], pool["tls"]),
+                             ("WR", "wr.example", 9000, False))
+            self.assertEqual((pool["WR_wallet"], pool["KEX_uname"]),
+                             ("wr-only-wallet", "kex-only-name"))
+            self.assertTrue(selected["vpn"]["enabled"])
+            self.assertEqual(selected["vpn"]["link"], self.settings["vpn"]["link"])
+            self.assertNotIn("WR", pool)
+            self.assertNotIn("KEX", pool)
+            core.assert_not_called()
+            self.assertEqual(self.path.read_text(), original)
+
+    def test_selected_wr_endpoint_is_validated_before_vpn_check_network_activity(self):
+        self.settings["pool"].update(
+            protocol="KEX", KEX={"host": "kex.example", "port": 8048},
+            WR={"host": "", "port": 9000},
+        )
+        self.write()
+        with patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
+             patch("LRAEP_trainer.vpn_check._probe_pool") as pool, \
+             self.assertLogs(cli.LOG, level="ERROR") as logs:
+            self.assertEqual(cli.main(self.arguments(["vpn-check", "--miner", "WR"])), 1)
+        core.assert_not_called()
+        pool.assert_not_called()
+        self.assertIn("host", " ".join(logs.output))
+
     def test_vpn_check_accepts_explicit_input_and_report_flags(self):
         self.write()
         with patch("LRAEP_trainer.vpn_check.run_vpn_check", return_value=0) as operation:
@@ -195,7 +238,8 @@ class VPNCommandTests(unittest.TestCase):
                          {"timeout": 2.5, "attempts": 2, "output": "report.json"})
 
     def test_vpn_check_without_config_uses_links_txt_and_does_no_gpu_work(self):
-        with patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
+        with patch.object(cli, "default_config_path", return_value=self.directory / "absent.json"), \
+             patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
              patch("LRAEP_trainer.vpn_check.run_vpn_check", return_value=1) as operation, \
              patch.object(cli, "load_official_helpers") as helpers, \
              patch.object(cli, "require_cuda") as cuda:

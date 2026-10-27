@@ -1,6 +1,7 @@
 """VPN link reports and probes stay routed and omit supplied credentials."""
 
 from contextlib import redirect_stderr, redirect_stdout
+import copy
 import io
 import json
 from pathlib import Path
@@ -110,6 +111,47 @@ class VPNCheckTests(unittest.TestCase):
         self.assertIn("FAIL", stdout)
         self.assertNotIn("SECRET", stdout + stderr + self.output.read_text())
 
+    def test_selected_wr_profile_uses_its_endpoint_and_preserves_shared_settings(self):
+        self.links.write_text("valid-link\n")
+        self.configuration["pool"].update(
+            protocol="WR", KEX_uname="kex-only-name", WR_wallet="wr-only-wallet",
+            KEX={"host": "kex.example", "port": 8048, "tls": True, "ca_file": None},
+            WR={"host": "wr.example", "port": 9000, "tls": False, "ca_file": None},
+        )
+        before = copy.deepcopy(self.configuration)
+        with patch.object(vpn_check, "parse_link"), \
+             patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)) as core, \
+             patch.object(vpn_check, "_probe_pool", return_value=0.1) as probe, \
+             patch.object(vpn_check, "_probe_https", return_value=(15, "203.0.113.8")):
+            result, _, stderr = self.run_check(attempts=1)
+        self.assertEqual(result, 0)
+        self.assertFalse(stderr)
+        selected = probe.call_args.args[0]
+        self.assertEqual((selected["protocol"], selected["host"], selected["port"], selected["tls"]),
+                         ("WR", "wr.example", 9000, False))
+        self.assertEqual((selected["WR_wallet"], selected["KEX_uname"]),
+                         ("wr-only-wallet", "kex-only-name"))
+        self.assertNotIn("WR", selected)
+        self.assertNotIn("KEX", selected)
+        core.assert_called_once_with(self.configuration["vpn"], link="valid-link")
+        self.assertEqual(self.configuration, before)
+
+    def test_missing_selected_wr_host_does_not_probe_other_profile_or_start_core(self):
+        self.configuration["pool"].update(
+            protocol="WR", KEX={"host": "kex.example", "port": 8048},
+            WR={"host": "", "port": 9000},
+        )
+        before = copy.deepcopy(self.configuration)
+        with patch.object(vpn_check, "ManagedVPN") as core, \
+             patch.object(vpn_check, "_probe_pool") as probe, \
+             patch.object(vpn_check, "_probe_https") as https, \
+             self.assertRaisesRegex(ValueError, "host"):
+            self.run_check(attempts=1)
+        core.assert_not_called()
+        probe.assert_not_called()
+        https.assert_not_called()
+        self.assertEqual(self.configuration, before)
+
     def test_optimistic_socks_ack_with_broken_tunnel_is_unverified(self):
         # Some SOCKS cores acknowledge CONNECT before contacting their remote
         # outbound. A successful acknowledgement alone must never pass a link.
@@ -186,7 +228,12 @@ class VPNCheckTests(unittest.TestCase):
             result, stdout, stderr = self.run_check(attempts=1)
         self.assertEqual(result, 0)
         core.assert_called_once_with(self.configuration["vpn"], link="second-SECRET-URL")
-        pool.assert_called_once_with(self.configuration["pool"], self.proxy, 5.0)
+        pool.assert_called_once()
+        selected, proxy, timeout = pool.call_args.args
+        self.assertEqual({key: selected[key] for key in ("host", "port", "tls", "ca_file")},
+                         self.configuration["pool"])
+        self.assertIs(proxy, self.proxy)
+        self.assertEqual(timeout, 5.0)
         self.assertNotIn("SECRET", stdout + stderr + self.output.read_text())
         self.assertTrue(instance.closed)
 

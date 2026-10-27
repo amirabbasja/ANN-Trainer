@@ -5,28 +5,39 @@ pool transport and login checks, node RPC HTTP/HTTPS, and connection-test
 requests use its authenticated local SOCKS5 endpoint. This does not change
 the machine's global VPN, routes, or other applications.
 
-## Install the core
+## Bundled core and platform alternatives
 
-From the project directory, run:
+Linux x86_64 includes the unmodified official Xray-core release `v26.10.21`
+at `src/LRAEP_trainer/bin/linux-x86_64/xray`. No separate core installation
+or startup download is needed. The packaged `bin/manifest.json` records its
+version and checksums; `bin/Xray-LICENSE` retains the original MPL-2.0 license.
+
+With `vpn.core_path` set to `null`, runtime selects a supported bundled core
+first, then searches `xray` on `PATH` and the application data directory.
+An explicit `vpn.core_path` overrides automatic discovery. Relative paths
+resolve beside the selected configuration file.
+
+The optional installer remains available for Linux arm64 or a separate core
+installation. From the project directory, run:
 
 ```bash
 .venv/bin/python setup_vpn.py
 ```
 
-The installer downloads the official Xray-core release `v26.10.21`, checks its
-pinned SHA-256 checksum, and installs `xray` into
-`~/.local/share/LRAEP/bin/` by default. Runtime searches the configured
-`vpn.core_path`, `xray` on `PATH`, or the application data directory. It does
-not download a core when starting a miner or running a link check.
+It downloads the official release `v26.10.21`, checks its pinned archive
+SHA-256 checksum, and installs `xray` into `~/.local/share/LRAEP/bin/` by
+default. To use that installation instead of the Linux x86_64 bundle, select
+its executable with `vpn.core_path`. Starting a miner or running a link check
+never downloads a core.
 
 Automatic installation supports Linux x86_64 and arm64. On other platforms,
 install a compatible Xray executable yourself and select it with `core_path`.
 The installer preserves Xray's original license beside the executable; its
 source and license are linked in [third-party notices](../THIRD_PARTY_NOTICES.md).
 
-The core installer and the separate Python/Rust dependency setup are bootstrap
-commands. Their downloads are not routed through the application VPN, which
-requires an installed core and a working share link first.
+The optional core installer and the separate Python/Rust dependency setup are
+bootstrap commands. Their downloads are not routed through the application
+VPN, which requires a runnable core and a working share link first.
 
 ## Select a configuration
 

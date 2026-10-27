@@ -210,6 +210,37 @@ class ManagedCoreTests(unittest.TestCase):
                 manager.__enter__()
         self.assertIsNone(manager._temporary)
 
+    def test_explicit_core_takes_priority_over_bundle_and_path(self):
+        with patch.object(vpn, 'bundled_xray',
+                          side_effect=AssertionError('explicit core must not inspect bundle')), \
+                patch.object(vpn.shutil, 'which',
+                             side_effect=AssertionError('explicit core must not inspect PATH')), \
+                patch.object(vpn.subprocess, 'Popen', return_value=self.process) as start, \
+                patch.object(vpn, '_ready', return_value=True):
+            with vpn.ManagedVPN(self.settings):
+                self.assertEqual(start.call_args.args[0][0], str(self.core))
+
+    def test_automatic_core_uses_bundle_before_path(self):
+        self.settings['core_path'] = None
+        with patch.object(vpn, 'bundled_xray', return_value=self.core) as bundled, \
+                patch.object(vpn.shutil, 'which',
+                             side_effect=AssertionError('bundle must work without PATH')), \
+                patch.object(vpn.subprocess, 'Popen', return_value=self.process) as start, \
+                patch.object(vpn, '_ready', return_value=True):
+            with vpn.ManagedVPN(self.settings):
+                self.assertEqual(start.call_args.args[0][0], str(self.core))
+        bundled.assert_called_once_with()
+
+    def test_automatic_core_can_use_path_when_bundle_is_unavailable(self):
+        self.settings['core_path'] = None
+        with patch.object(vpn, 'bundled_xray', return_value=None), \
+                patch.object(vpn.shutil, 'which', return_value=str(self.core)) as lookup, \
+                patch.object(vpn.subprocess, 'Popen', return_value=self.process) as start, \
+                patch.object(vpn, '_ready', return_value=True):
+            with vpn.ManagedVPN(self.settings):
+                self.assertEqual(start.call_args.args[0][0], str(self.core))
+        lookup.assert_called_once_with('xray')
+
     def test_missing_core_does_not_start_any_process(self):
         self.settings['core_path'] = str(self.core.parent / 'missing')
         with patch.object(vpn.subprocess, 'Popen') as process:

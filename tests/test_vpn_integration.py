@@ -20,11 +20,14 @@ import uuid
 
 from LRAEP_trainer import network
 from LRAEP_trainer.node import NodeClient, NodeError
-from LRAEP_trainer.paths import artifacts_dir
+from LRAEP_trainer.paths import artifacts_dir, bundled_xray
 from LRAEP_trainer.vpn import ManagedVPN
 
 
 def xray_path():
+    bundled = bundled_xray()
+    if bundled is not None:
+        return bundled
     executable = shutil.which('xray')
     if executable:
         return Path(executable)
@@ -213,6 +216,22 @@ class RealXrayTunnelTests(unittest.TestCase):
 
     def test_shadowsocks_tunnels_http_and_threaded_node_rpc(self):
         self._exercise_tunnel('shadowsocks')
+
+    def test_bundled_core_tunnels_without_path_lookup(self):
+        core = bundled_xray()
+        if core is None:
+            self.skipTest('bundled Xray is unavailable on this platform')
+        with local_http_server() as http, XrayServerFixture() as server:
+            manager = ManagedVPN({'core_path': None, 'startup_timeout': 5, 'link': server.link})
+            with patch.dict(os.environ, {'PATH': ''}), \
+                    patch('LRAEP_trainer.vpn.shutil.which',
+                          side_effect=AssertionError('bundled core must work without PATH lookup')):
+                with manager as proxy:
+                    self.assertEqual(Path(manager.process.args[0]), core)
+                    opener = network.http_opener(proxy)
+                    with opener.open(f'http://127.0.0.1:{http.server_port}/bundled', timeout=3) as response:
+                        self.assertEqual(json.loads(response.read()), {'ok': True, 'through': 'Xray'})
+            self.assertEqual(http.requests, [('GET', '/bundled')])
 
     def test_dead_client_core_never_falls_back_to_direct_rpc(self):
         with local_http_server() as http, XrayServerFixture() as server:
