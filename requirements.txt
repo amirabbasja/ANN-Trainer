@@ -4,3 +4,5 @@ blake3>=1.0.7
 pydantic>=2.12.5
 loguru>=0.7.0
 cryptography>=46.0.0
+Pillow>=10.4
+pyarrow>=18.0

@@ -17,7 +17,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
-from .effort import normalize_effort
+from .effort import normalize_job_sequence
 from .paths import artifacts_dir
 
 
@@ -26,11 +26,11 @@ class ConfigError(RuntimeError):
 
 
 _ENCRYPTED_FORMAT = "LRAEP-config-fernet-v1"
-_TOP_LEVEL = {"version", "mode", "official_source", "device", "training", "pool", "node", "vpn"}
+_TOP_LEVEL = {"version", "mode", "official_source", "device", "training", "pool", "node", "vpn", "decoy_job"}
 _TRAINING_DEFAULTS = {
     "m": 256, "n": 256, "k": 2048, "tile_h": 8, "tile_w": 8,
     "max_batches": 0, "max_seconds": 0,
-    "main_effort": [[60, 80], [120, 70], [180, 10]], "decoy_effort": [],
+    "job_sequence": [["main", 60, 80], ["main", 120, 70], ["main", 180, 10]],
     "output_dir": str(artifacts_dir()),
 }
 _POOL_DEFAULTS = {
@@ -55,6 +55,14 @@ _VPN_DEFAULTS = {
     "enabled": False, "link": "", "core_path": None, "startup_timeout": 10,
     "links_file": "links.txt", "check_url": "https://api.ipify.org",
 }
+_DECOY_DEFAULTS = {
+    "repo_url": "https://huggingface.co/datasets/BDRC/tibetan-page-orientation-classifier-dataset/tree/main/train",
+    "channels": [64, 128, 256, 512], "blocks_per_stage": [2, 2, 2, 2],
+    "hidden_size": 512, "image_size": 224, "batch_size": 16,
+    "learning_rate": 0.001, "weight_decay": 0.0001, "epochs": 0,
+    "use_amp": True, "seed": 42,
+    "vpn": {"enabled": False, "link": "", "core_path": None, "startup_timeout": 10},
+}
 
 # Unresolved paths make this suitable for a portable example JSON file. The
 # loader copies each section and resolves paths relative to the selected file.
@@ -62,6 +70,7 @@ DEFAULT_CONFIG = {
     "version": 1, "mode": "pool", "official_source": "src/LRAEP_helpers",
     "device": "cuda:0", "training": copy.deepcopy(_TRAINING_DEFAULTS),
     "pool": dict(_POOL_DEFAULTS), "node": dict(_NODE_DEFAULTS), "vpn": dict(_VPN_DEFAULTS),
+    "decoy_job": copy.deepcopy(_DECOY_DEFAULTS),
 }
 
 
@@ -150,6 +159,52 @@ def _http_url(value, field, *, allow_fragment=False):
         restrictions = "credentials" if allow_fragment else "credentials or a fragment"
         raise ConfigError(f"{field} must be an HTTP or HTTPS URL without {restrictions}")
     return value
+
+
+def _decoy_config(raw, directory):
+    """Validate CNN settings without borrowing the miner's VPN configuration."""
+    raw = _section(raw, set(_DECOY_DEFAULTS), "decoy_job")
+    settings = copy.deepcopy(_DECOY_DEFAULTS)
+    settings.update(copy.deepcopy({field: value for field, value in raw.items() if field != "vpn"}))
+    url = _http_url(settings["repo_url"], "decoy_job.repo_url")
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or parsed.hostname != "huggingface.co"
+            or parsed.port not in {None, 443} or parsed.query
+            or re.fullmatch(r"/datasets/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+(?:/tree/[^/?#]+(?:/[^?#]*)?)?/?", parsed.path) is None):
+        raise ConfigError("decoy_job.repo_url must be a Hugging Face HTTPS dataset or dataset tree URL")
+    for field, maximum in (("channels", 2048), ("blocks_per_stage", 8)):
+        values = settings[field]
+        if not isinstance(values, list) or not 1 <= len(values) <= 6:
+            raise ConfigError(f"decoy_job.{field} must be a list containing 1 to 6 integers")
+        for value in values:
+            _integer(value, f"decoy_job.{field}", 1, maximum)
+    if len(settings["channels"]) != len(settings["blocks_per_stage"]):
+        raise ConfigError("decoy_job.channels and decoy_job.blocks_per_stage must have equal lengths")
+    for field, minimum, maximum in (("hidden_size", 1, 8192), ("image_size", 32, 1024),
+                                     ("batch_size", 1, 512), ("epochs", 0, 1_000_000_000),
+                                     ("seed", 0, 2**32 - 1)):
+        _integer(settings[field], f"decoy_job.{field}", minimum, maximum)
+    for field in ("learning_rate", "weight_decay"):
+        _number(settings[field], f"decoy_job.{field}", zero=field == "weight_decay")
+        if settings[field] > 1:
+            raise ConfigError(f"decoy_job.{field} must not exceed 1")
+    if type(settings["use_amp"]) is not bool:
+        raise ConfigError("decoy_job.use_amp must be true or false")
+
+    vpn = settings["vpn"]
+    vpn.update(_section(raw.get("vpn", {}), set(vpn), "decoy_job.vpn"))
+    if type(vpn["enabled"]) is not bool:
+        raise ConfigError("decoy_job.vpn.enabled must be true or false")
+    _string(vpn["link"], "decoy_job.vpn.link")
+    if vpn["enabled"] and not vpn["link"].strip():
+        raise ConfigError("decoy_job.vpn.link must contain a V2Ray share link when decoy_job.vpn.enabled is true")
+    if vpn["link"] and vpn["link"].strip().split(":", 1)[0].lower() not in {"vless", "vmess", "trojan", "ss"}:
+        raise ConfigError("decoy_job.vpn.link must use vless, vmess, trojan, or ss")
+    vpn["core_path"] = _path(vpn["core_path"], "decoy_job.vpn.core_path", directory, optional=True)
+    _number(vpn["startup_timeout"], "decoy_job.vpn.startup_timeout")
+    if vpn["startup_timeout"] > 60:
+        raise ConfigError("decoy_job.vpn.startup_timeout must not exceed 60 seconds")
+    return settings
 
 
 def _host(value, field="pool.host"):
@@ -376,21 +431,24 @@ def _validate_config(config, config_path) -> dict:
     official_source = _path(config.get("official_source", "src/LRAEP_helpers"),
                             "official_source", directory)
 
-    raw_training = _section(config.get("training", {}),
+    raw_training = config.get("training", {})
+    if isinstance(raw_training, dict) and {"main_effort", "decoy_effort"} & raw_training.keys():
+        raise ConfigError("training.main_effort and training.decoy_effort were replaced by training.job_sequence")
+    raw_training = _section(raw_training,
                             set(_TRAINING_DEFAULTS) | {"max_gpu_utilization"}, "training")
     training = copy.deepcopy(_TRAINING_DEFAULTS)
     training.update({field: value for field, value in raw_training.items()
                      if field != "max_gpu_utilization"})
     if "max_gpu_utilization" in raw_training:
         legacy = _integer(raw_training["max_gpu_utilization"], "training.max_gpu_utilization", 1, 100)
-        if "main_effort" not in raw_training:
-            training["main_effort"] = [[60, legacy]]
-    for field in ("main_effort", "decoy_effort"):
-        try:
-            training[field] = normalize_effort(training[field], field=f"training.{field}",
-                                               allow_empty=field == "decoy_effort")
-        except ValueError as exc:
-            raise ConfigError(str(exc)) from None
+        if "job_sequence" not in raw_training:
+            training["job_sequence"] = [["main", 60, legacy]]
+    try:
+        training["job_sequence"] = normalize_job_sequence(
+            training["job_sequence"], field="training.job_sequence",
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from None
     for field in ("m", "n"):
         _integer(training[field], f"training.{field}", 128, 4096)
     _integer(training["k"], "training.k", 2048, 65536)
@@ -466,5 +524,7 @@ def _validate_config(config, config_path) -> dict:
         if urlsplit(vpn["check_url"]).scheme != "https":
             raise ConfigError("vpn.check_url must use HTTPS")
 
+    decoy_job = _decoy_config(config.get("decoy_job", {}), directory)
     return {"version": 1, "mode": mode, "official_source": official_source,
-            "device": device, "training": training, "pool": pool, "node": node, "vpn": vpn}
+            "device": device, "training": training, "pool": pool, "node": node, "vpn": vpn,
+            "decoy_job": decoy_job}

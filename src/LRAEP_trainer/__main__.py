@@ -18,7 +18,7 @@ import torch
 
 from .gpu import TrainingCancelled, gpu_transcripts
 from .gpu_pacing import GpuPacer
-from .effort import EffortSchedule, normalize_effort
+from .effort import JobSequence, ScheduledDecoy, normalize_job_sequence
 from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_target, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
@@ -49,7 +49,11 @@ class TipWatcher:
             if self.schedule is not None:
                 if not self.schedule.wait(self.stopped, deadline=self.deadline):
                     break
-                percentage, boundary = self.schedule.current()
+                kind, percentage, boundary = self.schedule.current_job()
+                if kind != "main":
+                    until = boundary if self.deadline is None else min(boundary, self.deadline)
+                    self.stopped.wait(min(threading.TIMEOUT_MAX, max(0, until - time.monotonic())))
+                    continue
                 if percentage <= 0:
                     continue
             if self.deadline is not None:
@@ -135,9 +139,10 @@ def train(args) -> int:
 
     stopped = threading.Event()
     started = time.monotonic()
-    schedule = EffortSchedule(args.main_effort, started=started)
+    schedule = JobSequence(args.job_sequence, started=started)
     deadline = started + args.max_seconds if args.max_seconds else None
     watcher = None
+    decoy = None
     batches = attempts = accepted = 0
     old_handlers = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -162,7 +167,13 @@ def train(args) -> int:
                 raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
             cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
             pacer = GpuPacer(args.device, 100)
-            LOG.info("GPU effort schedule: %s", args.main_effort)
+            if hasattr(args, "decoy_configuration"):
+                decoy_configuration = args.decoy_configuration
+            else:
+                from .config import DEFAULT_CONFIG
+                decoy_configuration = dict(copy.deepcopy(DEFAULT_CONFIG), device=args.device)
+            decoy = ScheduledDecoy(decoy_configuration)
+            LOG.info("GPU job sequence: %s", args.job_sequence)
             use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
             from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
             get_script_pubkey_from_p2tr_address(args.address)
@@ -182,8 +193,8 @@ def train(args) -> int:
             def rpc(method, *values):
                 # Existing requests remain synchronous and bounded by the next
                 # effort boundary, rather than continuing in detached threads.
-                percentage, boundary = schedule.current()
-                if stopped.is_set() or percentage <= 0:
+                kind, percentage, boundary = schedule.current_job()
+                if stopped.is_set() or kind != "main" or percentage <= 0:
                     raise TrainingCancelled("GPU effort is paused or stopped")
                 remaining = stage_deadline(boundary) - time.monotonic()
                 if remaining <= 0:
@@ -191,9 +202,12 @@ def train(args) -> int:
                 node.timeout = min(args.rpc_timeout, max(0.001, remaining))
                 return method(*values)
 
+            previous_effort = None
             while not finished():
                 if not schedule.wait(stopped, deadline=deadline) or finished():
                     break
+                if decoy.run_if_active(schedule, stopped, pacer, deadline=deadline):
+                    continue
                 try:
                     template = rpc(node.get_template, args.address)
                     if schedule.current()[0] <= 0 or finished():
@@ -216,10 +230,15 @@ def train(args) -> int:
                     while not template_stale():
                         if not schedule.wait(stopped, deadline=deadline) or template_stale():
                             break
-                        percentage, boundary = schedule.current()
+                        kind, percentage, boundary = schedule.current_job()
+                        if kind != "main":
+                            break
                         if percentage <= 0:
                             continue
                         pacer.set_utilization(percentage)
+                        if previous_effort != (kind, percentage):
+                            LOG.info("%s effort GPU duty-cycle target: %d%%", kind.capitalize(), percentage)
+                            previous_effort = kind, percentage
 
                         def cancelled():
                             return (template_stale() or time.monotonic() >= boundary
@@ -294,11 +313,15 @@ def train(args) -> int:
                     stopped.wait(max(0, min(3, stage_deadline(boundary) - time.monotonic())))
         finally:
             stopped.set()
-            if watcher is not None:
-                watcher.stopped.set()
-                watcher.thread.join()
-            for sig, handler in old_handlers.items():
-                signal.signal(sig, handler)
+            try:
+                if decoy is not None:
+                    decoy.close()
+            finally:
+                if watcher is not None:
+                    watcher.stopped.set()
+                    watcher.thread.join()
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
     LOG.info("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
     return 0
 
@@ -336,8 +359,8 @@ def _add_training_arguments(parser):
     parser.add_argument("--max-seconds", type=float, default=argparse.SUPPRESS)
     parser.add_argument("--max-gpu-utilization", type=int, default=argparse.SUPPRESS,
                         help="legacy constant GPU effort, 1-100 (100 disables pacing)")
-    parser.add_argument("--main-effort", default=argparse.SUPPRESS,
-                        help='JSON schedule of [seconds, percentage] pairs; 0 pauses and -1 exits')
+    parser.add_argument("--job-sequence", default=argparse.SUPPRESS,
+                        help='JSON sequence of [kind, seconds, percentage] triples; kind is main or decoy, 0 pauses and -1 exits')
     parser.add_argument("--output-dir", default=argparse.SUPPRESS)
 
 
@@ -347,22 +370,20 @@ def _apply_settings(args, configuration):
 
     training = configuration["training"] if configuration else {}
     node = configuration["node"] if configuration else {}
-    if hasattr(args, "main_effort") and hasattr(args, "max_gpu_utilization"):
-        raise ValueError("use only one of --main-effort and --max-gpu-utilization")
-    if hasattr(args, "main_effort"):
+    if hasattr(args, "job_sequence") and hasattr(args, "max_gpu_utilization"):
+        raise ValueError("use only one of --job-sequence and --max-gpu-utilization")
+    if hasattr(args, "job_sequence"):
         try:
-            effort = json.loads(args.main_effort)
+            effort = json.loads(args.job_sequence)
         except (TypeError, ValueError):
-            raise ValueError("main-effort must be a JSON list of [seconds, percentage] pairs") from None
+            raise ValueError("job-sequence must be a JSON list of [kind, seconds, percentage] triples") from None
     elif hasattr(args, "max_gpu_utilization"):
         if type(args.max_gpu_utilization) is not int or not 1 <= args.max_gpu_utilization <= 100:
             raise ValueError("max-gpu-utilization must be an integer between 1 and 100")
-        effort = [[60, args.max_gpu_utilization]]
+        effort = [["main", 60, args.max_gpu_utilization]]
     else:
-        effort = training.get("main_effort", DEFAULT_CONFIG["training"]["main_effort"])
-    args.main_effort = normalize_effort(effort, field="main_effort")
-    args.decoy_effort = normalize_effort(training.get("decoy_effort", []),
-                                         field="decoy_effort", allow_empty=True)
+        effort = training.get("job_sequence", DEFAULT_CONFIG["training"]["job_sequence"])
+    args.job_sequence = normalize_job_sequence(effort, field="job_sequence")
     defaults = dict(
         official_source=configuration["official_source"] if configuration else
         os.environ.get("LRAEP_OFFICIAL_SOURCE", str(DEFAULT_SOURCE)),
@@ -382,6 +403,7 @@ def _apply_settings(args, configuration):
     for name, value in defaults.items():
         if not hasattr(args, name):
             setattr(args, name, value)
+    args.decoy_configuration = dict(copy.deepcopy(configuration or DEFAULT_CONFIG), device=args.device)
     if configuration:
         # A config-driven run gets all RPC settings from the selected file.
         args.rpc_username = node["username"]
@@ -404,8 +426,8 @@ def _network_scope(configuration):
 
 
 def _execute(args, configuration):
-    if args.command in ("train", "pool") and args.main_effort[0][1] == -1:
-        LOG.info("GPU effort schedule requests an immediate exit")
+    if args.command in ("train", "pool") and args.job_sequence[0][2] == -1:
+        LOG.info("GPU job sequence requests an immediate exit")
         return 0
     if args.command == "vpn-check":
         from .config import DEFAULT_CONFIG, resolve_pool_settings

@@ -29,8 +29,7 @@ class ConfigNotebookTests(unittest.TestCase):
             "official_source": "src/LRAEP_helpers",
             "training": {
                 "output_dir": "results",
-                "main_effort": [[5, 80], [1, 0], [0, -1]],
-                "decoy_effort": [],
+                "job_sequence": [["main", 5, 80], ["decoy", 1, 0], ["main", 0, -1]],
             },
             "pool": {
                 "protocol": "KEX", "WR_wallet": "test-wr-wallet",

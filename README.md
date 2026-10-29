@@ -25,6 +25,12 @@ workload is integer matrix multiplication; it does not fit a neural network,
 update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
 
+The shared trainer now includes a separate [CNN decoy job](decoy-job/README.md)
+for Tibetan page orientation. It runs during `decoy` schedule intervals or with
+`.venv/bin/python decoy-job/train.py`. Its `decoy_job` config section controls
+the dataset, layer sizes and independent VPN (disabled by default). All its data
+and checkpoints live under `data/decoy-job/`.
+
 ## Plain source configuration and WR export
 
 Maintain the app settings in `config.json`. The trainer finds this file beside
@@ -105,8 +111,10 @@ update_config("config.json", plain_dict)  # Preserve unspecified nested fields.
 Source writes validate before atomically replacing the file with owner-only
 permissions. They do not create decode keys or modify an existing WR export.
 Run the notebook export again after changing source settings that WR should use.
-Configuration instructions for both trainers live in this README. The standalone
-WR directory has no README or code comments; upstream license notices are retained.
+Configuration instructions for both trainers live in this directory. See
+[`docs/standalone-wr.md`](docs/standalone-wr.md) for notebook controls and worker
+lifecycle details. The standalone WR directory contains no README or code comments;
+upstream source attribution and license notices are maintained here.
 
 KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
 section keeps both identities and separate connection settings:
@@ -192,13 +200,16 @@ the shared configuration:
 .venv/bin/python ann_trainer.py pool --miner KEX
 ```
 
-`training.main_effort` controls mining effort over time in both trainers. Each
-entry is `[seconds, percentage]`; the default schedule is:
+`training.job_sequence` controls mining effort over time in both trainers. Each
+entry is `[job, seconds, maximum_gpu_percentage]`. The job must be exactly
+`"main"` or `"decoy"`. In this shared trainer, `main` mines on the configured
+worker and `decoy` trains the CNN without submitting shares. The separate
+standalone WR runtime retains its existing worker behavior for both labels;
+its config export omits the shared trainer's `decoy_job` settings. The default is:
 
 ```json
 "training": {
-  "main_effort": [[60, 80], [120, 70], [180, 10]],
-  "decoy_effort": []
+  "job_sequence": [["main", 60, 80], ["main", 120, 70], ["main", 180, 10]]
 }
 ```
 
@@ -213,37 +224,38 @@ from `-1` to `100`:
 - `-1` stops all mining immediately when the entry begins and runs normal
   connection and VPN cleanup; its duration is ignored.
 
-For example, `[[60, 80], [30, 0], [0, -1]]` mines at 80% for one minute,
-pauses for 30 seconds, then exits. `main_effort` must contain at least one
-entry. `decoy_effort` uses the same entry format and validation, but is reserved
-for decoy mining and defaults to an empty list.
+For example, `[["main", 60, 80], ["decoy", 30, 20], ["main", 10, 0],
+["main", 0, -1]]` runs the main job at 80% for one minute, runs the decoy
+job at 20% for 30 seconds, pauses for 10 seconds, then exits. `job_sequence`
+must contain at least one entry. Both roles follow the same duration, pause,
+and exit rules.
 
 Edit the plain source directly, or use the notebook or `update_config` API:
 
 ```python
 from LRAEP_trainer.config import update_config
 update_config("config.json", {"training": {
-    "main_effort": [[60, 80], [120, 70], [180, 10]],
-    "decoy_effort": [],
+    "job_sequence": [["main", 60, 80], ["decoy", 30, 20]],
 }})
 ```
 
 The miner finishes each GPU batch, synchronizes CUDA work, and rests to target
 the active entry's average duty cycle. It submits completed shares before
-resting. Waits respond to schedule changes, `Ctrl+C`, and time limits. A single
+resting. Waits respond to sequence changes, `Ctrl+C`, and time limits. A single
 kernel can still show 100% utilization; other processes using the GPU are not
 controlled. The pool status GPU percentage is a device-wide `nvidia-smi` sample,
 so it can differ from the effort percentage.
 
-The schedule follows elapsed wall time, including pauses and reconnections.
+The sequence follows elapsed wall time, including pauses and reconnections.
 Transitions are checked between computation stages; an in-flight CUDA kernel
 or synchronous verification finishes before the miner pauses or exits.
 
 Older configurations with `training.max_gpu_utilization` remain readable. When
-`main_effort` is absent, a legacy value such as `70` becomes `[[60, 70]]`, which
-repeats at a constant 70%. An explicit `main_effort` takes precedence. New
-configurations should use the schedule fields. Solo mode also accepts a JSON
-schedule, for example `train --main-effort '[[60,80],[30,0],[0,-1]]'`.
+`job_sequence` is absent, a legacy value such as `70` becomes
+`[["main", 60, 70]]`, which repeats at a constant 70%. An explicit
+`job_sequence` takes precedence. Replace the former `main_effort` and
+`decoy_effort` fields with one ordered sequence. Solo mode also accepts JSON,
+for example `train --job-sequence '[["main",60,80],["decoy",30,20],["main",0,-1]]'`.
 
 `training.max_seconds` bounds a pool session using a stop timer, including
 authentication and share-acknowledgement waits. CPU/GPU work already in a

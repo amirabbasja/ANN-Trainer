@@ -36,7 +36,7 @@ class EntrypointEffortTests(unittest.TestCase):
         self.worker = self.stack.enter_context(patch("LRAEP_trainer.pool_training.run_pool_training", return_value=0))
 
     def test_immediate_exit_skips_vpn_helpers_cuda_and_worker(self):
-        self.config["training"]["main_effort"] = [(0, -1)]
+        self.config["training"]["job_sequence"] = [("decoy", 0, -1)]
         self.assertEqual(self.entrypoint.run(self.temporary), 0)
         self.vpn.assert_not_called()
         self.helpers.assert_not_called()
@@ -44,11 +44,11 @@ class EntrypointEffortTests(unittest.TestCase):
         self.worker.assert_not_called()
 
     def test_pause_schedule_is_delegated_before_backend_initialization(self):
-        self.config["training"]["main_effort"] = [(60, 0), (60, 80)]
+        self.config["training"]["job_sequence"] = [("main", 60, 0), ("main", 60, 80)]
         self.assertEqual(self.entrypoint.run(self.temporary), 0)
         self.worker.assert_called_once()
-        self.assertEqual(self.worker.call_args.args[0]["training"]["main_effort"],
-                         [(60, 0), (60, 80)])
+        self.assertEqual(self.worker.call_args.args[0]["training"]["job_sequence"],
+                         [("main", 60, 0), ("main", 60, 80)])
         self.helpers.assert_not_called()
         self.cuda.assert_not_called()
 

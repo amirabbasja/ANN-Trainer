@@ -13,7 +13,7 @@ import torch
 
 from .gpu import TrainingCancelled
 from .gpu_pacing import GpuPacer
-from .effort import EffortSchedule
+from .effort import JobSequence, ScheduledDecoy
 from .progress import LiveProgress
 from .protocol import (TrainingConfig, load_official_helpers, pool_share_target,
                        prepare_batch, search_batch, verified_pool_share)
@@ -137,11 +137,11 @@ def _signal_stop(stopped, time_limit=0):
 
 
 def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
-    """Run a repeating main effort, closing every resource on stop or exit."""
+    """Run a repeating job sequence, closing every resource on stop or exit."""
     settings = configuration["training"]
     stopped = threading.Event()
     started = time.monotonic()
-    effort = None if login_only else EffortSchedule(settings["main_effort"], started=started)
+    effort = None if login_only else JobSequence(settings["job_sequence"], started=started)
     deadline = started + settings["max_seconds"] if settings["max_seconds"] else None
     with _signal_stop(stopped, settings["max_seconds"]), ExitStack() as resources:
         if effort is not None:
@@ -218,6 +218,9 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
         return expired() or (max_batches > 0 and stats.batches >= max_batches)
 
     with ExitStack() as resources:
+        decoy = ScheduledDecoy(configuration) if not login_only else None
+        if decoy is not None:
+            resources.callback(decoy.close)
         progress = resources.enter_context(LiveProgress())
         monitor = None
         if not login_only:
@@ -243,6 +246,8 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
         while not finished():
             if effort is not None and not effort.wait(stopped, deadline=deadline):
                 break
+            if decoy is not None and decoy.run_if_active(effort, stopped, pacer, deadline=deadline):
+                continue
             session = None
             try:
                 session_settings = dict(pool)
@@ -264,6 +269,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                     if selected_protocol == "WR" and not login_only:
                         report_gpu(session, report_started)
                     previous_generation = None
+                    previous_effort = None
                     job_deadline = time.monotonic() + pool["read_timeout"]
                     while not finished():
                         if effort is not None:
@@ -272,6 +278,9 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                                 break
                             if paused:
                                 job_deadline = time.monotonic() + pool["read_timeout"]
+                        if decoy is not None and decoy.run_if_active(effort, stopped, pacer, deadline=deadline):
+                            job_deadline = time.monotonic() + pool["read_timeout"]
+                            continue
                         update_progress()
                         snapshot = session.wait_job(timeout=0.25)
                         if snapshot is None:
@@ -294,12 +303,14 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                                 len(job.header_bytes), target.bit_length())
                             return 0
 
-                        utilization, boundary = effort.current()
-                        if utilization <= 0 or expired():
+                        kind, utilization, boundary = effort.current_job()
+                        if kind != "main" or utilization <= 0 or expired():
                             continue
                         if pacer.max_utilization != utilization:
                             pacer.set_utilization(utilization)
-                            log(logging.INFO, "Main effort GPU duty-cycle target: %d%%", utilization)
+                        if previous_effort != (kind, utilization):
+                            log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind.capitalize(), utilization)
+                            previous_effort = kind, utilization
                         rest_deadline = min(boundary, deadline) if deadline is not None else boundary
                         cancelled = lambda: (expired() or time.monotonic() >= boundary
                                              or not session.is_current(snapshot))

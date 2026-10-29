@@ -30,8 +30,7 @@ class ConfigTransferTests(unittest.TestCase):
             'official_source': 'src/LRAEP_helpers',
             'device': 'cuda:0',
             'training': {
-                'main_effort': [[60, 80], [120, 70], [180, 10]],
-                'decoy_effort': [],
+                'job_sequence': [["main", 60, 80], ["decoy", 120, 70], ["main", 180, 10]],
                 'output_dir': 'results',
                 'max_batches': 2,
             },
@@ -109,13 +108,13 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(set(self.destination.parent.iterdir()), {self.destination, self.env_path})
         for secret in ('PRIVATE-WR-IDENTITY', 'PRIVATE-POOL-PASSWORD', 'PRIVATE-VPN-ID',
-                       'PRIVATE-NODE-PASSWORD', self.text, 'main_effort', 'WR_wallet'):
+                       'PRIVATE-NODE-PASSWORD', self.text, 'job_sequence', 'WR_wallet'):
             self.assertNotIn(secret, self.destination.read_text())
         loaded = self.isolated_wr_load()
         self.assertEqual(loaded['raw'], expected)
         self.assertEqual(loaded['runtime']['mode'], 'pool')
-        self.assertEqual(loaded['runtime']['training']['main_effort'], self.values['training']['main_effort'])
-        self.assertEqual(loaded['runtime']['training']['decoy_effort'], [])
+        self.assertEqual(loaded['runtime']['training']['job_sequence'], self.values['training']['job_sequence'])
+        self.assertNotIn('decoy_effort', loaded['runtime']['training'])
         self.assertEqual(loaded['pool']['protocol'], 'WR')
         self.assertEqual(loaded['pool']['host'], 'wr.example')
         self.assertEqual(loaded['pool']['port'], 9000)
@@ -134,6 +133,36 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
         self.assertTrue(stored.endswith('LAST=keep\n'))
         self.assertEqual(read_open_text(self.env_path), self.text)
         self.assertNotIn('open_text="old"', stored)
+
+    def test_export_omits_decoy_job_after_validation_and_preserves_source(self):
+        self.values['decoy_job'] = {
+            'channels': [32, 64], 'blocks_per_stage': [1, 2],
+            'vpn': {'enabled': True, 'link': 'ss://PRIVATE-DECOY-VPN',
+                    'core_path': 'bin/decoy-xray'},
+        }
+        self.save_source()
+        source_before = self.source.read_bytes()
+        expected = self.exported_values()
+        expected.pop('decoy_job')
+        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
+        exported = decode_config_document(json.loads(self.destination.read_text()), self.text)
+        self.assertNotIn('decoy_job', exported)
+        self.assertEqual(exported, expected)
+        self.assertEqual(self.source.read_bytes(), source_before)
+        self.assertEqual(json.loads(self.source.read_text()), self.values)
+        loaded = self.isolated_wr_load()
+        self.assertNotIn('decoy_job', loaded['raw'])
+        self.assertEqual(loaded['raw'], expected)
+
+    def test_export_does_not_hide_invalid_decoy_settings(self):
+        self.values['decoy_job'] = {'channels': [0, 128, 256, 512]}
+        self.save_source()
+        source_before = self.source.read_bytes()
+        with self.assertRaisesRegex(ConfigError, 'decoy_job.channels'):
+            transfer.export_wr_config(self.source, self.destination, open_text=self.text)
+        self.assertEqual(self.source.read_bytes(), source_before)
+        self.assertFalse(self.destination.exists())
+        self.assertFalse(self.env_path.exists())
 
     def test_save_key_false_writes_no_env_and_does_not_modify_an_existing_env(self):
         transfer.export_wr_config(self.source, self.destination, open_text=self.text, save_key=False)

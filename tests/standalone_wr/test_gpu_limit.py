@@ -25,34 +25,35 @@ class GpuLimitTests(unittest.TestCase):
         self.config["vpn"]["link"] = "vless://dummy@example.invalid:443"
 
     def test_encrypted_config_without_effort_fields_receives_default_schedule(self):
-        self.config["training"].pop("main_effort")
-        self.config["training"].pop("decoy_effort")
+        self.config["training"].pop("job_sequence")
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        self.assertEqual(training["main_effort"], [(60, 80), (120, 70), (180, 10)])
-        self.assertEqual(training["decoy_effort"], [])
+        self.assertEqual(training["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertNotIn("decoy_effort", training)
         self.assertNotIn("max_gpu_utilization", training)
 
-    def test_encrypted_config_preserves_main_and_decoy_schedules(self):
-        self.config["training"].update(main_effort=[[0.5, 100], [3, 0], [0, -1]],
-                                       decoy_effort=[[2, 10]])
+    def test_encrypted_config_preserves_mixed_job_sequence(self):
+        self.config["training"]["job_sequence"] = [
+            ["main", 0.5, 100], ["decoy", 2, 10], ["main", 3, 0], ["decoy", 0, -1]]
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        self.assertEqual(training["main_effort"], [(0.5, 100), (3, 0), (0, -1)])
-        self.assertEqual(training["decoy_effort"], [(2, 10)])
+        self.assertEqual(training["job_sequence"],
+                         [("main", 0.5, 100), ("decoy", 2, 10), ("main", 3, 0), ("decoy", 0, -1)])
+        self.assertNotIn("main_effort", training)
+        self.assertNotIn("decoy_effort", training)
 
     def test_legacy_gpu_limit_becomes_constant_schedule(self):
-        self.config["training"].pop("main_effort")
+        self.config["training"].pop("job_sequence")
         self.config["training"]["max_gpu_utilization"] = 70
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        self.assertEqual(training["main_effort"], [(60, 70)])
+        self.assertEqual(training["job_sequence"], [("main", 60, 70)])
         self.assertNotIn("max_gpu_utilization", training)
 
-    def test_explicit_main_effort_takes_precedence_over_legacy_limit(self):
-        self.config["training"].update(main_effort=[[30, 40]], max_gpu_utilization=70)
+    def test_explicit_job_sequence_takes_precedence_over_legacy_limit(self):
+        self.config["training"].update(job_sequence=[["main", 30, 40]], max_gpu_utilization=70)
         save_config(self.path, self.config)
-        self.assertEqual(load_config(self.path)["training"]["main_effort"], [(30, 40)])
+        self.assertEqual(load_config(self.path)["training"]["job_sequence"], [("main", 30, 40)])
 
     def test_invalid_legacy_limits_are_rejected_even_with_main_schedule(self):
         for value in (0, 101, -1, True, 70.5, "70", None):
@@ -60,36 +61,44 @@ class GpuLimitTests(unittest.TestCase):
                 self.config["training"]["max_gpu_utilization"] = value
                 save_config(self.path, self.config)
 
-    def test_effort_schedule_validation_applies_to_both_fields(self):
-        malformed = (None, True, "PRIVATE_EFFORT", {}, [1, 80], [[1]], [[1, 80, 2]],
-                     [[0, 80]], [[-1, -1]], [[True, 80]], [["1", 80]],
-                     [[float("inf"), 80]], [[float("nan"), 80]],
-                     [[1, -2]], [[1, 101]], [[1, True]], [[1, 70.5]], [[1, "PRIVATE_EFFORT"]])
+    def test_job_sequence_validation_applies_before_encrypted_save(self):
+        malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ["main", 1, 80],
+                     [[1, 80]], [["main"]], [["main", 1]], [["main", 1, 80, 2]],
+                     [["PRIVATE_SEQUENCE", 1, 80]], [["MAIN", 1, 80]], [["Decoy", 1, 80]],
+                     [[True, 1, 80]], [[None, 1, 80]], [[[], 1, 80]],
+                     [["main", 0, 80]], [["decoy", -1, -1]], [["main", True, 80]],
+                     [["main", "1", 80]], [["main", float("inf"), 80]],
+                     [["decoy", float("nan"), 80]], [["main", 1, -2]],
+                     [["decoy", 1, 101]], [["main", 1, True]], [["main", 1, 70.5]],
+                     [["main", 1, "PRIVATE_SEQUENCE"]])
+        for value in malformed:
+            config = copy.deepcopy(self.config)
+            config["training"]["job_sequence"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "job_sequence") as caught:
+                save_config(self.path, config)
+            self.assertNotIn("PRIVATE_SEQUENCE", str(caught.exception))
+
+    def test_separate_effort_keys_are_rejected(self):
         for field in ("main_effort", "decoy_effort"):
-            for value in malformed:
-                config = copy.deepcopy(self.config)
-                config["training"][field] = value
-                with self.subTest(field=field, value=value), self.assertRaisesRegex(ConfigError, field) as caught:
-                    save_config(self.path, config)
-                self.assertNotIn("PRIVATE_EFFORT", str(caught.exception))
-        self.config["training"]["main_effort"] = []
-        with self.assertRaisesRegex(ConfigError, "main_effort"):
-            save_config(self.path, self.config)
+            config = copy.deepcopy(self.config)
+            config["training"][field] = "PRIVATE_SEQUENCE"
+            with self.subTest(field=field), self.assertRaisesRegex(ConfigError, "replaced by training.job_sequence") as caught:
+                save_config(self.path, config)
+            self.assertNotIn("PRIVATE_SEQUENCE", str(caught.exception))
 
     def test_effort_defaults_are_independent(self):
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        training["main_effort"].append((1, 100))
-        training["decoy_effort"].append((1, 0))
+        training["job_sequence"].append(("decoy", 1, 100))
         again = load_config(self.path)["training"]
-        self.assertEqual(again["main_effort"], [(60, 80), (120, 70), (180, 10)])
-        self.assertEqual(again["decoy_effort"], [])
+        self.assertEqual(again["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertNotIn("decoy_effort", again)
         exported = copy.deepcopy(DEFAULT_CONFIG["training"])
         try:
-            DEFAULT_CONFIG["training"]["main_effort"][0][1] = 99
+            DEFAULT_CONFIG["training"]["job_sequence"][0][2] = 99
             self.config.pop("training")
             save_config(self.path, self.config)
-            self.assertEqual(load_config(self.path)["training"]["main_effort"][0], (60, 80))
+            self.assertEqual(load_config(self.path)["training"]["job_sequence"][0], ("main", 60, 80))
         finally:
             DEFAULT_CONFIG["training"] = exported
 
@@ -154,7 +163,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", primitives, create=True))
 
     def test_wr_pool_paces_after_submitting_and_before_the_next_batch(self):
-        self.config["training"].update(max_batches=2, main_effort=[(60, 60)])
+        self.config["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
         order = []
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
         self.session.submit.side_effect = lambda *_: (
@@ -208,7 +217,7 @@ class WRPoolEffortTests(unittest.TestCase):
                 return self.stopped
 
         stopped = ClockEvent()
-        self.config["training"].update(main_effort=schedule, max_batches=batches,
+        self.config["training"].update(job_sequence=schedule, max_batches=batches,
                                                 max_seconds=max_seconds)
         self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
         with patch.object(worker.time, "monotonic", side_effect=lambda: clock.now), \
@@ -221,7 +230,7 @@ class WRPoolEffortTests(unittest.TestCase):
             yield clock, pacer
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
-        with self.clocked_schedule([(10, 100), (20, 0), (10, 100)]) as (clock, _):
+        with self.clocked_schedule([("main", 10, 100), ("main", 20, 0), ("main", 10, 100)]) as (clock, _):
             order = []
             clock.on_wait = lambda: order.append("pause")
 
@@ -241,7 +250,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_100_percent_search_cancellation_drains_cuda_before_exit_cleanup(self):
-        with self.clocked_schedule([(10, 100), (0, -1)]) as (clock, _):
+        with self.clocked_schedule([("main", 10, 100), ("main", 0, -1)]) as (clock, _):
             order = []
 
             def search(*_):
@@ -261,7 +270,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_initial_pause_delays_mining_until_the_positive_interval(self):
-        with self.clocked_schedule([(30, 0), (60, 70)]) as (clock, pacer):
+        with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             self.assertEqual(worker.run_pool_training(self.config), 0)
@@ -271,7 +280,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_pause_between_positive_intervals_performs_no_mining(self):
-        with self.clocked_schedule([(10, 80), (20, 0), (10, 30)], batches=2) as (clock, pacer):
+        with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -281,8 +290,8 @@ class WRPoolEffortTests(unittest.TestCase):
         self.assertEqual(pacer.set_utilization.call_args_list, [call(80), call(30)])
         self.assertEqual(self.session.submit.call_count, 2)
 
-    def test_schedule_switches_effort_and_repeats_from_the_first_interval(self):
-        with self.clocked_schedule([(10, 80), (20, 70)], batches=5) as (clock, pacer):
+    def test_mixed_sequence_switches_effort_and_repeats_from_the_first_interval(self):
+        with self.clocked_schedule([("main", 10, 80), ("decoy", 20, 70)], batches=5) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -294,7 +303,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 5)
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
-        with self.clocked_schedule([(30, 0)], max_seconds=10) as (clock, pacer):
+        with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
             self.assertEqual(worker.run_pool_training(self.config), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
@@ -307,7 +316,7 @@ class WRPoolEffortTests(unittest.TestCase):
         pacer.begin.assert_not_called()
 
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
-        self.config["training"]["main_effort"] = [(0, -1), (60, 80)]
+        self.config["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
             self.assertEqual(worker.run_pool_training(self.config), 0)
         cuda.assert_not_called()
@@ -319,7 +328,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.monitor.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_authentication_and_cleans_up(self):
-        self.config["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+        self.config["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit():
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -340,7 +349,7 @@ class WRPoolEffortTests(unittest.TestCase):
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
         from LRAEP_trainer.pool_transport import PoolConnectionError
 
-        self.config["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+        self.config["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -355,12 +364,12 @@ class WRPoolEffortTests(unittest.TestCase):
         self.monitor.return_value.start.return_value.close.assert_called_once()
         self.progress.return_value.__exit__.assert_called_once()
 
-    def test_empty_decoy_effort_does_not_create_or_run_a_second_schedule(self):
-        self.config["training"].update(main_effort=[(60, 70)], decoy_effort=[])
-        with patch.object(worker, "EffortSchedule", wraps=worker.EffortSchedule) as schedules:
+    def test_main_jobs_use_one_shared_sequence(self):
+        self.config["training"].update(job_sequence=[("main", 60, 70)])
+        with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
             self.assertEqual(worker.run_pool_training(self.config), 0)
         schedules.assert_called_once()
-        self.assertEqual(schedules.call_args.args[0], [(60, 70)])
+        self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
         self.prepare.assert_called_once()
         self.search.assert_called_once()
         self.session.submit.assert_called_once()

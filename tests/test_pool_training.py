@@ -76,7 +76,7 @@ class PoolLoopTests(unittest.TestCase):
         self.assertEqual(self.header.nbits, 0x1D00FFFF)
 
     def test_gpu_pacing_runs_between_batches_after_share_submission(self):
-        self.configuration["training"].update(max_batches=2, main_effort=[(60, 60)])
+        self.configuration["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
         order = []
         self.session.submit.side_effect = lambda *_: (order.append("submit"), ShareResult(True, None))[1]
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
@@ -118,7 +118,7 @@ class PoolLoopTests(unittest.TestCase):
                 return self.stopped
 
         stopped = ClockEvent()
-        self.configuration["training"].update(main_effort=schedule, max_batches=batches,
+        self.configuration["training"].update(job_sequence=schedule, max_batches=batches,
                                                 max_seconds=max_seconds)
         self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
         with patch.object(worker.time, "monotonic", side_effect=lambda: clock.now), \
@@ -131,7 +131,7 @@ class PoolLoopTests(unittest.TestCase):
             yield clock, pacer
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
-        with self.clocked_schedule([(10, 100), (20, 0), (10, 100)]) as (clock, _):
+        with self.clocked_schedule([("main", 10, 100), ("main", 20, 0), ("main", 10, 100)]) as (clock, _):
             order = []
             clock.on_wait = lambda: order.append("pause")
 
@@ -151,7 +151,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_100_percent_search_cancellation_drains_cuda_before_exit_cleanup(self):
-        with self.clocked_schedule([(10, 100), (0, -1)]) as (clock, _):
+        with self.clocked_schedule([("main", 10, 100), ("main", 0, -1)]) as (clock, _):
             order = []
 
             def search(*_):
@@ -171,7 +171,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_initial_pause_delays_mining_until_the_positive_interval(self):
-        with self.clocked_schedule([(30, 0), (60, 70)]) as (clock, pacer):
+        with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
@@ -181,7 +181,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_pause_between_positive_intervals_performs_no_mining(self):
-        with self.clocked_schedule([(10, 80), (20, 0), (10, 30)], batches=2) as (clock, pacer):
+        with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -192,19 +192,63 @@ class PoolLoopTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 2)
 
     def test_schedule_switches_effort_and_repeats_from_the_first_interval(self):
-        with self.clocked_schedule([(10, 80), (20, 70)], batches=5) as (clock, pacer):
+        with self.clocked_schedule([("main", 10, 80), ("decoy", 20, 70)], batches=5) as (clock, pacer), \
+                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
             prepared_at = []
+            decoy_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            cnn.return_value.step.side_effect = lambda **_kw: (decoy_at.append(clock.now), True)[1]
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
-        self.assertEqual(prepared_at, [0, 10, 30, 40, 60])
+        self.assertEqual(prepared_at, [0, 30, 60, 90, 120])
+        self.assertEqual(decoy_at, [10, 40, 70, 100])
+        self.assertEqual(self.session.wait_job.call_count, 5)
         self.assertEqual(pacer.set_utilization.call_args_list,
-                         [call(80), call(70), call(80), call(70), call(80)])
+                         [call(80), call(70), call(80), call(70), call(80),
+                          call(70), call(80), call(70), call(80)])
         self.assertEqual(self.search.call_count, 5)
         self.assertEqual(self.session.submit.call_count, 5)
+        cnn.assert_called_once_with(self.configuration)
+        cnn.return_value.close.assert_called_once()
+
+    def test_initial_decoy_trains_before_pool_connection_or_job_wait(self):
+        with self.clocked_schedule([("decoy", 10, 70), ("main", 20, 80)]) as (clock, _), \
+                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
+            def decoy_batch(**_kw):
+                self.factory.assert_not_called()
+                self.session.wait_job.assert_not_called()
+                self.prepare.assert_not_called()
+                clock.now = 10
+                return True
+
+            cnn.return_value.step.side_effect = decoy_batch
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.prepare.assert_called_once()
+        self.session.submit.assert_called_once()
+        cnn.return_value.step.assert_called_once()
+        cnn.return_value.close.assert_called_once()
+
+    def test_role_transition_cancels_old_preparation_at_unchanged_gpu_cap(self):
+        with self.clocked_schedule([("main", 10, 70), ("decoy", 20, 70)]) as (clock, pacer), \
+                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
+            cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
+
+            def prepare(*_a, **_kw):
+                if self.prepare.call_count == 1:
+                    clock.now = 10
+
+            self.prepare.side_effect = prepare
+            with self.assertLogs(worker.LOG, level="INFO") as messages:
+                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(self.prepare.call_count, 2)
+        self.search.assert_called_once()
+        self.session.submit.assert_called_once()
+        self.assertEqual(pacer.set_utilization.call_args_list, [call(70)])
+        self.assertIn("Main effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("Decoy effort GPU duty-cycle target: 70%", " ".join(messages.output))
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
-        with self.clocked_schedule([(30, 0)], max_seconds=10) as (clock, pacer):
+        with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
@@ -217,7 +261,7 @@ class PoolLoopTests(unittest.TestCase):
         pacer.begin.assert_not_called()
 
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
-        self.configuration["training"]["main_effort"] = [(0, -1), (60, 80)]
+        self.configuration["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         cuda.assert_not_called()
@@ -229,7 +273,7 @@ class PoolLoopTests(unittest.TestCase):
         self.monitor.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_authentication_and_cleans_up(self):
-        self.configuration["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+        self.configuration["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit():
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -250,7 +294,7 @@ class PoolLoopTests(unittest.TestCase):
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
         from LRAEP_trainer.pool_transport import PoolConnectionError
 
-        self.configuration["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+        self.configuration["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -265,12 +309,12 @@ class PoolLoopTests(unittest.TestCase):
         self.monitor.return_value.start.return_value.close.assert_called_once()
         self.progress.return_value.__exit__.assert_called_once()
 
-    def test_empty_decoy_effort_does_not_create_or_run_a_second_schedule(self):
-        self.configuration["training"].update(main_effort=[(60, 70)], decoy_effort=[])
-        with patch.object(worker, "EffortSchedule", wraps=worker.EffortSchedule) as schedules:
+    def test_job_sequence_creates_one_shared_schedule(self):
+        self.configuration["training"].update(job_sequence=[("main", 60, 70)])
+        with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         schedules.assert_called_once()
-        self.assertEqual(schedules.call_args.args[0], [(60, 70)])
+        self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
         self.prepare.assert_called_once()
         self.search.assert_called_once()
         self.session.submit.assert_called_once()

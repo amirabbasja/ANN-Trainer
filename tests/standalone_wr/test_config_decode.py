@@ -37,7 +37,7 @@ class ConfigDecodeTests(unittest.TestCase):
         self.assertEqual(set(envelope), {'format', 'salt', 'ciphertext'})
         self.assertNotIn('fixture-wallet', self.path.read_text(encoding='utf-8'))
         self.assertEqual(read_config(self.path), self.config)
-        self.assertEqual(load_config(self.path)['training']['main_effort'], [(60, 80), (120, 70), (180, 10)])
+        self.assertEqual(load_config(self.path)['training']['job_sequence'], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.directory / 'config.key').exists())
 
@@ -119,9 +119,9 @@ class ConfigDecodeTests(unittest.TestCase):
     def test_update_merges_fields_and_preserves_adjacent_dotenv(self):
         save_config(self.path, self.config)
         dotenv_before = (self.directory / '.env').read_bytes()
-        update_config(self.path, {'training': {'main_effort': [[5, 50], [0, -1]]}})
+        update_config(self.path, {'training': {'job_sequence': [["main", 5, 50], ["main", 0, -1]]}})
         updated = read_config(self.path)
-        self.assertEqual(updated['training']['main_effort'], [[5, 50], [0, -1]])
+        self.assertEqual(updated['training']['job_sequence'], [["main", 5, 50], ["main", 0, -1]])
         self.assertEqual(updated['pool'], self.config['pool'])
         self.assertEqual(updated['vpn'], self.config['vpn'])
         self.assertEqual((self.directory / '.env').read_bytes(), dotenv_before)

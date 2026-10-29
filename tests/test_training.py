@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, call, patch
 
 import LRAEP_trainer
 from LRAEP_trainer import __main__ as cli
-from LRAEP_trainer.effort import EffortSchedule
+from LRAEP_trainer.effort import JobSequence
 
 
 class TrainingControlFlowTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class TrainingControlFlowTests(unittest.TestCase):
             device="cuda:0", address="test-payout-address", m=128, n=128,
             k=2048, tile_h=8, tile_w=8, rpc_url="https://127.0.0.1:44107",
             rpc_ca=None, rpc_timeout=1, poll_interval=1, refresh_interval=60,
-            max_batches=1, max_seconds=0, main_effort=[(60, 80)], decoy_effort=[], no_submit=False,
+            max_batches=1, max_seconds=0, job_sequence=[("main", 60, 80)], no_submit=False,
             output_dir=str(self.output),
         )
         self.parent = "11" * 32
@@ -142,7 +142,7 @@ class TrainingControlFlowTests(unittest.TestCase):
 
     def test_solo_paces_between_batched_searches(self):
         self.args.max_batches = 2
-        self.args.main_effort = [(60, 60)]
+        self.args.job_sequence = [("main", 60, 60)]
         order = []
         self.search.side_effect = lambda *_: (order.append("search"), iter([]))[1]
         with patch.object(cli, "GpuPacer") as pacer:
@@ -155,7 +155,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(pacer.return_value.set_utilization.call_args_list, [call(60), call(60)])
 
     def test_initial_pause_obeys_time_limit_without_initializing_or_fetching_work(self):
-        self.args.main_effort = [(1, 0), (60, 80)]
+        self.args.job_sequence = [("main", 1, 0), ("main", 60, 80)]
         self.args.max_seconds = 0.01
         self.assertEqual(cli.train(self.args), 0)
         self.cuda.assert_not_called()
@@ -165,7 +165,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(self.signals.call_count, 4)
 
     def test_initial_pause_resumes_mining_after_its_interval(self):
-        self.args.main_effort = [(0.02, 0), (60, 80)]
+        self.args.job_sequence = [("main", 0.02, 0), ("main", 60, 80)]
         started = time.monotonic()
         self.assertEqual(cli.train(self.args), 0)
         self.assertGreaterEqual(time.monotonic() - started, 0.015)
@@ -174,7 +174,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.node.submit.assert_called_once_with(self.block)
 
     def test_initial_exit_skips_backend_watcher_and_rpc_setup(self):
-        self.args.main_effort = [(0, -1)]
+        self.args.job_sequence = [("main", 0, -1)]
         self.assertEqual(cli.train(self.args), 0)
         self.cuda.assert_not_called()
         self.node_factory.assert_not_called()
@@ -183,7 +183,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(self.signals.call_count, 4)
 
     def test_positive_stage_change_cancels_old_search_and_changes_pacing(self):
-        self.args.main_effort = [(1, 70), (1, 20), (0, -1)]
+        self.args.job_sequence = [("main", 1, 70), ("main", 1, 20), ("main", 0, -1)]
         now = [100.0]
 
         def search(_batch, _target, _device, cancelled):
@@ -203,8 +203,34 @@ class TrainingControlFlowTests(unittest.TestCase):
         pacer.return_value.wait.assert_called_once()
         self.assertEqual(pacer.return_value.wait.call_args.kwargs["deadline"], 101.0)
 
+    def test_role_change_cancels_old_search_even_at_unchanged_gpu_cap(self):
+        self.args.job_sequence = [("main", 1, 70), ("decoy", 1, 70), ("main", 0, -1)]
+        now = [100.0]
+
+        def search(_batch, _target, _device, cancelled):
+            if self.search.call_count == 1:
+                now[0] = 101.0
+                self.assertTrue(cancelled())
+                raise cli.TrainingCancelled("job kind changed")
+            self.assertFalse(cancelled())
+            return iter([])
+
+        self.search.side_effect = search
+        with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(cli, "GpuPacer"), \
+                patch("LRAEP_trainer.decoy.DecoyJob") as cnn, \
+                self.assertLogs(cli.LOG, level="INFO") as messages:
+            cnn.return_value.step.side_effect = lambda **_kw: (now.__setitem__(0, 102.0), True)[1]
+            self.assertEqual(cli.train(self.args), 0)
+        self.assertEqual(self.search.call_count, 1)
+        self.assertIn("Main effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("Decoy effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        cnn.return_value.step.assert_called_once()
+        cnn.return_value.close.assert_called_once()
+        self.node.submit.assert_not_called()
+
     def test_pause_after_search_discards_candidate_before_verification(self):
-        self.args.main_effort = [(1, 80), (1, 0), (0, -1)]
+        self.args.job_sequence = [("main", 1, 80), ("main", 1, 0), ("main", 0, -1)]
         now = [100.0]
 
         def search(*_):
@@ -221,7 +247,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.watcher.thread.join.assert_called_once()
 
     def test_exit_during_preparation_skips_search_and_cleans_up(self):
-        self.args.main_effort = [(1, 80), (0, -1)]
+        self.args.job_sequence = [("main", 1, 80), ("main", 0, -1)]
         now = [100.0]
 
         def prepare(*_args, **_kwargs):
@@ -239,7 +265,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(self.signals.call_count, 4)
 
     def test_exit_during_100_percent_preparation_synchronizes_pending_gpu_work(self):
-        self.args.main_effort = [(1, 100), (0, -1)]
+        self.args.job_sequence = [("main", 1, 100), ("main", 0, -1)]
         now = [100.0]
 
         def prepare(*_args, **_kwargs):
@@ -255,7 +281,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.node.submit.assert_not_called()
 
     def test_exit_during_100_percent_search_synchronizes_pending_gpu_work(self):
-        self.args.main_effort = [(1, 100), (0, -1)]
+        self.args.job_sequence = [("main", 1, 100), ("main", 0, -1)]
         now = [100.0]
 
         def search(_batch, _target, _device, cancelled):
@@ -273,7 +299,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.watcher.thread.join.assert_called_once()
 
     def test_pause_during_proof_generation_prevents_submission(self):
-        self.args.main_effort = [(1, 80), (1, 0), (0, -1)]
+        self.args.job_sequence = [("main", 1, 80), ("main", 1, 0), ("main", 0, -1)]
         now = [100.0]
 
         def build(*_):
@@ -291,7 +317,7 @@ class TrainingControlFlowTests(unittest.TestCase):
     def test_pacing_wait_is_bounded_by_session_deadline(self):
         self.args.max_batches = 2
         self.args.max_seconds = 5
-        self.args.main_effort = [(10, 60)]
+        self.args.job_sequence = [("main", 10, 60)]
         self.search.side_effect = lambda *_: iter([])
         with patch.object(cli.time, "monotonic", return_value=100.0), \
                 patch.object(cli, "GpuPacer") as pacer:
@@ -299,7 +325,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(pacer.return_value.wait.call_args.kwargs["deadline"], 105.0)
 
     def test_template_rpc_timeout_is_bounded_by_current_effort_interval(self):
-        self.args.main_effort = [(1, 80), (0, -1)]
+        self.args.job_sequence = [("main", 1, 80), ("main", 0, -1)]
         now = [100.0]
         self.args.rpc_timeout = 15
 
@@ -336,7 +362,7 @@ class TipWatcherEffortTests(unittest.TestCase):
 
         node.best_hash.side_effect = best_hash
         with patch.object(cli.time, "monotonic", return_value=100.0):
-            schedule = EffortSchedule([(1, 70), (0, -1)], started=100.0)
+            schedule = JobSequence([("main", 1, 70), ("main", 0, -1)], started=100.0)
             watcher = cli.TipWatcher(node, 10, schedule=schedule, stopped=stopped,
                                      deadline=100.25)
             watcher._run()
@@ -349,7 +375,7 @@ class TipWatcherEffortTests(unittest.TestCase):
         stopped = threading.Event()
         node = MagicMock(timeout=15)
         with patch.object(cli.time, "monotonic", return_value=100.0):
-            schedule = EffortSchedule([(1, 0), (0, -1)], started=100.0)
+            schedule = JobSequence([("main", 1, 0), ("main", 0, -1)], started=100.0)
             watcher = cli.TipWatcher(node, 10, schedule=schedule, stopped=stopped,
                                      deadline=100.0)
             watcher._run()
@@ -359,7 +385,7 @@ class TipWatcherEffortTests(unittest.TestCase):
         node = MagicMock(timeout=15)
         schedule = MagicMock()
         schedule.wait.side_effect = [True, False]
-        schedule.current.return_value = (0, 200)
+        schedule.current_job.return_value = ("main", 0, 200)
         watcher = cli.TipWatcher(node, 10, schedule=schedule)
         watcher._run()
         node.best_hash.assert_not_called()
