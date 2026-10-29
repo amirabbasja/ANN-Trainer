@@ -11,6 +11,8 @@
     "tile_w": 8,
     "max_batches": 0,
     "max_seconds": 0,
+    "main_effort": [[60, 80], [120, 70], [180, 10]],
+    "decoy_effort": [],
     "output_dir": "~/.local/share/LRAEP/artifacts"
   },
   "pool": {

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import signal
 import threading
@@ -16,6 +17,8 @@ import numpy as np
 import torch
 
 from .gpu import TrainingCancelled, gpu_transcripts
+from .gpu_pacing import GpuPacer
+from .effort import EffortSchedule, normalize_effort
 from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_target, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
@@ -28,22 +31,41 @@ LOG = logging.getLogger("LRAEP_trainer")
 class TipWatcher:
     """Cancel obsolete GPU work when the node advances or becomes unreachable."""
 
-    def __init__(self, node: NodeClient, interval: float):
+    def __init__(self, node: NodeClient, interval: float, *, schedule=None,
+                 stopped=None, deadline=None):
         self.node = node
         self.interval = interval
+        self.schedule = schedule
+        self.deadline = deadline
+        self._rpc_timeout = node.timeout
         self.tip = None
         self.failed = True
-        self.stopped = threading.Event()
+        self.stopped = stopped if stopped is not None else threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         while not self.stopped.is_set():
+            boundary = math.inf
+            if self.schedule is not None:
+                if not self.schedule.wait(self.stopped, deadline=self.deadline):
+                    break
+                percentage, boundary = self.schedule.current()
+                if percentage <= 0:
+                    continue
+            if self.deadline is not None:
+                boundary = min(boundary, self.deadline)
+                if time.monotonic() >= self.deadline:
+                    break
+            remaining = boundary - time.monotonic()
+            if remaining <= 0:
+                continue
+            self.node.timeout = min(self._rpc_timeout, remaining)
             try:
                 self.tip = self.node.best_hash()
                 self.failed = False
             except NodeError:
                 self.failed = True
-            self.stopped.wait(self.interval)
+            self.stopped.wait(max(0, min(self.interval, boundary - time.monotonic())))
 
     def stale(self, parent: str) -> bool:
         return self.failed or self.tip != parent
@@ -111,107 +133,172 @@ def self_test(args) -> int:
 def train(args) -> int:
     from LRAEP_trainer import primitives as pm
 
-    require_cuda(args.device)
-    if not args.address:
-        raise ValueError("set LRAEP_TRAINING_ADDRESS or provide --address (a PEARL Taproot payout address)")
-    username = getattr(args, "rpc_username", os.environ.get("LRAEPD_RPC_USER", ""))
-    password = getattr(args, "rpc_password", os.environ.get("LRAEPD_RPC_PASSWORD", ""))
-    if not username or not password:
-        raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
-    cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
-    use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
-    # Validate the address locally before beginning any sustained GPU work.
-    from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
-    get_script_pubkey_from_p2tr_address(args.address)
-    node_options = dict(url=args.rpc_url, username=username, password=password,
-                        ca_file=args.rpc_ca, timeout=args.rpc_timeout)
-    node = NodeClient(**node_options)
-    watcher = TipWatcher(NodeClient(**node_options), args.poll_interval)
     stopped = threading.Event()
+    started = time.monotonic()
+    schedule = EffortSchedule(args.main_effort, started=started)
+    deadline = started + args.max_seconds if args.max_seconds else None
+    watcher = None
+    batches = attempts = accepted = 0
     old_handlers = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
         old_handlers[sig] = signal.signal(sig, lambda *_: stopped.set())
-    watcher.thread.start()
-    rng = np.random.default_rng()
-    started = time.monotonic()
-    batches = attempts = accepted = 0
-    output = Path(args.output_dir).expanduser().resolve()
-    output.mkdir(parents=True, exist_ok=True)
 
     def finished():
-        return (stopped.is_set() or (args.max_batches > 0 and batches >= args.max_batches)
-                or (args.max_seconds > 0 and time.monotonic() - started >= args.max_seconds))
+        return (stopped.is_set() or schedule.ended()
+                or (args.max_batches > 0 and batches >= args.max_batches)
+                or (deadline is not None and time.monotonic() >= deadline))
 
-    try:
-        while not finished():
-            try:
-                template = node.get_template(args.address)
-                cert = int(template.required_cert_version)
-                if cert not in (1, 2, 3):
-                    raise ValueError(f"unsupported certificate version {cert}; update official helpers")
-                header = template.header.incomplete_header
-                parent = bytes(header.prev_block).hex()
-                target = adjusted_target(template.target, cfg)
-                expires = time.monotonic() + args.refresh_interval
-                LOG.info("Training height=%d certificate=V%d shape=%dx%dx%d",
-                         template.height, cert, cfg.m, cfg.n, cfg.k)
-                # Confirm the watcher is caught up before starting this template.
-                watcher.tip = node.best_hash()
-                watcher.failed = False
-                cancelled = lambda: (finished() or watcher.stale(parent)
-                                     or time.monotonic() >= expires)
-                while not cancelled():
-                    batch = prepare_batch(header, cert, cfg, rng, device=args.device, gpu_signals=True,
-                                          native=use_native)
-                    if cancelled():
-                        break
-                    try:
-                        matches = search_batch(batch, target, args.device, cancelled)
-                    except TrainingCancelled:
-                        break
-                    batches += 1
-                    attempts += (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
-                    # Batch limits stop the next search, while a completed result
-                    # still gets verified and submitted.
-                    for row, col, _ in matches:
-                        if stopped.is_set() or watcher.stale(parent):
+    with schedule.stopping(stopped):
+        try:
+            # Pauses and an immediate exit must not initialize a mining backend.
+            if not schedule.wait(stopped, deadline=deadline) or finished():
+                return 0
+            require_cuda(args.device)
+            if not args.address:
+                raise ValueError("set LRAEP_TRAINING_ADDRESS or provide --address (a PEARL Taproot payout address)")
+            username = getattr(args, "rpc_username", os.environ.get("LRAEPD_RPC_USER", ""))
+            password = getattr(args, "rpc_password", os.environ.get("LRAEPD_RPC_PASSWORD", ""))
+            if not username or not password:
+                raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
+            cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
+            pacer = GpuPacer(args.device, 100)
+            LOG.info("GPU effort schedule: %s", args.main_effort)
+            use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
+            from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
+            get_script_pubkey_from_p2tr_address(args.address)
+            node_options = dict(url=args.rpc_url, username=username, password=password,
+                                ca_file=args.rpc_ca, timeout=args.rpc_timeout)
+            node = NodeClient(**node_options)
+            watcher = TipWatcher(NodeClient(**node_options), args.poll_interval,
+                                 schedule=schedule, stopped=stopped, deadline=deadline)
+            watcher.thread.start()
+            rng = np.random.default_rng()
+            output = Path(args.output_dir).expanduser().resolve()
+            output.mkdir(parents=True, exist_ok=True)
+
+            def stage_deadline(boundary):
+                return boundary if deadline is None else min(boundary, deadline)
+
+            def rpc(method, *values):
+                # Existing requests remain synchronous and bounded by the next
+                # effort boundary, rather than continuing in detached threads.
+                percentage, boundary = schedule.current()
+                if stopped.is_set() or percentage <= 0:
+                    raise TrainingCancelled("GPU effort is paused or stopped")
+                remaining = stage_deadline(boundary) - time.monotonic()
+                if remaining <= 0:
+                    raise TrainingCancelled("GPU effort interval ended")
+                node.timeout = min(args.rpc_timeout, max(0.001, remaining))
+                return method(*values)
+
+            while not finished():
+                if not schedule.wait(stopped, deadline=deadline) or finished():
+                    break
+                try:
+                    template = rpc(node.get_template, args.address)
+                    if schedule.current()[0] <= 0 or finished():
+                        continue
+                    cert = int(template.required_cert_version)
+                    if cert not in (1, 2, 3):
+                        raise ValueError(f"unsupported certificate version {cert}; update official helpers")
+                    header = template.header.incomplete_header
+                    parent = bytes(header.prev_block).hex()
+                    target = adjusted_target(template.target, cfg)
+                    expires = time.monotonic() + args.refresh_interval
+                    LOG.info("Training height=%d certificate=V%d shape=%dx%dx%d",
+                             template.height, cert, cfg.m, cfg.n, cfg.k)
+                    watcher.tip = rpc(node.best_hash)
+                    watcher.failed = False
+
+                    def template_stale():
+                        return finished() or watcher.stale(parent) or time.monotonic() >= expires
+
+                    while not template_stale():
+                        if not schedule.wait(stopped, deadline=deadline) or template_stale():
                             break
-                        if node.best_hash() != parent:
+                        percentage, boundary = schedule.current()
+                        if percentage <= 0:
+                            continue
+                        pacer.set_utilization(percentage)
+
+                        def cancelled():
+                            return (template_stale() or time.monotonic() >= boundary
+                                    or schedule.current()[0] <= 0)
+
+                        def candidate_cancelled():
+                            # A completed final batch remains eligible unless
+                            # a schedule transition, stop, or chain tip invalidates it.
+                            return (stopped.is_set() or watcher.stale(parent)
+                                    or time.monotonic() >= boundary
+                                    or schedule.current()[0] <= 0)
+
+                        pacer.begin()
+                        batch = prepare_batch(header, cert, cfg, rng, device=args.device, gpu_signals=True,
+                                              native=use_native)
+                        if cancelled():
+                            pacer.finish(cancelled=True)
+                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                            continue
+                        try:
+                            matches = search_batch(batch, target, args.device, cancelled)
+                        except TrainingCancelled:
+                            pacer.finish(cancelled=True)
+                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                            continue
+                        pacer.finish()
+                        batches += 1
+                        attempts += (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
+                        for row, col, _ in matches:
+                            if candidate_cancelled():
+                                break
+                            if rpc(node.best_hash) != parent or candidate_cancelled():
+                                break
+                            proof = batch.plain_proof(row, col)
+                            if candidate_cancelled():
+                                break
+                            valid, message = pm.verify_plain_proof_for_cert_version(cert, header, proof)
+                            if not valid:
+                                raise RuntimeError(f"GPU candidate rejected locally: {message}")
+                            if candidate_cancelled():
+                                break
+                            LOG.info("Training candidate verified; creating its ZK certificate")
+                            block_bytes = build_block(proof, template)
+                            if candidate_cancelled():
+                                break
+                            name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
+                            (output / f"{name}.bin").write_bytes(block_bytes)
+                            (output / f"{name}.json").write_text(json.dumps({
+                                "height": template.height, "certificate_version": cert,
+                                "incomplete_header_hex": bytes(header.to_bytes()).hex(),
+                                "plain_proof_base64": proof.to_base64(),
+                            }, indent=2) + "\n")
+                            if args.no_submit:
+                                LOG.info("Verified block saved to %s (submission disabled)", output / f"{name}.bin")
+                            elif rpc(node.best_hash) == parent and not candidate_cancelled():
+                                rpc(node.submit, block_bytes)
+                                accepted += 1
+                                LOG.info("Node accepted the training result at height %d", template.height)
+                            else:
+                                LOG.info("Chain advanced during certification; saved candidate is stale")
                             break
-                        proof = batch.plain_proof(row, col)
-                        valid, message = pm.verify_plain_proof_for_cert_version(cert, header, proof)
-                        if not valid:
-                            raise RuntimeError(f"GPU candidate rejected locally: {message}")
-                        LOG.info("Training candidate verified; creating its ZK certificate")
-                        block_bytes = build_block(proof, template)
-                        name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
-                        (output / f"{name}.bin").write_bytes(block_bytes)
-                        (output / f"{name}.json").write_text(json.dumps({
-                            "height": template.height, "certificate_version": cert,
-                            "incomplete_header_hex": bytes(header.to_bytes()).hex(),
-                            "plain_proof_base64": proof.to_base64(),
-                        }, indent=2) + "\n")
-                        if args.no_submit:
-                            LOG.info("Verified block saved to %s (submission disabled)", output / f"{name}.bin")
-                        elif node.best_hash() == parent and not stopped.is_set():
-                            node.submit(block_bytes)
-                            accepted += 1
-                            LOG.info("Node accepted the training result at height %d", template.height)
-                        else:
-                            LOG.info("Chain advanced during certification; saved candidate is stale")
-                        break
-                    elapsed = max(time.monotonic() - started, 0.001)
-                    LOG.info("Training batches=%d tile_attempts=%d attempts/s=%.1f accepted=%d",
-                             batches, attempts, attempts / elapsed, accepted)
-            except NodeError as exc:
-                LOG.warning("%s; retrying in 3 seconds", exc)
-                stopped.wait(3)
-    finally:
-        stopped.set()
-        watcher.stopped.set()
-        watcher.thread.join(timeout=1)
-        for sig, handler in old_handlers.items():
-            signal.signal(sig, handler)
+                        elapsed = max(time.monotonic() - started, 0.001)
+                        LOG.info("Training batches=%d tile_attempts=%d attempts/s=%.1f accepted=%d",
+                                 batches, attempts, attempts / elapsed, accepted)
+                        if not finished():
+                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                except TrainingCancelled:
+                    continue
+                except NodeError as exc:
+                    LOG.warning("%s; retrying in 3 seconds", exc)
+                    _, boundary = schedule.current()
+                    stopped.wait(max(0, min(3, stage_deadline(boundary) - time.monotonic())))
+        finally:
+            stopped.set()
+            if watcher is not None:
+                watcher.stopped.set()
+                watcher.thread.join()
+            for sig, handler in old_handlers.items():
+                signal.signal(sig, handler)
     LOG.info("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
     return 0
 
@@ -247,13 +334,35 @@ def _add_training_arguments(parser):
     for name in ("m", "n", "k", "tile-h", "tile-w", "max-batches"):
         parser.add_argument(f"--{name}", type=int, default=argparse.SUPPRESS)
     parser.add_argument("--max-seconds", type=float, default=argparse.SUPPRESS)
+    parser.add_argument("--max-gpu-utilization", type=int, default=argparse.SUPPRESS,
+                        help="legacy constant GPU effort, 1-100 (100 disables pacing)")
+    parser.add_argument("--main-effort", default=argparse.SUPPRESS,
+                        help='JSON schedule of [seconds, percentage] pairs; 0 pauses and -1 exits')
     parser.add_argument("--output-dir", default=argparse.SUPPRESS)
 
 
 def _apply_settings(args, configuration):
     """Config values replace defaults; explicit command options take priority."""
+    from .config import DEFAULT_CONFIG
+
     training = configuration["training"] if configuration else {}
     node = configuration["node"] if configuration else {}
+    if hasattr(args, "main_effort") and hasattr(args, "max_gpu_utilization"):
+        raise ValueError("use only one of --main-effort and --max-gpu-utilization")
+    if hasattr(args, "main_effort"):
+        try:
+            effort = json.loads(args.main_effort)
+        except (TypeError, ValueError):
+            raise ValueError("main-effort must be a JSON list of [seconds, percentage] pairs") from None
+    elif hasattr(args, "max_gpu_utilization"):
+        if type(args.max_gpu_utilization) is not int or not 1 <= args.max_gpu_utilization <= 100:
+            raise ValueError("max-gpu-utilization must be an integer between 1 and 100")
+        effort = [[60, args.max_gpu_utilization]]
+    else:
+        effort = training.get("main_effort", DEFAULT_CONFIG["training"]["main_effort"])
+    args.main_effort = normalize_effort(effort, field="main_effort")
+    args.decoy_effort = normalize_effort(training.get("decoy_effort", []),
+                                         field="decoy_effort", allow_empty=True)
     defaults = dict(
         official_source=configuration["official_source"] if configuration else
         os.environ.get("LRAEP_OFFICIAL_SOURCE", str(DEFAULT_SOURCE)),
@@ -261,7 +370,8 @@ def _apply_settings(args, configuration):
         m=training.get("m", 256), n=training.get("n", 256),
         k=training.get("k", 2048), tile_h=training.get("tile_h", 8),
         tile_w=training.get("tile_w", 8), max_batches=training.get("max_batches", 0),
-        max_seconds=training.get("max_seconds", 0), output_dir=training.get("output_dir", str(artifacts_dir())),
+        max_seconds=training.get("max_seconds", 0),
+        output_dir=training.get("output_dir", str(artifacts_dir())),
         address=node.get("address") if configuration else os.environ.get("LRAEP_TRAINING_ADDRESS"),
         rpc_url=node.get("rpc_url", "https://127.0.0.1:44107") if configuration else
         os.environ.get("LRAEPD_RPC_URL", "https://127.0.0.1:44107"),
@@ -294,6 +404,9 @@ def _network_scope(configuration):
 
 
 def _execute(args, configuration):
+    if args.command in ("train", "pool") and args.main_effort[0][1] == -1:
+        LOG.info("GPU effort schedule requests an immediate exit")
+        return 0
     if args.command == "vpn-check":
         from .config import DEFAULT_CONFIG, resolve_pool_settings
         from .vpn_check import run_vpn_check
@@ -342,7 +455,7 @@ def _execute(args, configuration):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="LRAEP GPU miner for the PRL network")
-    parser.add_argument("--config", help="encrypted or plain JSON configuration; defaults to the application config.json")
+    parser.add_argument("--config", help="plain JSON configuration; defaults to the application config.json")
     parser.add_argument("--official-source", default=argparse.SUPPRESS)
     parser.add_argument("--device", default=argparse.SUPPRESS)
     parser.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,

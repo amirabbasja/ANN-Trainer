@@ -1,4 +1,4 @@
-"""Encrypted storage, key handling, and runtime configuration integration."""
+"""Plain source persistence and read-only support for legacy encrypted configs."""
 
 import copy
 import json
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from LRAEP_trainer import __main__ as cli
 from LRAEP_trainer.config import (
-    ConfigError, encrypt_config_file, load_config, read_config, save_config, update_config,
+    ConfigError, load_config, read_config, save_config, update_config,
 )
 from LRAEP_trainer.config_crypto import (
     EncryptionError, decode_string, encode_string, generate_key,
@@ -61,7 +61,7 @@ class StringEncryptionTests(unittest.TestCase):
                 self.assertNotIn(value, message)
 
 
-class EncryptedConfigTests(unittest.TestCase):
+class ConfigPersistenceTests(unittest.TestCase):
     def setUp(self):
         environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
@@ -85,85 +85,108 @@ class EncryptedConfigTests(unittest.TestCase):
             "node": {"username": "PRIVATE-USER", "password": "PRIVATE-NODE-PASSWORD"},
         }
 
-    def test_entire_document_is_encrypted_and_raw_values_round_trip(self):
+    def write_legacy(self, raw=None):
+        if raw is None:
+            raw = json.dumps(self.settings)
+        self.path.write_text(json.dumps({
+            "format": "LRAEP-config-fernet-v1",
+            "ciphertext": encode_string(raw, self.key),
+        }))
+
+    def test_save_writes_pretty_plain_json_without_generating_keys(self):
+        self.settings["pool"]["password"] = "رمز عبور"
         original = copy.deepcopy(self.settings)
         save_config(self.path, self.settings)
         stored = self.path.read_text()
-        envelope = json.loads(stored)
-        self.assertEqual(set(envelope), {"format", "ciphertext"})
-        self.assertEqual(envelope["format"], "LRAEP-config-fernet-v1")
-        for value in ("official_source", "KEX_uname", "WR_wallet", "password",
-                      "PRIVATE-KEX-IDENTITY", "PRIVATE-WR-IDENTITY", "PRIVATE-POOL-PASSWORD",
-                      "PRIVATE-NODE-PASSWORD", "kex.example", "results"):
-            self.assertNotIn(value, stored)
+        self.assertEqual(json.loads(stored), original)
+        self.assertIn('\n  "version": 1,\n', stored)
+        self.assertIn("رمز عبور", stored)
+        self.assertTrue(stored.endswith("\n"))
         self.assertEqual(read_config(self.path), original)
         self.assertEqual(self.settings, original)
-        self.assertTrue(self.key_path.is_file())
-        self.assertEqual(stat.S_IMODE(self.key_path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        self.assertNotIn(self.key_path.read_text().strip(), stored)
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
+        self.path.chmod(0o644)
+        save_config(self.path, self.settings)
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
 
-    def test_runtime_defaults_and_relative_paths_survive_encryption(self):
-        save_config(self.path, self.settings, key=self.key)
+    def test_runtime_defaults_and_relative_paths_survive_plain_save(self):
+        save_config(self.path, self.settings)
         before = self.path.read_bytes()
-        loaded = load_config(self.path, key=self.key)
+        loaded = load_config(self.path)
         self.assertEqual(loaded["official_source"], str(self.directory / "helpers"))
         self.assertEqual(loaded["training"]["output_dir"], str(self.directory / "results"))
         self.assertEqual(loaded["device"], "cuda:0")
         self.assertEqual(loaded["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
         self.assertEqual(self.path.read_bytes(), before)
-        self.assertFalse(self.key_path.exists())
         self.assertEqual(set(self.directory.iterdir()), {self.path})
 
-    def test_plaintext_template_loads_without_a_key(self):
+    def test_plain_source_loads_without_a_key(self):
         self.path.write_text(json.dumps(self.settings))
         self.assertEqual(read_config(self.path), self.settings)
         self.assertEqual(load_config(self.path)["version"], 1)
         self.assertFalse(self.key_path.exists())
 
-    def test_migration_preserves_original_settings_without_plaintext_backup(self):
-        self.path.write_text(json.dumps(self.settings))
-        encrypt_config_file(self.path)
-        self.assertEqual(read_config(self.path), self.settings)
+    def test_plain_saves_updates_and_reads_ignore_legacy_environment_or_key_file(self):
+        self.key_path.write_text("UNRELATED-INVALID-KEY\n")
+        original_key = self.key_path.read_bytes()
+        with patch.dict(os.environ, {"LRAEP_CONFIG_KEY": "INVALID-ENV-KEY"}):
+            save_config(self.path, self.settings)
+            update_config(self.path, {"training": {"max_batches": 4}})
+            self.assertEqual(load_config(self.path)["training"]["max_batches"], 4)
+            self.assertEqual(json.loads(self.path.read_text())["training"]["max_batches"], 4)
+        self.assertEqual(self.key_path.read_bytes(), original_key)
         self.assertEqual(set(self.directory.iterdir()), {self.path, self.key_path})
-        self.assertNotIn("PRIVATE-POOL-PASSWORD", self.path.read_text())
 
-    def test_missing_key_on_read_does_not_generate_a_replacement(self):
-        save_config(self.path, self.settings, key=self.key)
+    def test_legacy_encrypted_read_is_in_memory_and_does_not_rewrite(self):
+        self.write_legacy()
+        before = self.path.read_bytes()
+        self.assertEqual(read_config(self.path, key=self.key), self.settings)
+        self.assertEqual(load_config(self.path, key=self.key)["pool"]["KEX_uname"],
+                         "PRIVATE-KEX-IDENTITY")
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
+
+    def test_legacy_document_can_be_migrated_to_plain_without_generated_keys_or_backups(self):
+        self.write_legacy()
+        original = read_config(self.path, key=self.key)
+        save_config(self.path, original)
+        self.assertEqual(json.loads(self.path.read_text()), self.settings)
+        self.assertEqual(read_config(self.path), self.settings)
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
+
+    def test_update_legacy_document_with_existing_key_saves_plain_and_preserves_key(self):
+        self.write_legacy()
+        self.key_path.write_text(self.key + "\n")
+        original_key = self.key_path.read_bytes()
+        update_config(self.path, {"training": {"max_batches": 4}})
+        self.assertEqual(json.loads(self.path.read_text())["training"]["max_batches"], 4)
+        self.assertEqual(read_config(self.path)["pool"], self.settings["pool"])
+        self.assertEqual(self.key_path.read_bytes(), original_key)
+        self.assertEqual(set(self.directory.iterdir()), {self.path, self.key_path})
+
+    def test_missing_legacy_key_never_generates_a_replacement(self):
+        self.write_legacy()
         before = self.path.read_bytes()
         with self.assertRaises(ConfigError):
             load_config(self.path)
         self.assertFalse(self.key_path.exists())
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_environment_key_takes_precedence_and_invalid_env_never_falls_back(self):
-        save_config(self.path, self.settings)
-        stored_key = self.key_path.read_bytes()
+    def test_legacy_environment_key_precedence_and_explicit_override(self):
+        self.write_legacy()
+        self.key_path.write_text(self.key + "\n")
+        before = self.path.read_bytes()
         with patch.dict(os.environ, {"LRAEP_CONFIG_KEY": "INVALID-ENV-KEY"}):
-            for operation in (
-                lambda: load_config(self.path),
-                lambda: save_config(self.path, self.settings),
-            ):
-                before = self.path.read_bytes()
-                with self.assertRaises(ConfigError) as caught:
-                    operation()
-                self.assertNotIn("INVALID-ENV-KEY", str(caught.exception))
-                self.assertEqual(self.path.read_bytes(), before)
-        self.assertEqual(self.key_path.read_bytes(), stored_key)
-        with patch.dict(os.environ, {"LRAEP_CONFIG_KEY": self.key}):
-            save_config(self.path, self.settings)
-            self.assertEqual(read_config(self.path), self.settings)
-        with self.assertRaises(ConfigError):
-            read_config(self.path)
-
-    def test_explicit_key_overrides_environment(self):
-        with patch.dict(os.environ, {"LRAEP_CONFIG_KEY": "INVALID-ENV-KEY"}):
-            save_config(self.path, self.settings, key=self.key)
+            with self.assertRaises(ConfigError) as caught:
+                load_config(self.path)
+            self.assertNotIn("INVALID-ENV-KEY", str(caught.exception))
             self.assertEqual(read_config(self.path, key=self.key), self.settings)
-        self.assertFalse(self.key_path.exists())
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(read_config(self.path), self.settings)
 
-    def test_wrong_key_and_tampering_fail_with_secret_safe_errors(self):
-        save_config(self.path, self.settings, key=self.key)
+    def test_wrong_legacy_key_and_tampering_fail_with_secret_safe_errors(self):
+        self.write_legacy()
         with self.assertRaises(ConfigError) as caught:
             load_config(self.path, key=generate_key())
         self.assertNotIn(self.key, str(caught.exception))
@@ -177,7 +200,7 @@ class EncryptedConfigTests(unittest.TestCase):
         for secret in (self.key, token, "PRIVATE-POOL-PASSWORD"):
             self.assertNotIn(secret, str(caught.exception))
 
-    def test_nested_update_preserves_siblings_and_does_not_mutate_input(self):
+    def test_nested_plain_update_preserves_siblings_and_does_not_mutate_input(self):
         save_config(self.path, self.settings)
         changes = {"pool": {"KEX": {"port": 12345}}, "training": {"max_batches": 3}}
         original = copy.deepcopy(changes)
@@ -185,11 +208,12 @@ class EncryptedConfigTests(unittest.TestCase):
         expected = copy.deepcopy(self.settings)
         expected["pool"]["KEX"]["port"] = 12345
         expected["training"]["max_batches"] = 3
+        self.assertEqual(json.loads(self.path.read_text()), expected)
         self.assertEqual(read_config(self.path), expected)
         self.assertEqual(changes, original)
-        self.assertNotIn("PRIVATE-WR-IDENTITY", self.path.read_text())
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
 
-    def test_invalid_save_or_update_does_not_touch_existing_ciphertext(self):
+    def test_invalid_save_or_update_preserves_existing_plain_document(self):
         save_config(self.path, self.settings)
         before = self.path.read_bytes()
         for operation in (
@@ -202,29 +226,26 @@ class EncryptedConfigTests(unittest.TestCase):
             self.assertNotIn("SECRET-UNKNOWN-FIELD", str(caught.exception))
             self.assertNotIn("PRIVATE", str(caught.exception))
             self.assertEqual(self.path.read_bytes(), before)
-        self.assertEqual(set(self.directory.iterdir()), {self.path, self.key_path})
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
 
-    def test_failed_atomic_replace_preserves_ciphertext_and_cleans_temp_file(self):
+    def test_failed_atomic_replace_preserves_plain_document_and_cleans_temp_file(self):
         save_config(self.path, self.settings)
         before = self.path.read_bytes()
         with patch("LRAEP_trainer.config.os.replace", side_effect=OSError("write failed")):
             with self.assertRaises(ConfigError):
                 update_config(self.path, {"training": {"max_batches": 4}})
         self.assertEqual(self.path.read_bytes(), before)
-        self.assertEqual(set(self.directory.iterdir()), {self.path, self.key_path})
+        self.assertEqual(set(self.directory.iterdir()), {self.path})
 
-    def test_duplicate_fields_and_nonfinite_numbers_remain_invalid_when_encrypted(self):
+    def test_duplicate_fields_and_nonfinite_numbers_remain_invalid_in_legacy_reads(self):
         for raw in ('{"version":1,"version":1}',
                     '{"version":1,"training":{"max_seconds":NaN}}'):
             with self.subTest(raw=raw):
-                self.path.write_text(json.dumps({
-                    "format": "LRAEP-config-fernet-v1",
-                    "ciphertext": encode_string(raw, self.key),
-                }))
+                self.write_legacy(raw)
                 with self.assertRaises(ConfigError):
                     load_config(self.path, key=self.key)
 
-    def test_encrypted_cli_dispatch_receives_decrypted_settings(self):
+    def test_plain_cli_dispatch_receives_settings_without_writing_source(self):
         save_config(self.path, self.settings)
         before = self.path.read_bytes()
         with patch.object(cli, "pool_train", return_value=0) as train, \
@@ -235,7 +256,17 @@ class EncryptedConfigTests(unittest.TestCase):
         self.assertEqual(effective["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
         self.assertEqual(effective["pool"]["password"], "PRIVATE-POOL-PASSWORD")
         self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse(self.key_path.exists())
         helpers.assert_not_called()
+
+    def test_legacy_cli_dispatch_decrypts_in_memory_and_leaves_document_unchanged(self):
+        self.write_legacy()
+        self.key_path.write_text(self.key + "\n")
+        before = self.path.read_bytes()
+        with patch.object(cli, "pool_train", return_value=0) as train:
+            self.assertEqual(cli.main(["--config", str(self.path), "pool", "--miner", "KEX"]), 0)
+        self.assertEqual(train.call_args.args[0]["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

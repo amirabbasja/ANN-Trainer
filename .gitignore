@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 config.json
+.env
 *.json.key
 .ipynb_checkpoints/
 /links.txt

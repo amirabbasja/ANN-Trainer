@@ -223,6 +223,8 @@ class ConfigDispatchTests(unittest.TestCase):
     def test_solo_mode_reads_file_credentials_and_cli_overrides(self):
         self.settings["mode"] = "solo"
         self.settings["training"].update(m=128, n=128, max_batches=2)
+        self.settings["training"]["main_effort"] = [[10, 65], [5, 0], [20, 35]]
+        self.settings["training"]["decoy_effort"] = [[3, 15]]
         self.settings["node"].update(username="file-user", password="file-password",
                                     address="file-address")
         self.write_config()
@@ -233,11 +235,100 @@ class ConfigDispatchTests(unittest.TestCase):
         self.assertEqual(args.m, 512)
         self.assertEqual(args.n, 128)
         self.assertEqual(args.max_batches, 2)
+        self.assertEqual(args.main_effort, [(10, 65), (5, 0), (20, 35)])
+        self.assertEqual(args.decoy_effort, [(3, 15)])
         self.assertEqual(args.rpc_username, "file-user")
         self.assertEqual(args.rpc_password, "file-password")
         self.assertEqual(args.address, "file-address")
         self.assertEqual(args.output_dir, str(artifacts_dir().resolve()))
         helpers.assert_called_once_with(str(self.file.parent / "src/LRAEP_helpers"))
+
+    def test_solo_gpu_limit_can_be_overridden_on_cli(self):
+        self.settings["mode"] = "solo"
+        self.write_config()
+        with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
+            self.assertEqual(cli.main(["--config", str(self.file), "train", "--max-gpu-utilization", "60"]), 0)
+        self.assertEqual(train.call_args.args[0].max_gpu_utilization, 60)
+        self.assertEqual(train.call_args.args[0].main_effort, [(60, 60)])
+        with patch.object(cli, "load_official_helpers") as helpers, self.assertLogs(cli.LOG, level="ERROR"):
+            self.assertEqual(cli.main(["--config", str(self.file), "train", "--max-gpu-utilization", "101"]), 1)
+        helpers.assert_not_called()
+
+    def test_solo_effort_schedule_can_be_overridden_with_json(self):
+        self.settings["mode"] = "solo"
+        self.write_config()
+        with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
+            self.assertEqual(cli.main([
+                "--config", str(self.file), "train", "--main-effort",
+                "[[2, 70], [3, 0], [0, -1]]",
+            ]), 0)
+        self.assertEqual(train.call_args.args[0].main_effort, [(2, 70), (3, 0), (0, -1)])
+        self.assertFalse(hasattr(train.call_args.args[0], "max_gpu_utilization"))
+
+    def test_solo_effort_override_is_validated_before_network_or_helpers(self):
+        self.settings["mode"] = "solo"
+        self.settings["vpn"].update(enabled=True, link="vless://SECRET@vpn.example:443")
+        self.write_config()
+        for schedule in ("not-json", "[]", "[[0, 70]]", "[[1, 101]]", "[[1, true]]", "[[1, -2]]"):
+            with self.subTest(schedule=schedule), \
+                    patch("LRAEP_trainer.vpn.ManagedVPN") as vpn, \
+                    patch.object(cli, "load_official_helpers") as helpers, \
+                    patch.object(cli, "train") as train, \
+                    self.assertLogs(cli.LOG, level="ERROR"):
+                self.assertEqual(cli.main([
+                    "--config", str(self.file), "train", "--main-effort", schedule,
+                ]), 1)
+            vpn.assert_not_called()
+            helpers.assert_not_called()
+            train.assert_not_called()
+
+    def test_solo_conflicting_effort_overrides_are_rejected(self):
+        self.settings["mode"] = "solo"
+        self.write_config()
+        with patch.object(cli, "load_official_helpers") as helpers, \
+                patch.object(cli, "train") as train, \
+                self.assertLogs(cli.LOG, level="ERROR") as messages:
+            self.assertEqual(cli.main([
+                "--config", str(self.file), "train", "--main-effort", "[[1, 70]]",
+                "--max-gpu-utilization", "60",
+            ]), 1)
+        self.assertIn("use only one", " ".join(messages.output))
+        helpers.assert_not_called()
+        train.assert_not_called()
+
+    def test_solo_without_configuration_uses_default_effort_schedule(self):
+        with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
+            self.assertEqual(cli.main(["train"]), 0)
+        self.assertEqual(train.call_args.args[0].main_effort, [(60, 80), (120, 70), (180, 10)])
+        self.assertEqual(train.call_args.args[0].decoy_effort, [])
+
+    def test_immediate_exit_skips_network_helpers_and_mining_entrypoints(self):
+        self.settings["training"]["main_effort"] = [[0, -1]]
+        # The requested exit also bypasses unavailable mining credentials/endpoints.
+        self.settings["pool"].update(host="", KEX_uname="", WR_wallet="")
+        self.write_config()
+        for command in ("train", "pool"):
+            with self.subTest(command=command), \
+                    patch.object(cli, "_network_scope") as network_scope, \
+                    patch.object(cli, "load_official_helpers") as helpers, \
+                    patch.object(cli, "require_cuda") as cuda, \
+                    patch.object(cli, "pool_train") as pool_train, \
+                    patch.object(cli, "train") as train:
+                self.assertEqual(cli.main(["--config", str(self.file), command]), 0)
+            network_scope.assert_not_called()
+            helpers.assert_not_called()
+            cuda.assert_not_called()
+            pool_train.assert_not_called()
+            train.assert_not_called()
+
+    def test_legacy_config_gpu_limit_loads_as_a_constant_schedule(self):
+        self.settings["mode"] = "solo"
+        del self.settings["training"]["main_effort"]
+        self.settings["training"]["max_gpu_utilization"] = 65
+        self.write_config()
+        with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
+            self.assertEqual(cli.main(["--config", str(self.file), "train"]), 0)
+        self.assertEqual(train.call_args.args[0].main_effort, [(60, 65)])
 
     def test_solo_mode_without_subcommand_runs_solo_training(self):
         self.settings["mode"] = "solo"

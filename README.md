@@ -25,32 +25,59 @@ workload is integer matrix multiplication; it does not fit a neural network,
 update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
 
-## One configuration file
+## Plain source configuration and WR export
 
 Maintain the app settings in `config.json`. The trainer finds this file beside
 `ann_trainer.py`, even when launched from another directory. `--config` remains
 available if you store the shared file elsewhere. `config.example.json` is the
 single public template; it contains both miner profiles with blank hosts.
-The private `config.json` is ignored by git because it can contain credentials.
-Its complete document, including field names and values, can be stored encrypted.
-The trainer decrypts it into memory before validation and use; it does not write
-a decrypted copy. Relative paths still resolve beside the original config file.
-The public example and existing plaintext JSON configs remain readable.
+The private `trainer/config.json` stays plain JSON so you can edit it directly.
+It is ignored by git because it can contain credentials. The shared trainer can
+use this source file for either KEX or WR. The standalone WR trainer uses an
+encoded export at `LRAEP-WR-Trainer/config.json`, produced by the notebook.
+Relative paths remain relative to each selected config file.
 
-### Encrypted config and notebook
+### Edit and export with the notebook
 
 Open [`config_manager.ipynb`](config_manager.ipynb) and select the **LRAEP
 trainer** kernel, or the project's `.venv/bin/python` interpreter in VS Code.
-Run its setup cells, then call `show_config()` to decrypt and print the config
-on command, or `update_from_dict(plain_dict)` to recursively merge a dictionary
-and save the result encrypted. `replace_from_dict(plain_dict)` replaces the full
-configuration. Running all cells without uncommenting the example commands does
-not print or change the config. Clear printed outputs before saving or sharing
-the notebook: editors may autosave plaintext output. The setup disables IPython
-history logging, and an optional `getpass` example keeps entered secrets out of
-cell source.
+Run the setup and helper-definition cells, then call `show_config()` to print
+the source on command, `update_from_dict(plain_dict)` to merge nested settings,
+or `replace_from_dict(plain_dict)` to replace the whole source. These operations
+save plain JSON. All example execution lines are commented, so running all
+cells does not read or change either config or prompt for a key.
 
-Install the added encryption dependency with the project requirements:
+Call `export_wr_config()` when you want to update the standalone WR config.
+First fill in `pool.WR`, `pool.WR_wallet`, and the enabled VPN settings
+(`vpn.enabled: true` and `vpn.link`) in the plain source; export validates them.
+It prompts for arbitrary text with `getpass`, uses that exact UTF-8 text as the
+decode key, and writes the encoded document to the sibling
+`LRAEP-WR-Trainer/config.json`. The exported copy selects pool mode and the WR
+profile while preserving the source settings and relative paths. The source
+`trainer/config.json` remains plain and unchanged.
+
+By default, the same call writes the text to the lowercase variable
+`open_text` in `LRAEP-WR-Trainer/.env`, preserving unrelated entries. WR reads
+that adjacent file to decode its config. For example, the `.env` entry has
+this form; the notebook handles quoting and escaping for the text you enter:
+
+```dotenv
+open_text="your chosen decode text"
+```
+
+The encoded JSON contains format metadata and ciphertext; its field values
+are decoded in memory by WR. Enter the same text exactly, including spaces and
+letter case, whenever you recreate its `.env` entry. To export elsewhere, pass
+the destination path to `export_wr_config(output_path=...)`. Setting
+`save_key=False` leaves `.env` unchanged, so that destination must already have
+the matching `open_text` entry before WR starts.
+
+The notebook prints only output paths during export. `show_config()` explicitly
+prints credentials, and notebook editors may autosave that output; clear it
+before saving or sharing. Setup disables IPython history logging, and the key
+prompt keeps the entered text out of saved cell source.
+
+Install the project requirements:
 
 ```bash
 uv pip install --python .venv/bin/python -r requirements.txt
@@ -63,25 +90,10 @@ uv pip install --python .venv/bin/python ipykernel
 .venv/bin/python -m ipykernel install --user --name lraep-trainer --display-name 'LRAEP trainer'
 ```
 
-Encryption uses authenticated Fernet tokens. Config operations use
-`LRAEP_CONFIG_KEY` when present; otherwise they read a separate `config.json.key`
-next to the selected config. The first encrypted save creates that key with
-owner-only permissions if it is missing. Reading an encrypted file never
-creates a replacement key. The key file is ignored by git. Keep a private backup
-of the key separately from the encrypted config; anyone who has both can decrypt
-it, and losing the key makes the config unreadable. To keep the key outside the
-project entirely, supply it through the process environment as
-`LRAEP_CONFIG_KEY`. Do not put the key in source code or the encrypted document.
-
-The Python API preserves original relative paths when updating a config:
+The Python API also edits the plain source and preserves relative paths:
 
 ```python
-from LRAEP_trainer.config import (
-    encrypt_config_file, load_config, read_config, save_config, update_config,
-)
-
-# One-time migration of an existing plaintext file; no plaintext backup is made.
-encrypt_config_file("config.json")
+from LRAEP_trainer.config import load_config, read_config, save_config, update_config
 
 settings = load_config("config.json")  # Validated runtime values in memory.
 plain_dict = {"pool": {"worker": "Rig01"}}
@@ -90,13 +102,11 @@ update_config("config.json", plain_dict)  # Preserve unspecified nested fields.
 # read_config("config.json") returns the original dictionary without defaults.
 ```
 
-`encode_string(value, key=key)` and `decode_string(token, key=key)` in
-`LRAEP_trainer.config_crypto` encrypt/decrypt UTF-8 strings. `generate_key()`
-returns a fresh Fernet key. String helpers require that explicit key or
-`LRAEP_CONFIG_KEY`; they do not infer an adjacent config key file. Config writes
-validate before replacing the file and write ciphertext atomically, with no
-plaintext temporary file. Wrong keys and altered ciphertext fail with a
-credential-safe error.
+Source writes validate before atomically replacing the file with owner-only
+permissions. They do not create decode keys or modify an existing WR export.
+Run the notebook export again after changing source settings that WR should use.
+Configuration instructions for both trainers live in this README. The standalone
+WR directory has no README or code comments; upstream license notices are retained.
 
 KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
 section keeps both identities and separate connection settings:
@@ -181,6 +191,59 @@ the shared configuration:
 .venv/bin/python ann_trainer.py pool --miner WR
 .venv/bin/python ann_trainer.py pool --miner KEX
 ```
+
+`training.main_effort` controls mining effort over time in both trainers. Each
+entry is `[seconds, percentage]`; the default schedule is:
+
+```json
+"training": {
+  "main_effort": [[60, 80], [120, 70], [180, 10]],
+  "decoy_effort": []
+}
+```
+
+This mines for 60 seconds at 80%, then 120 seconds at 70%, then 180 seconds at
+10%, and repeats from the first entry until stopped. Durations must be positive,
+finite numbers; an exit entry may use zero seconds. Percentages must be integers
+from `-1` to `100`:
+
+- `1`–`99` targets that average GPU duty cycle.
+- `100` runs without pacing.
+- `0` pauses mining for the entry's duration.
+- `-1` stops all mining immediately when the entry begins and runs normal
+  connection and VPN cleanup; its duration is ignored.
+
+For example, `[[60, 80], [30, 0], [0, -1]]` mines at 80% for one minute,
+pauses for 30 seconds, then exits. `main_effort` must contain at least one
+entry. `decoy_effort` uses the same entry format and validation, but is reserved
+for decoy mining and defaults to an empty list.
+
+Edit the plain source directly, or use the notebook or `update_config` API:
+
+```python
+from LRAEP_trainer.config import update_config
+update_config("config.json", {"training": {
+    "main_effort": [[60, 80], [120, 70], [180, 10]],
+    "decoy_effort": [],
+}})
+```
+
+The miner finishes each GPU batch, synchronizes CUDA work, and rests to target
+the active entry's average duty cycle. It submits completed shares before
+resting. Waits respond to schedule changes, `Ctrl+C`, and time limits. A single
+kernel can still show 100% utilization; other processes using the GPU are not
+controlled. The pool status GPU percentage is a device-wide `nvidia-smi` sample,
+so it can differ from the effort percentage.
+
+The schedule follows elapsed wall time, including pauses and reconnections.
+Transitions are checked between computation stages; an in-flight CUDA kernel
+or synchronous verification finishes before the miner pauses or exits.
+
+Older configurations with `training.max_gpu_utilization` remain readable. When
+`main_effort` is absent, a legacy value such as `70` becomes `[[60, 70]]`, which
+repeats at a constant 70%. An explicit `main_effort` takes precedence. New
+configurations should use the schedule fields. Solo mode also accepts a JSON
+schedule, for example `train --main-effort '[[60,80],[30,0],[0,-1]]'`.
 
 `training.max_seconds` bounds a pool session using a stop timer, including
 authentication and share-acknowledgement waits. CPU/GPU work already in a
@@ -270,7 +333,7 @@ VPN credentials are not written to a plaintext temporary config file.
 Linux x86_64 includes the official Xray-core `v26.10.21` executable at
 `src/LRAEP_trainer/bin/linux-x86_64/xray`; no separate VPN-core installation
 is needed. Use the config notebook to set `vpn.link` and `vpn.enabled: true`
-in your encrypted config, then run:
+in your plain source config, then run:
 
 ```bash
 .venv/bin/LRAEP --config config.json pool

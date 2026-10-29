@@ -2,7 +2,7 @@
 
 import base64
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import gzip
 import itertools
 import json
@@ -12,11 +12,11 @@ import threading
 import time
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
 import LRAEP_trainer
-from LRAEP_trainer import pool_training as worker
+from LRAEP_trainer import gpu_pacing, pool_training as worker
 from LRAEP_trainer.pool_client import JobSnapshot, PoolAuthenticationError, ShareResult
 from LRAEP_trainer.pool_protocol import PoolJob
 from LRAEP_trainer.protocol import TrainingConfig
@@ -45,6 +45,7 @@ class PoolLoopTests(unittest.TestCase):
         self.stack.enter_context(patch.object(worker, "load_official_helpers"))
         self.stack.enter_context(patch.object(worker.torch.cuda, "is_available", return_value=True))
         self.stack.enter_context(patch.object(worker.torch.cuda, "get_device_name", return_value="test GPU"))
+        self.stack.enter_context(patch.object(worker.torch.cuda, "synchronize"))
         self.monitor = self.stack.enter_context(patch.object(worker, "GpuUtilization"))
         self.monitor.return_value.start.return_value.read.return_value = 42
         self.progress = self.stack.enter_context(patch.object(worker, "LiveProgress"))
@@ -73,6 +74,206 @@ class PoolLoopTests(unittest.TestCase):
         )
         self.session.submit.assert_called_once_with(self.snapshot, "cHJvb2Y=")
         self.assertEqual(self.header.nbits, 0x1D00FFFF)
+
+    def test_gpu_pacing_runs_between_batches_after_share_submission(self):
+        self.configuration["training"].update(max_batches=2, main_effort=[(60, 60)])
+        order = []
+        self.session.submit.side_effect = lambda *_: (order.append("submit"), ShareResult(True, None))[1]
+        self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
+        with patch.object(worker, "GpuPacer") as pacer:
+            pacer.return_value.max_utilization = 100
+            pacer.return_value.set_utilization.side_effect = lambda value: setattr(pacer.return_value, "max_utilization", value)
+            pacer.return_value.wait.side_effect = lambda *_a, **_kw: order.append("wait")
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(order, ["search", "submit", "wait", "search", "submit"])
+        pacer.assert_called_once_with(worker.torch.device("cuda:0"), 100)
+        pacer.return_value.set_utilization.assert_called_once_with(60)
+        self.assertEqual(pacer.return_value.begin.call_count, 2)
+        self.assertEqual(pacer.return_value.finish.call_count, 2)
+        pacer.return_value.wait.assert_called_once()
+
+    @contextmanager
+    def clocked_schedule(self, schedule, *, batches=1, max_seconds=0):
+        """Drive the real loop and scheduler without sleeping or touching CUDA."""
+        clock = SimpleNamespace(now=0.0, pauses=[], on_wait=lambda: None)
+        outer = self
+
+        class ClockEvent:
+            stopped = False
+
+            def is_set(self):
+                return self.stopped
+
+            def set(self):
+                self.stopped = True
+
+            def wait(self, timeout=None):
+                if self.stopped:
+                    return True
+                outer.assertIsNotNone(timeout, "test schedule waited indefinitely")
+                clock.on_wait()
+                clock.pauses.append((clock.now, timeout, outer.prepare.call_count,
+                                     outer.search.call_count, outer.verify.call_count))
+                clock.now += timeout
+                return self.stopped
+
+        stopped = ClockEvent()
+        self.configuration["training"].update(main_effort=schedule, max_batches=batches,
+                                                max_seconds=max_seconds)
+        self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
+        with patch.object(worker.time, "monotonic", side_effect=lambda: clock.now), \
+                patch.object(worker.threading, "Event", return_value=stopped), \
+                patch.object(worker.threading, "Timer"), \
+                patch.object(worker, "GpuPacer") as factory:
+            pacer = factory.return_value
+            pacer.max_utilization = 100
+            pacer.set_utilization.side_effect = lambda value: setattr(pacer, "max_utilization", value)
+            yield clock, pacer
+
+    def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
+        with self.clocked_schedule([(10, 100), (20, 0), (10, 100)]) as (clock, _):
+            order = []
+            clock.on_wait = lambda: order.append("pause")
+
+            def prepare(*_a, **_kw):
+                order.append("prepare")
+                if self.prepare.call_count == 1:
+                    clock.now = 10
+
+            self.prepare.side_effect = prepare
+            worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
+            with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
+                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(order, ["prepare", "synchronize", "pause", "prepare"])
+        worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
+        self.search.assert_called_once()
+        self.verify.assert_called_once()
+        self.session.submit.assert_called_once()
+
+    def test_100_percent_search_cancellation_drains_cuda_before_exit_cleanup(self):
+        with self.clocked_schedule([(10, 100), (0, -1)]) as (clock, _):
+            order = []
+
+            def search(*_):
+                order.append("search")
+                clock.now = 10
+                raise worker.TrainingCancelled("schedule interval ended")
+
+            self.search.side_effect = search
+            worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
+            self.monitor.return_value.start.return_value.close.side_effect = lambda: order.append("close")
+            with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
+                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(order, ["search", "synchronize", "close"])
+        worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
+        self.session.__exit__.assert_called_once()
+        self.verify.assert_not_called()
+        self.session.submit.assert_not_called()
+
+    def test_initial_pause_delays_mining_until_the_positive_interval(self):
+        with self.clocked_schedule([(30, 0), (60, 70)]) as (clock, pacer):
+            prepared_at = []
+            self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(prepared_at, [30])
+        self.assertEqual(clock.pauses, [(0, 30, 0, 0, 0)])
+        pacer.set_utilization.assert_called_once_with(70)
+        self.session.submit.assert_called_once()
+
+    def test_pause_between_positive_intervals_performs_no_mining(self):
+        with self.clocked_schedule([(10, 80), (20, 0), (10, 30)], batches=2) as (clock, pacer):
+            prepared_at = []
+            self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(prepared_at, [0, 30])
+        self.assertEqual(clock.pauses, [(10, 20, 1, 1, 1)])
+        self.assertEqual(pacer.set_utilization.call_args_list, [call(80), call(30)])
+        self.assertEqual(self.session.submit.call_count, 2)
+
+    def test_schedule_switches_effort_and_repeats_from_the_first_interval(self):
+        with self.clocked_schedule([(10, 80), (20, 70)], batches=5) as (clock, pacer):
+            prepared_at = []
+            self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(prepared_at, [0, 10, 30, 40, 60])
+        self.assertEqual(pacer.set_utilization.call_args_list,
+                         [call(80), call(70), call(80), call(70), call(80)])
+        self.assertEqual(self.search.call_count, 5)
+        self.assertEqual(self.session.submit.call_count, 5)
+
+    def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
+        with self.clocked_schedule([(30, 0)], max_seconds=10) as (clock, pacer):
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(clock.now, 10)
+        worker.load_official_helpers.assert_not_called()
+        self.factory.assert_not_called()
+        self.prepare.assert_not_called()
+        self.search.assert_not_called()
+        self.verify.assert_not_called()
+        self.session.submit.assert_not_called()
+        self.monitor.assert_not_called()
+        pacer.begin.assert_not_called()
+
+    def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
+        self.configuration["training"]["main_effort"] = [(0, -1), (60, 80)]
+        with patch.object(worker.torch.cuda, "is_available") as cuda:
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        cuda.assert_not_called()
+        worker.load_official_helpers.assert_not_called()
+        self.factory.assert_not_called()
+        self.prepare.assert_not_called()
+        self.search.assert_not_called()
+        self.verify.assert_not_called()
+        self.monitor.assert_not_called()
+
+    def test_terminal_interval_interrupts_blocked_authentication_and_cleans_up(self):
+        self.configuration["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+
+        def wait_for_exit():
+            stopped = self.factory.call_args.kwargs["stop_event"]
+            self.assertTrue(stopped.wait(2), "schedule did not stop authentication")
+            return self.session
+
+        self.session.__enter__.side_effect = wait_for_exit
+        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.factory.assert_called_once()
+        self.assertLessEqual(self.factory.call_args.args[0]["connect_timeout"], 0.3)
+        self.session.__exit__.assert_called_once()
+        self.monitor.return_value.start.return_value.close.assert_called_once()
+        self.progress.return_value.__exit__.assert_called_once()
+        self.prepare.assert_not_called()
+        self.search.assert_not_called()
+        self.session.submit.assert_not_called()
+
+    def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
+        from LRAEP_trainer.pool_transport import PoolConnectionError
+
+        self.configuration["training"]["main_effort"] = [(0.3, 80), (0, -1)]
+
+        def wait_for_exit(*_):
+            stopped = self.factory.call_args.kwargs["stop_event"]
+            self.assertTrue(stopped.wait(2), "schedule did not stop share submission")
+            raise PoolConnectionError("scheduled exit")
+
+        self.session.submit.side_effect = wait_for_exit
+        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.factory.assert_called_once()
+        self.session.submit.assert_called_once()
+        self.session.__exit__.assert_called_once()
+        self.monitor.return_value.start.return_value.close.assert_called_once()
+        self.progress.return_value.__exit__.assert_called_once()
+
+    def test_empty_decoy_effort_does_not_create_or_run_a_second_schedule(self):
+        self.configuration["training"].update(main_effort=[(60, 70)], decoy_effort=[])
+        with patch.object(worker, "EffortSchedule", wraps=worker.EffortSchedule) as schedules:
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        schedules.assert_called_once()
+        self.assertEqual(schedules.call_args.args[0], [(60, 70)])
+        self.prepare.assert_called_once()
+        self.search.assert_called_once()
+        self.session.submit.assert_called_once()
 
     def test_progress_reports_gpu_and_final_share_counters_without_batch_log_spam(self):
         self.configuration["training"]["max_batches"] = 3
@@ -122,6 +323,14 @@ class PoolLoopTests(unittest.TestCase):
         self.assertEqual(worker.run_pool_training(self.configuration), 0)
         self.verify.assert_not_called()
         self.session.submit.assert_not_called()
+
+    def test_cancelled_search_is_paced_before_retrying(self):
+        self.search.side_effect = [worker.TrainingCancelled("stale"), iter([])]
+        with patch.object(worker, "GpuPacer") as pacer:
+            pacer.return_value.max_utilization = 80
+            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(pacer.return_value.finish.call_count, 2)
+        pacer.return_value.wait.assert_called_once()
 
     def test_rejection_is_not_logged_as_accepted(self):
         self.session.submit.return_value = ShareResult(False, "low difficulty")
