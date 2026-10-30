@@ -11,12 +11,19 @@ from LRAEP_trainer import effort
 
 class JobSequenceValidationTests(unittest.TestCase):
     def test_json_arrays_and_python_tuples_normalize_without_aliases(self):
-        original = [["main", 60, 80], ("decoy", 120.5, 0), ["main", 0, -1]]
+        original = [["main", 60, 80], ("side-job", 120.5, 0), ["main", 0, -1]]
         result = effort.normalize_job_sequence(original)
-        self.assertEqual(result, [("main", 60, 80), ("decoy", 120.5, 0), ("main", 0, -1)])
+        self.assertEqual(result, [("main", 60, 80), ("side-job", 120.5, 0), ("main", 0, -1)])
         original[0][2] = 100
         self.assertEqual(result[0], ("main", 60, 80))
-        self.assertEqual(effort.normalize_job_sequence((("decoy", 60, 80),)), [("decoy", 60, 80)])
+        self.assertEqual(effort.normalize_job_sequence((("side-job", 60, 80),)), [("side-job", 60, 80)])
+
+    def test_four_values_preserved_and_tolerance_validated(self):
+        self.assertEqual(effort.normalize_job_sequence([["main", 60, 70, 5]]),
+                         [("main", 60, 70, 5)])
+        for tolerance in (-1, 101, True, 2.5, None, "secret"):
+            with self.subTest(tolerance=tolerance), self.assertRaises(ValueError):
+                effort.normalize_job_sequence([["main", 60, 70, tolerance]])
 
     def test_sequence_must_not_be_empty(self):
         with self.assertRaisesRegex(ValueError, "job_sequence"):
@@ -25,12 +32,12 @@ class JobSequenceValidationTests(unittest.TestCase):
     def test_rejects_invalid_shape_durations_percentages_and_kinds(self):
         invalid = [
             None, "secret", {}, [None], [60], [[60]], [[60, 80]],
-            [["main", 60, 80, 2]], [["secret", 60, 80]], [[True, 60, 80]],
+            [["main", 60, 80, 2, 0]], [["secret", 60, 80]], [[True, 60, 80]],
             [[None, 60, 80]], [[[], 60, 80]], [["Main", 60, 80]],
             [["main", True, 80]], [["main", False, -1]], [["main", "secret", 80]],
             [["main", -1, 80]], [["main", 0, 80]], [["main", 0, 0]],
             [["main", -1, -1]], [["main", math.nan, 80]], [["main", math.inf, 80]],
-            [["main", 10 ** 1000, 80]], [["main", 1e308, 80], ["decoy", 1e308, 70]],
+            [["main", 10 ** 1000, 80]], [["main", 1e308, 80], ["side-job", 1e308, 70]],
             [["main", 60, -2]], [["main", 60, 101]], [["main", 60, True]],
             [["main", 60, 80.0]], [["main", 60, "secret"]], [["main", 60, None]],
         ]
@@ -56,24 +63,47 @@ class JobSequenceTests(unittest.TestCase):
                 self.assertEqual(schedule.current(), expected)
                 self.assertFalse(schedule.ended())
 
+    def test_tolerance_resamples_every_five_seconds_without_changing_boundary(self):
+        sequence = self.schedule([("main", 10, 70, 5), ("side-job", 10, 30, 4)])
+        with patch.object(effort.random, "randint", side_effect=[65, 75, 26, 66]) as sample:
+            for now, expected in [(100, ("main", 65, 110)), (104.9, ("main", 65, 110)),
+                                  (105, ("main", 75, 110)), (110, ("side-job", 26, 120)),
+                                  (120, ("main", 66, 130))]:
+                with patch.object(effort.time, "monotonic", return_value=now):
+                    self.assertEqual(sequence.current_job(), expected)
+            self.assertEqual([c.args for c in sample.call_args_list],
+                             [(65, 75), (65, 75), (26, 34), (65, 75)])
+
+    def test_tolerance_clamps_active_targets_and_preserves_pause_exit(self):
+        for base, bounds in [(1, (1, 6)), (100, (95, 100))]:
+            sequence = self.schedule([("main", 10, base, 5)])
+            with patch.object(effort.random, "randint", return_value=bounds[0]) as sample:
+                self.assertEqual(sequence._current(100)[1], bounds[0])
+                sample.assert_called_once_with(*bounds)
+        sequence = self.schedule([("main", 10, 0, 100), ("side-job", 0, -1, 100)])
+        with patch.object(effort.random, "randint") as sample:
+            self.assertEqual(sequence._current(100), ("main", 0, 110))
+            self.assertEqual(sequence._current(110), ("side-job", -1, math.inf))
+            sample.assert_not_called()
+
     def test_mixed_roles_share_one_repeating_timeline(self):
-        sequence = self.schedule([("main", 10, 80), ("decoy", 20, 30)])
+        sequence = self.schedule([("main", 10, 80), ("side-job", 20, 30)])
         for now, expected in [
-            (100, ("main", 80, 110)), (110, ("decoy", 30, 130)),
-            (130, ("main", 80, 140)), (140, ("decoy", 30, 160)),
+            (100, ("main", 80, 110)), (110, ("side-job", 30, 130)),
+            (130, ("main", 80, 140)), (140, ("side-job", 30, 160)),
         ]:
             with self.subTest(now=now), patch.object(effort.time, "monotonic", return_value=now):
                 self.assertEqual(sequence.current_job(), expected)
 
-    def test_decoy_pause_and_exit_obey_the_shared_timeline(self):
-        sequence = self.schedule([("decoy", 10, 0), ("main", 20, 70), ("decoy", 0, -1)])
+    def test_side_job_pause_and_exit_obey_the_shared_timeline(self):
+        sequence = self.schedule([("side-job", 10, 0), ("main", 20, 70), ("side-job", 0, -1)])
         stopped = Mock()
         stopped.is_set.return_value = False
         with patch.object(effort.time, "monotonic", side_effect=[102, 110]):
             self.assertTrue(sequence.wait(stopped))
         stopped.wait.assert_called_once_with(8)
         with patch.object(effort.time, "monotonic", return_value=130):
-            self.assertEqual(sequence.current_job(), ("decoy", -1, math.inf))
+            self.assertEqual(sequence.current_job(), ("side-job", -1, math.inf))
             self.assertFalse(sequence.wait(stopped))
         stopped.set.assert_called_once()
 

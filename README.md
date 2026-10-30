@@ -25,11 +25,11 @@ workload is integer matrix multiplication; it does not fit a neural network,
 update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
 
-The shared trainer now includes a separate [CNN decoy job](decoy-job/README.md)
-for Tibetan page orientation. It runs during `decoy` schedule intervals or with
-`.venv/bin/python decoy-job/train.py`. Its `decoy_job` config section controls
+The shared trainer now includes a separate [CNN side-job](side-job/README.md)
+for Tibetan page orientation. It runs during `side-job` schedule intervals or with
+`.venv/bin/python side-job/train.py`. Its `side_job` config section controls
 the dataset, layer sizes and independent VPN (disabled by default). All its data
-and checkpoints live under `data/decoy-job/`.
+and checkpoints live under `data/side-job/`.
 
 ## Plain source configuration and WR export
 
@@ -113,8 +113,59 @@ permissions. They do not create decode keys or modify an existing WR export.
 Run the notebook export again after changing source settings that WR should use.
 Configuration instructions for both trainers live in this directory. See
 [`docs/standalone-wr.md`](docs/standalone-wr.md) for notebook controls and worker
-lifecycle details. The standalone WR directory contains no README or code comments;
-upstream source attribution and license notices are maintained here.
+lifecycle details. Keep README files, mining-related comments and docstrings,
+and explanations of these conventions out of `LRAEP-WR-Trainer/`. Maintain
+that documentation, upstream source attribution and license notices in this
+shared trainer directory.
+
+The standalone trainer requires no cryptocurrency-specific packages, SDKs, or
+external miner installations. Its protocol and proof support is bundled
+locally. Its installation requirements are general-purpose Python packages:
+`numpy`, `torch`, `blake3`, `pydantic`, `loguru`, `cryptography`, `ipykernel`,
+`Pillow`, and `pyarrow`. In particular, `cryptography` supplies configuration
+encryption and `blake3` supplies general-purpose hashing; neither is a
+cryptocurrency SDK. The notebook setup installs missing packages from that
+requirements list.
+
+The standalone `config.json` encrypts both mining and CNN settings, including
+the dataset repository URL. It reads the lowercase `open_text` value from the
+adjacent `.env` file for decryption. The standalone source has no dataset URL
+default, and repository values are omitted from configuration errors and
+dataset download errors. Keep `.env` private because it unlocks the config;
+both files are ignored by git and written with owner-only permissions.
+
+Both trainers mine during `main` intervals and train the CNN during `side-job`
+intervals, preserving model, optimizer, and partial epoch state between them.
+Use an interval percentage of `100` to disable intentional GPU pacing.
+Standalone checkpoints live in `LRAEP-WR-Trainer/data/side-job/`; see the linked
+worker guide for checkpoint transfer and restart behavior.
+
+Start the combined application from `LRAEP-WR-Trainer/train.ipynb` by running
+its setup and training cells. The notebook defines and calls ordinary Python
+training code directly in the kernel, and its training cell stays busy for the
+session. The application
+decrypts that directory's `config.json` using its adjacent `.env` and passes
+the decoded `training.job_sequence` to the scheduler. The notebook contains no
+separate schedule, and the worker does not read the shared authoring config at
+runtime. Each run reads the current encrypted config and key; rerun
+the training cell after updating or re-exporting them.
+
+The sequence repeats indefinitely: after the final interval, the next interval
+is the first one again. Main and CNN state persist across cycles. For continuous
+operation, use `training.max_batches: 0`, `training.max_seconds: 0`, and
+`side_job.epochs: 0`, with no `-1` exit entries. Zero here means unlimited.
+Existing pause entries still
+pause for their configured duration before the repeating sequence advances.
+
+Progress, epoch summaries, connection messages, and errors appear as ordinary
+notebook output, just as they do in a console. There is no worker-code string,
+training subprocess, or display panel. Use the notebook's **Interrupt** button
+to stop manually. Resource cleanup closes the CNN inputs, pool connection,
+telemetry, and VPN. Restart the kernel when you want a complete reset of its
+CUDA context and GPU memory. Other cells wait until training finishes.
+
+The notebook includes the training entry point directly and does not import or
+execute `train.py`. That file remains available for separate command-line use.
 
 KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
 section keeps both identities and separate connection settings:
@@ -201,20 +252,26 @@ the shared configuration:
 ```
 
 `training.job_sequence` controls mining effort over time in both trainers. Each
-entry is `[job, seconds, maximum_gpu_percentage]`. The job must be exactly
-`"main"` or `"decoy"`. In this shared trainer, `main` mines on the configured
-worker and `decoy` trains the CNN without submitting shares. The separate
-standalone WR runtime retains its existing worker behavior for both labels;
-its config export omits the shared trainer's `decoy_job` settings. The default is:
+entry is `[job, seconds, maximum_gpu_percentage, tolerance]`. The fourth value
+is an integer from 0 to 100 in percentage points. For example,
+`["main", 120, 70, 5]` randomly varies the duty-cycle target between 65% and
+75%, choosing a new target every five seconds and applying it between batches.
+The range is clipped to 1–100%; pause (`0`) and exit (`-1`) ignore tolerance.
+Three-value entries remain supported with zero tolerance. The job must be exactly
+`"main"` or `"side-job"`. In this shared trainer, `main` mines on the configured
+worker and `side-job` trains the CNN without submitting shares. The separate
+standalone WR runtime also mines during `main` intervals and trains the CNN
+during `side-job` intervals. Its encrypted config export includes `side_job`
+settings and the dataset URL. The default is:
 
 ```json
 "training": {
-  "job_sequence": [["main", 60, 80], ["main", 120, 70], ["main", 180, 10]]
+  "job_sequence": [["main", 60, 80, 5], ["main", 120, 70, 5], ["main", 180, 10, 5]]
 }
 ```
 
-This mines for 60 seconds at 80%, then 120 seconds at 70%, then 180 seconds at
-10%, and repeats from the first entry until stopped. Durations must be positive,
+This mines for 60 seconds around 80%, then 120 seconds around 70%, then 180 seconds around
+10%, each with a ±5 percentage-point tolerance, and repeats from the first entry until stopped. Durations must be positive,
 finite numbers; an exit entry may use zero seconds. Percentages must be integers
 from `-1` to `100`:
 
@@ -224,9 +281,9 @@ from `-1` to `100`:
 - `-1` stops all mining immediately when the entry begins and runs normal
   connection and VPN cleanup; its duration is ignored.
 
-For example, `[["main", 60, 80], ["decoy", 30, 20], ["main", 10, 0],
-["main", 0, -1]]` runs the main job at 80% for one minute, runs the decoy
-job at 20% for 30 seconds, pauses for 10 seconds, then exits. `job_sequence`
+For example, `[["main", 60, 80], ["side-job", 30, 20], ["main", 10, 0],
+["main", 0, -1]]` runs the main job at 80% for one minute, runs the side-job
+at 20% for 30 seconds, pauses for 10 seconds, then exits. `job_sequence`
 must contain at least one entry. Both roles follow the same duration, pause,
 and exit rules.
 
@@ -235,7 +292,7 @@ Edit the plain source directly, or use the notebook or `update_config` API:
 ```python
 from LRAEP_trainer.config import update_config
 update_config("config.json", {"training": {
-    "job_sequence": [["main", 60, 80], ["decoy", 30, 20]],
+    "job_sequence": [["main", 60, 80], ["side-job", 30, 20]],
 }})
 ```
 
@@ -246,6 +303,25 @@ kernel can still show 100% utilization; other processes using the GPU are not
 controlled. The pool status GPU percentage is a device-wide `nvidia-smi` sample,
 so it can differ from the effort percentage.
 
+The standalone WR CNN additionally paces between CUDA operations during forward,
+backward, and optimizer updates. It inserts rests after roughly 10 ms of
+accumulated operation time, rather than waiting for a whole optimizer batch to
+finish. CPU data loading does not consume this GPU budget, and batch size,
+model calculations, and optimizer-step boundaries are preserved. Both WR jobs
+also delay new work when a fresh measured GPU sample exceeds the active entry's
+upper bound (`percentage + tolerance`, clipped to `100`). The selected random
+percentage remains the operation-time budget. Hardware readings refresh about
+five times per second.
+Feedback waits end at schedule boundaries and never set the session stop event.
+Missing or stale readings fall back to time-based pacing; `100` bypasses pacing.
+
+This reduces long busy bursts but is not a driver-enforced instantaneous cap.
+An operation already running cannot be paused by this Python pacer. NVIDIA's
+reported utilization measures kernel activity over a hardware sampling window,
+so brief samples above the configured range remain possible. Raw readings are
+displayed unchanged; they are not clipped to the target. See
+[NVIDIA's utilization definition](https://nvidia.custhelp.com/app/answers/detail/a_id/3751).
+
 The sequence follows elapsed wall time, including pauses and reconnections.
 Transitions are checked between computation stages; an in-flight CUDA kernel
 or synchronous verification finishes before the miner pauses or exits.
@@ -254,8 +330,8 @@ Older configurations with `training.max_gpu_utilization` remain readable. When
 `job_sequence` is absent, a legacy value such as `70` becomes
 `[["main", 60, 70]]`, which repeats at a constant 70%. An explicit
 `job_sequence` takes precedence. Replace the former `main_effort` and
-`decoy_effort` fields with one ordered sequence. Solo mode also accepts JSON,
-for example `train --job-sequence '[["main",60,80],["decoy",30,20],["main",0,-1]]'`.
+`side_job_effort` fields with one ordered sequence. Solo mode also accepts JSON,
+for example `train --job-sequence '[["main",60,80],["side-job",30,20],["main",0,-1]]'`.
 
 `training.max_seconds` bounds a pool session using a stop timer, including
 authentication and share-acknowledgement waits. CPU/GPU work already in a
@@ -263,33 +339,54 @@ computation stage finishes that stage before stopping. `training.max_batches`
 stops the next GPU batch while allowing valid results from the completed batch
 to be submitted. `Ctrl+C` stops the session and closes its connection.
 
-During pool mining, one status row refreshes in place about once per second:
+During pool mining, one training-style status row refreshes in place about once
+per second:
 
 ```text
-Hashrate(avg) 700.00 MH/s | GPU 5% | accepted=0 rejected=0 | submitted=0 batches=100
+Main | Step 100 | elapsed=00:02:30 | GPU 5%
 ```
 
-The local average hashrate counts completed PEARL matrix work as
-`batches * m * n * k / elapsed_seconds`, with automatic H/s through EH/s
-units. One work unit is an int8 multiply-accumulate at the supported rank
-128; tile attempts remain a separate counter. This follows the official
-helper's `inner_hash_per_matmul` counter and PEARL's target scaling. It is
-a local work rate; credited pool hashrate depends on accepted shares.
+Each main step is one completed matrix batch. When `training.max_batches` is
+positive, the row shows a total and percentage, such as `Step 25/100 (25.0%)`.
+Elapsed time is the whole session's wall time, including scheduled side-job
+intervals and waits. The normal display omits hashrate and submission counters.
+Detailed submission results, final counters, and WR GPU reports remain at the
+`DEBUG` log level; connection errors and rejected work remain visible.
+
+Scheduled CNN intervals replace this row with actual epoch progress:
+
+```text
+Side-job | Epoch 2/10 | Step 125/400 (31.2%) | loss=0.1234 accuracy=95.0% | GPU 42%
+```
+
+An epoch is one dataset shard trained for `side_job.passes_per_shard` passes
+(one by default). The percentage counts image presentations across all passes,
+and loss and accuracy are running averages over those presentations.
+Step totals come from Parquet metadata without decoding the dataset up front.
+Partial epoch progress stays in memory across main intervals. Unlimited CNN
+training shows the epoch number without an epoch limit. The standalone side-job
+launcher uses the same display and logs a summary after every completed epoch.
+Bounded batch prefetching and optional decoded-image reuse reduce GPU waits;
+see the [side-job configuration guide](side-job/README.md#higher-gpu-utilization)
+for a heavier workload profile and its memory limits.
 
 GPU utilization is the selected CUDA device's overall busy percentage,
 sampled in the background using `nvidia-smi`. It shows `N/A` when unavailable.
-Normal connection, share, and error messages clear the status row before
-being logged. The row fits the terminal width to prevent wrapping; wider
-terminals show additional counters. Redirected output writes only the final
-status, rather than a line for every batch. `Ctrl+C` finishes the status row
+Normal connection, training, and error messages clear the status row before
+being logged. The row fits the terminal width to prevent wrapping. Redirected
+output writes only the final status, rather than a line for every batch.
+`Ctrl+C` finishes the status row
 and stops the sampler along with the miner.
 
 For WR/PearlHash, the client also reports the selected GPU's name and measured
 rate using `report_info`. It registers the GPU after login, updates the rate
 after the first completed batch, then about every 10 seconds during the first
 two minutes and every two minutes afterward. Each report logs the rate sent
-and its request ID so it can be compared with the dashboard.
-The wire rate uses raw H/s and the same average as the console. These reports
+and its request ID at `DEBUG` so it can be compared with the dashboard.
+The wire rate uses raw H/s calculated from completed matrix work as
+`batches * m * n * k / elapsed_seconds`. One work unit is an int8
+multiply-accumulate at the supported rank 128. This follows the official
+helper's `inner_hash_per_matmul` counter and PEARL's target scaling. These reports
 supply connected-worker GPU information; their acknowledgements never count
 as accepted mining shares. Pool credit still depends on accepted shares.
 
@@ -376,7 +473,7 @@ The local `.venv` and bundled `src/LRAEP_helpers` helper subset are installed.
 The Linux x86_64 Xray VPN core, its original MPL-2.0 license, and checksum
 manifest are included under `src/LRAEP_trainer/bin/` and packaged with the app.
 The pool client automatically selects the native CUDA DP4A backend for 8×8
-hash tiles. Startup reports `Mining backend: native CUDA DP4A`. The first run
+hash tiles. Startup reports `Compute backend: native CUDA DP4A`. The first run
 builds this project's CUDA sources with `nvcc`; later runs reuse the app's
 cache at `~/.cache/LRAEP/native/`.
 No external miner executable is loaded. If CUDA compilation is unavailable,
@@ -539,6 +636,11 @@ including negative values and transcript slot reuse. Node tests exercise RPC
 requests, certificate handling, rejection handling, and response errors.
 The offline self-test compares against PEARL's official CPU reference and
 verifies real plain proofs for all three certificate versions.
+
+`tests/test_local_dependencies.py` checks both trainers for cryptocurrency SDK
+imports and package requirements. It also imports both runtimes with those
+SDKs and network access blocked, verifying that their bundled protocol code
+does not require a cryptocurrency package installation.
 
 ## Sources and permitted protocol references
 

@@ -20,7 +20,7 @@ class ConfigExportTests(unittest.TestCase):
         self.text = '  متن دلخواه "quoted" \'single\' $HOME #tag 🌍\nsecond line  '
         self.values = {
             'version': 1,
-            'training': {'job_sequence': [["main", 60, 80], ["decoy", 30, 0], ["main", 0, -1]]},
+            'training': {'job_sequence': [["main", 60, 80], ["side-job", 30, 0], ["main", 0, -1]]},
             'pool': {'WR_wallet': 'PRIVATE-WALLET', 'password': 'PRIVATE-PASSWORD'},
             'relative_path': '../helpers', 'unicode': 'سلام', 'null': None,
             'enabled': True, 'fraction': 0.5,

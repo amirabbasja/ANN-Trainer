@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 import logging
 import math
+import random
 import threading
 import time
 
@@ -15,17 +16,20 @@ def normalize_job_sequence(value, *, field="job_sequence"):
     duration is never consumed.
     """
     if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{field} must be a list of (kind, seconds, percentage) triples")
+        raise ValueError(f"{field} must be a list of [kind, seconds, percentage, optional tolerance] entries")
     if not value:
         raise ValueError(f"{field} must contain at least one interval")
     entries = []
     total = 0.0
     for entry in value:
-        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
-            raise ValueError(f"{field} intervals must contain kind, seconds and percentage")
-        kind, seconds, percentage = entry
-        if type(kind) is not str or kind not in ("main", "decoy"):
-            raise ValueError(f'{field} kinds must be "main" or "decoy"')
+        if not isinstance(entry, (list, tuple)) or len(entry) not in (3, 4):
+            raise ValueError(f"{field} intervals must contain kind, seconds, percentage and optional tolerance")
+        kind, seconds, percentage = entry[:3]
+        tolerance = entry[3] if len(entry) == 4 else 0
+        if type(tolerance) is not int or not 0 <= tolerance <= 100:
+            raise ValueError(f"{field} tolerance must be an integer between 0 and 100")
+        if type(kind) is not str or kind not in ("main", "side-job"):
+            raise ValueError(f'{field} kinds must be "main" or "side-job"')
         if type(percentage) is not int or not -1 <= percentage <= 100:
             raise ValueError(f"{field} percentages must be integers between -1 and 100")
         try:
@@ -37,7 +41,7 @@ def normalize_job_sequence(value, *, field="job_sequence"):
         total += seconds
         if not math.isfinite(total):
             raise ValueError(f"{field} total duration must be finite")
-        entries.append((kind, seconds, percentage))
+        entries.append(tuple(entry))
     return entries
 
 
@@ -51,11 +55,15 @@ class JobSequence:
     def __init__(self, entries, *, started=None):
         self.entries = normalize_job_sequence(entries)
         self.started = time.monotonic() if started is None else started
-        self._total = sum(seconds for _, seconds, _ in self.entries)
+        self._total = sum(entry[1] for entry in self.entries)
+        self._sample_lock = threading.Lock()
+        self._sample_key = None
+        self._sample_percentage = None
         self._exit_offset = None
         self._exit_kind = None
         elapsed = 0
-        for kind, seconds, percentage in self.entries:
+        for entry in self.entries:
+            kind, seconds, percentage = entry[:3]
             if percentage == -1:
                 self._exit_offset = elapsed
                 self._exit_kind = kind
@@ -73,16 +81,33 @@ class JobSequence:
             return self._exit_kind, -1, math.inf
         cycle, _ = divmod(elapsed, self._total)
         boundary = 0
-        for kind, seconds, percentage in self.entries:
+        for entry in self.entries:
+            kind, seconds, percentage = entry[:3]
             boundary += seconds
             until = self.started + cycle * self._total + boundary
             # Compare absolute timestamps: subtracting a large monotonic origin
             # can otherwise leave a completed fractional interval active.
             if now < until:
-                return kind, percentage, until
+                return kind, self._target(entry, until, now), until
         # Floating-point rounding at a cycle boundary belongs to the next cycle.
         until = self.started + (cycle + 1) * self._total + self.entries[0][1]
-        return self.entries[0][0], self.entries[0][2], max(until, math.nextafter(now, math.inf))
+        return self.entries[0][0], self._target(self.entries[0], until, now), max(until, math.nextafter(now, math.inf))
+
+    def _target(self, entry, until, now):
+        """Hold a random duty-cycle target for five seconds within each interval."""
+        percentage = entry[2]
+        tolerance = entry[3] if len(entry) == 4 else 0
+        if percentage <= 0 or tolerance == 0:
+            return percentage
+        interval_start = until - entry[1]
+        key = (until, int(max(0, now - interval_start) // 5))
+        with self._sample_lock:
+            if key != self._sample_key:
+                self._sample_percentage = random.randint(
+                    max(1, percentage - tolerance), min(100, percentage + tolerance),
+                )
+                self._sample_key = key
+            return self._sample_percentage
 
     def current(self):
         """Return the active percentage and its absolute end time."""
@@ -145,19 +170,21 @@ class JobSequence:
                     timer.join()
 
 
-class ScheduledDecoy:
+class ScheduledSideJob:
     """Keep one CNN job alive while a repeating schedule switches workers."""
 
-    def __init__(self, configuration):
+    def __init__(self, configuration, *, before_log=None, on_progress=None):
         self.configuration = configuration
+        self.before_log = before_log
+        self.on_progress = on_progress
         self.job = None
         self.exhausted = False
         self._previous_interval = None
 
     def run_if_active(self, schedule, stopped, pacer, *, deadline=None):
-        """Run at most one decoy batch; return whether this interval was decoy."""
+        """Run at most one side-job batch; return whether this interval was side-job."""
         kind, percentage, boundary = schedule.current_job()
-        if kind != "decoy" or percentage <= 0 or stopped.is_set():
+        if kind != "side-job" or percentage <= 0 or stopped.is_set():
             return False
         until = boundary if deadline is None else min(boundary, deadline)
         if time.monotonic() >= until:
@@ -165,23 +192,30 @@ class ScheduledDecoy:
         if pacer.max_utilization != percentage:
             pacer.set_utilization(percentage)
         if self._previous_interval != (percentage, boundary):
+            if self.before_log is not None:
+                self.before_log()
             logging.getLogger("LRAEP_trainer").info(
-                "Decoy effort GPU duty-cycle target: %d%%", percentage,
+                "Side-job effort GPU duty-cycle target: %d%%", percentage,
             )
             self._previous_interval = percentage, boundary
         if self.exhausted:
+            if self.on_progress is not None:
+                self.on_progress(self.job)
             stopped.wait(min(threading.TIMEOUT_MAX, max(0, until - time.monotonic())))
             return True
         if self.job is None:
-            from .decoy import DecoyJob
+            from .side_job import SideJob
 
-            self.job = DecoyJob(self.configuration)
+            options = {"before_log": self.before_log} if self.before_log is not None else {}
+            self.job = SideJob(self.configuration, **options)
 
         def cancelled():
             return (stopped.is_set() or time.monotonic() >= until
-                    or schedule.current_job()[0] != "decoy"
+                    or schedule.current_job()[0] != "side-job"
                     or schedule.current()[0] <= 0)
 
+        if self.on_progress is not None:
+            self.on_progress(self.job)
         pacer.begin()
         try:
             runnable = self.job.step(cancelled=cancelled)
@@ -190,6 +224,8 @@ class ScheduledDecoy:
             raise
         pacer.finish(cancelled=cancelled())
         self.exhausted = not runnable
+        if self.on_progress is not None:
+            self.on_progress(self.job)
         if not cancelled():
             if self.exhausted:
                 stopped.wait(min(threading.TIMEOUT_MAX, max(0, until - time.monotonic())))

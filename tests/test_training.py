@@ -71,6 +71,9 @@ class TrainingControlFlowTests(unittest.TestCase):
             "LRAEPD_RPC_USER": "test-user", "LRAEPD_RPC_PASSWORD": "test-password",
         }))
         self.cuda = self.stack.enter_context(patch.object(cli, "require_cuda"))
+        self.progress = self.stack.enter_context(patch.object(cli, "LiveProgress"))
+        self.monitor = self.stack.enter_context(patch.object(cli, "GpuUtilization"))
+        self.monitor.return_value.start.return_value.read.return_value = 42
         self.stack.enter_context(patch.object(cli.torch.cuda, "synchronize"))
         self.stack.enter_context(patch.object(cli.native_cuda, "available", return_value=False))
         self.node_factory = self.stack.enter_context(
@@ -112,6 +115,36 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.node.submit.assert_called_once_with(self.block)
         self.assert_saved_candidate()
         self.watcher.thread.join.assert_called_once()
+
+    def test_main_progress_counts_real_steps_without_mining_counters(self):
+        with self.assertLogs(cli.LOG, level="INFO") as messages:
+            self.assertEqual(cli.train(self.args), 0)
+        display = self.progress.return_value.__enter__.return_value
+        status = display.update.call_args.args[0]
+        self.assertIn("Main | Step 1/1 (100.0%)", status)
+        self.assertIn("elapsed=", status)
+        self.assertIn("GPU 42%", status)
+        output = " ".join(messages.output) + status
+        for label in ("accepted=", "submitted=", "Hashrate", "tile_attempts=", "loss=", "accuracy="):
+            self.assertNotIn(label, output)
+        self.monitor.return_value.start.return_value.close.assert_called_once()
+        self.progress.return_value.__exit__.assert_called_once()
+
+    def test_progress_cleanup_preserves_verification_failure(self):
+        self.verify.return_value = False, "invalid proof"
+        with self.assertRaisesRegex(RuntimeError, "GPU candidate rejected locally"):
+            cli.train(self.args)
+        self.monitor.return_value.start.return_value.close.assert_called_once()
+        self.progress.return_value.__exit__.assert_called_once()
+        self.watcher.thread.join.assert_called_once()
+        self.node.submit.assert_not_called()
+        self.assertEqual(self.signals.call_count, 4)
+
+    def test_implicit_cuda_telemetry_uses_callers_selected_device(self):
+        self.args.device = "cuda"
+        with patch.object(cli.torch.cuda, "current_device", return_value=2):
+            self.assertEqual(cli.train(self.args), 0)
+        self.monitor.assert_called_once_with("cuda:2")
 
     def test_chain_tip_change_discards_completed_candidate_before_certification(self):
         # First best_hash() confirms the template. The candidate check sees
@@ -204,7 +237,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(pacer.return_value.wait.call_args.kwargs["deadline"], 101.0)
 
     def test_role_change_cancels_old_search_even_at_unchanged_gpu_cap(self):
-        self.args.job_sequence = [("main", 1, 70), ("decoy", 1, 70), ("main", 0, -1)]
+        self.args.job_sequence = [("main", 1, 70), ("side-job", 1, 70), ("main", 0, -1)]
         now = [100.0]
 
         def search(_batch, _target, _device, cancelled):
@@ -218,16 +251,40 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.search.side_effect = search
         with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 patch.object(cli, "GpuPacer"), \
-                patch("LRAEP_trainer.decoy.DecoyJob") as cnn, \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn, \
                 self.assertLogs(cli.LOG, level="INFO") as messages:
+            cnn.return_value.status.return_value = "Side-job | Epoch 1 | Step 1/2 (50.0%) | loss=0.2 accuracy=50.0% | GPU 42%"
             cnn.return_value.step.side_effect = lambda **_kw: (now.__setitem__(0, 102.0), True)[1]
             self.assertEqual(cli.train(self.args), 0)
         self.assertEqual(self.search.call_count, 1)
         self.assertIn("Main effort GPU duty-cycle target: 70%", " ".join(messages.output))
-        self.assertIn("Decoy effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("Side-job effort GPU duty-cycle target: 70%", " ".join(messages.output))
         cnn.return_value.step.assert_called_once()
         cnn.return_value.close.assert_called_once()
         self.node.submit.assert_not_called()
+        display = self.progress.return_value.__enter__.return_value
+        self.assertEqual(display.update.call_args.args[0], cnn.return_value.status.return_value)
+        self.assertEqual(cnn.call_args.kwargs["before_log"], display.clear)
+
+    def test_main_progress_resumes_after_side_job_interval(self):
+        self.args.max_batches = 2
+        self.args.job_sequence = [("main", 1, 70), ("side-job", 1, 70), ("main", 60, 70)]
+        now = [100.0]
+        self.search.side_effect = lambda *_: iter([])
+        with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
+                patch.object(cli, "GpuPacer") as pacer, \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn:
+            status = "Side-job | Epoch 1 | Step 1/2 (50.0%) | loss=0.2 accuracy=50.0% | GPU 42%"
+            cnn.return_value.status.return_value = status
+            cnn.return_value.step.side_effect = lambda **_kw: (now.__setitem__(0, 102.0), True)[1]
+            pacer.return_value.wait.side_effect = lambda *_a, **kw: now.__setitem__(0, kw["deadline"])
+            self.assertEqual(cli.train(self.args), 0)
+        display = self.progress.return_value.__enter__.return_value
+        rows = [call.args[0] for call in display.update.call_args_list]
+        self.assertIn(status, rows)
+        self.assertTrue(rows[-1].startswith("Main | Step 2/2 (100.0%)"))
+        self.assertEqual(self.search.call_count, 2)
+        cnn.return_value.step.assert_called_once()
 
     def test_pause_after_search_discards_candidate_before_verification(self):
         self.args.job_sequence = [("main", 1, 80), ("main", 1, 0), ("main", 0, -1)]

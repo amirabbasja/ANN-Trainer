@@ -1,7 +1,7 @@
 """Command line entry point for the LRAEP GPU miner."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import copy
 import hashlib
 import json
@@ -18,12 +18,14 @@ import torch
 
 from .gpu import TrainingCancelled, gpu_transcripts
 from .gpu_pacing import GpuPacer
-from .effort import JobSequence, ScheduledDecoy, normalize_job_sequence
+from .effort import JobSequence, ScheduledSideJob, normalize_job_sequence
 from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_target, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
 from . import native_cuda
 from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
+from .progress import LiveProgress, format_elapsed, main_status
+from .telemetry import GpuUtilization
 
 LOG = logging.getLogger("LRAEP_trainer")
 
@@ -142,7 +144,7 @@ def train(args) -> int:
     schedule = JobSequence(args.job_sequence, started=started)
     deadline = started + args.max_seconds if args.max_seconds else None
     watcher = None
-    decoy = None
+    side_job = None
     batches = attempts = accepted = 0
     old_handlers = {}
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -153,7 +155,7 @@ def train(args) -> int:
                 or (args.max_batches > 0 and batches >= args.max_batches)
                 or (deadline is not None and time.monotonic() >= deadline))
 
-    with schedule.stopping(stopped):
+    with schedule.stopping(stopped), ExitStack() as resources:
         try:
             # Pauses and an immediate exit must not initialize a mining backend.
             if not schedule.wait(stopped, deadline=deadline) or finished():
@@ -167,13 +169,39 @@ def train(args) -> int:
                 raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
             cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
             pacer = GpuPacer(args.device, 100)
-            if hasattr(args, "decoy_configuration"):
-                decoy_configuration = args.decoy_configuration
+            progress = resources.enter_context(LiveProgress())
+            telemetry_device = torch.device(args.device)
+            if telemetry_device.index is None:
+                telemetry_device = torch.device("cuda", torch.cuda.current_device())
+            monitor = GpuUtilization(str(telemetry_device)).start()
+            resources.callback(monitor.close)
+            active_job = "main"
+
+            def show_main(force=False):
+                nonlocal active_job
+                force = force or active_job != "main"
+                active_job = "main"
+                progress.update(main_status(batches, time.monotonic() - started, monitor.read(),
+                                            max_steps=args.max_batches), force=force)
+
+            def show_side_job(job):
+                nonlocal active_job
+                force = active_job != "side-job"
+                active_job = "side-job"
+                progress.update(job.status(monitor.read()), force=force)
+
+            def log(level, message, *values):
+                if LOG.isEnabledFor(level):
+                    progress.clear()
+                    LOG.log(level, message, *values)
+
+            if hasattr(args, "side_job_configuration"):
+                side_job_configuration = args.side_job_configuration
             else:
                 from .config import DEFAULT_CONFIG
-                decoy_configuration = dict(copy.deepcopy(DEFAULT_CONFIG), device=args.device)
-            decoy = ScheduledDecoy(decoy_configuration)
-            LOG.info("GPU job sequence: %s", args.job_sequence)
+                side_job_configuration = dict(copy.deepcopy(DEFAULT_CONFIG), device=args.device)
+            side_job = ScheduledSideJob(side_job_configuration, before_log=progress.clear, on_progress=show_side_job)
+            log(logging.INFO, "GPU job sequence: %s", args.job_sequence)
             use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
             from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
             get_script_pubkey_from_p2tr_address(args.address)
@@ -206,8 +234,9 @@ def train(args) -> int:
             while not finished():
                 if not schedule.wait(stopped, deadline=deadline) or finished():
                     break
-                if decoy.run_if_active(schedule, stopped, pacer, deadline=deadline):
+                if side_job.run_if_active(schedule, stopped, pacer, deadline=deadline):
                     continue
+                show_main()
                 try:
                     template = rpc(node.get_template, args.address)
                     if schedule.current()[0] <= 0 or finished():
@@ -219,8 +248,8 @@ def train(args) -> int:
                     parent = bytes(header.prev_block).hex()
                     target = adjusted_target(template.target, cfg)
                     expires = time.monotonic() + args.refresh_interval
-                    LOG.info("Training height=%d certificate=V%d shape=%dx%dx%d",
-                             template.height, cert, cfg.m, cfg.n, cfg.k)
+                    log(logging.DEBUG, "Training height=%d certificate=V%d shape=%dx%dx%d",
+                        template.height, cert, cfg.m, cfg.n, cfg.k)
                     watcher.tip = rpc(node.best_hash)
                     watcher.failed = False
 
@@ -237,7 +266,7 @@ def train(args) -> int:
                             continue
                         pacer.set_utilization(percentage)
                         if previous_effort != (kind, percentage):
-                            LOG.info("%s effort GPU duty-cycle target: %d%%", kind.capitalize(), percentage)
+                            log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind.capitalize(), percentage)
                             previous_effort = kind, percentage
 
                         def cancelled():
@@ -280,7 +309,7 @@ def train(args) -> int:
                                 raise RuntimeError(f"GPU candidate rejected locally: {message}")
                             if candidate_cancelled():
                                 break
-                            LOG.info("Training candidate verified; creating its ZK certificate")
+                            log(logging.DEBUG, "Training candidate verified; creating its ZK certificate")
                             block_bytes = build_block(proof, template)
                             if candidate_cancelled():
                                 break
@@ -292,37 +321,40 @@ def train(args) -> int:
                                 "plain_proof_base64": proof.to_base64(),
                             }, indent=2) + "\n")
                             if args.no_submit:
-                                LOG.info("Verified block saved to %s (submission disabled)", output / f"{name}.bin")
+                                log(logging.DEBUG, "Verified block saved to %s (submission disabled)", output / f"{name}.bin")
                             elif rpc(node.best_hash) == parent and not candidate_cancelled():
                                 rpc(node.submit, block_bytes)
                                 accepted += 1
-                                LOG.info("Node accepted the training result at height %d", template.height)
+                                log(logging.DEBUG, "Node accepted the training result at height %d", template.height)
                             else:
-                                LOG.info("Chain advanced during certification; saved candidate is stale")
+                                log(logging.DEBUG, "Chain advanced during certification; saved candidate is stale")
                             break
-                        elapsed = max(time.monotonic() - started, 0.001)
-                        LOG.info("Training batches=%d tile_attempts=%d attempts/s=%.1f accepted=%d",
-                                 batches, attempts, attempts / elapsed, accepted)
+                        show_main()
                         if not finished():
                             pacer.wait(stopped, deadline=stage_deadline(boundary))
                 except TrainingCancelled:
                     continue
                 except NodeError as exc:
-                    LOG.warning("%s; retrying in 3 seconds", exc)
+                    log(logging.WARNING, "%s; retrying in 3 seconds", exc)
                     _, boundary = schedule.current()
                     stopped.wait(max(0, min(3, stage_deadline(boundary) - time.monotonic())))
+            if active_job == "side-job" and side_job.job is not None:
+                progress.update(side_job.job.status(monitor.read()), force=True)
+            else:
+                show_main(force=True)
         finally:
             stopped.set()
             try:
-                if decoy is not None:
-                    decoy.close()
+                if side_job is not None:
+                    side_job.close()
             finally:
                 if watcher is not None:
                     watcher.stopped.set()
                     watcher.thread.join()
                 for sig, handler in old_handlers.items():
                     signal.signal(sig, handler)
-    LOG.info("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
+    LOG.info("Main job stopped: steps=%d elapsed=%s", batches, format_elapsed(time.monotonic() - started))
+    LOG.debug("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
     return 0
 
 
@@ -360,7 +392,7 @@ def _add_training_arguments(parser):
     parser.add_argument("--max-gpu-utilization", type=int, default=argparse.SUPPRESS,
                         help="legacy constant GPU effort, 1-100 (100 disables pacing)")
     parser.add_argument("--job-sequence", default=argparse.SUPPRESS,
-                        help='JSON sequence of [kind, seconds, percentage] triples; kind is main or decoy, 0 pauses and -1 exits')
+                        help='JSON sequence of [kind, seconds, percentage, optional tolerance] entries; kind is main or side-job, 0 pauses and -1 exits')
     parser.add_argument("--output-dir", default=argparse.SUPPRESS)
 
 
@@ -376,7 +408,7 @@ def _apply_settings(args, configuration):
         try:
             effort = json.loads(args.job_sequence)
         except (TypeError, ValueError):
-            raise ValueError("job-sequence must be a JSON list of [kind, seconds, percentage] triples") from None
+            raise ValueError("job-sequence must be a JSON list of [kind, seconds, percentage, optional tolerance] entries") from None
     elif hasattr(args, "max_gpu_utilization"):
         if type(args.max_gpu_utilization) is not int or not 1 <= args.max_gpu_utilization <= 100:
             raise ValueError("max-gpu-utilization must be an integer between 1 and 100")
@@ -403,7 +435,7 @@ def _apply_settings(args, configuration):
     for name, value in defaults.items():
         if not hasattr(args, name):
             setattr(args, name, value)
-    args.decoy_configuration = dict(copy.deepcopy(configuration or DEFAULT_CONFIG), device=args.device)
+    args.side_job_configuration = dict(copy.deepcopy(configuration or DEFAULT_CONFIG), device=args.device)
     if configuration:
         # A config-driven run gets all RPC settings from the selected file.
         args.rpc_username = node["username"]

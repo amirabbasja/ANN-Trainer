@@ -9,7 +9,7 @@ from .config_export import encode_config_document, write_open_text
 
 
 def prepare_wr_config(source_path):
-    """Select WR and omit shared-only CNN settings without changing the source."""
+    """Select WR and include CNN settings without changing the source."""
     values = copy.deepcopy(read_config(source_path))
     values["mode"] = "pool"
     values.setdefault("pool", {})["protocol"] = "WR"
@@ -21,9 +21,9 @@ def prepare_wr_config(source_path):
 
     validate_pool_endpoint(pool)
     validate_pool_identity(pool, "WR", validate_address=False)
-    # The standalone WR runtime has no CNN job and rejects this shared-only
-    # section. Validate the complete source above before narrowing the export.
-    values.pop("decoy_job", None)
+    # Materialize the shared dataset default only inside the encrypted export;
+    # the standalone source intentionally has no repository URL default.
+    values.setdefault("side_job", {}).setdefault("repo_url", runtime["side_job"]["repo_url"])
     return values
 
 

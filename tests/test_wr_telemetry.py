@@ -70,9 +70,12 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.assertEqual(self.reports, [(0.0, 'selected GPU', 0.0),
                                         (1.0, 'selected GPU', float(work))])
         self.session.submit.assert_not_called()
-        self.assertIn('submitted=0 accepted=0 rejected=0', ' '.join(logs.output))
+        output = ' '.join(logs.output)
+        self.assertIn('Main job stopped: steps=1 elapsed=00:00:01', output)
+        self.assertNotIn('PearlHash GPU report sent', output)
+        self.assertNotIn('submitted=', output)
         status = self.progress.return_value.__enter__.return_value.update.call_args.args[0]
-        self.assertIn('accepted=0 rejected=0', status)
+        self.assertEqual(status, 'Main | Step 1/1 (100.0%) | elapsed=00:00:01 | GPU 37%')
 
     def test_reports_refresh_during_startup_then_return_to_120_second_cadence(self):
         times = [1.0, 5.0, 11.0, 20.0, 21.0, 119.0, 120.0, 130.0, 238.0, 239.0, 359.0]
@@ -118,8 +121,9 @@ class WRReportSchedulingTests(unittest.TestCase):
         for previous, current in zip(self.reports[1:], self.reports[2:]):
             self.assertGreaterEqual(current[0] - previous[0], 10.0)
         status = self.progress.return_value.__enter__.return_value.update.call_args.args[0]
-        self.assertIn('Hashrate(avg) 4.53 TH/s', status)
-        self.assertIn('batches=989 attempts=259260416', status)
+        self.assertIn('Main | Step 989/989 (100.0%)', status)
+        self.assertNotIn('Hashrate', status)
+        self.assertNotIn('attempts=', status)
         self.session.submit.assert_not_called()
 
     def test_cancelled_work_only_registers_gpu_and_never_reports_uncompleted_work(self):
@@ -147,12 +151,12 @@ class WRReportSchedulingTests(unittest.TestCase):
 
 
 class PoolHashrateUnitTests(unittest.TestCase):
-    def test_raw_hs_and_console_ths_share_completed_mac_count(self):
+    def test_raw_hs_and_diagnostic_units_use_completed_mac_count(self):
         config = TrainingConfig(m=4096, n=4096, k=16384)
         stats = worker.PoolTrainingStats(batches=15, accepted=0)
         expected = 15 * 4096 * 4096 * 16384
         self.assertEqual(worker.pool_hashrate(stats, config, 1.0), expected)
-        self.assertIn('Hashrate(avg) 4.12 TH/s', worker.pool_status(stats, config, 1.0, 50))
+        self.assertEqual(worker.format_hashrate(expected), '4.12 TH/s')
         stats.accepted = 100
         self.assertEqual(worker.pool_hashrate(stats, config, 1.0), expected)
 

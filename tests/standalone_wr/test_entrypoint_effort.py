@@ -36,7 +36,7 @@ class EntrypointEffortTests(unittest.TestCase):
         self.worker = self.stack.enter_context(patch("LRAEP_trainer.pool_training.run_pool_training", return_value=0))
 
     def test_immediate_exit_skips_vpn_helpers_cuda_and_worker(self):
-        self.config["training"]["job_sequence"] = [("decoy", 0, -1)]
+        self.config["training"]["job_sequence"] = [("side-job", 0, -1)]
         self.assertEqual(self.entrypoint.run(self.temporary), 0)
         self.vpn.assert_not_called()
         self.helpers.assert_not_called()

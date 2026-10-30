@@ -223,7 +223,7 @@ class ConfigDispatchTests(unittest.TestCase):
     def test_solo_mode_reads_file_credentials_and_cli_overrides(self):
         self.settings["mode"] = "solo"
         self.settings["training"].update(m=128, n=128, max_batches=2)
-        self.settings["training"]["job_sequence"] = [["main", 10, 65], ["decoy", 3, 15], ["main", 5, 0], ["main", 20, 35]]
+        self.settings["training"]["job_sequence"] = [["main", 10, 65], ["side-job", 3, 15], ["main", 5, 0], ["main", 20, 35]]
         self.settings["node"].update(username="file-user", password="file-password",
                                     address="file-address")
         self.write_config()
@@ -234,8 +234,8 @@ class ConfigDispatchTests(unittest.TestCase):
         self.assertEqual(args.m, 512)
         self.assertEqual(args.n, 128)
         self.assertEqual(args.max_batches, 2)
-        self.assertEqual(args.job_sequence, [("main", 10, 65), ("decoy", 3, 15), ("main", 5, 0), ("main", 20, 35)])
-        self.assertFalse(hasattr(args, "decoy_effort"))
+        self.assertEqual(args.job_sequence, [("main", 10, 65), ("side-job", 3, 15), ("main", 5, 0), ("main", 20, 35)])
+        self.assertFalse(hasattr(args, "side_job_effort"))
         self.assertEqual(args.rpc_username, "file-user")
         self.assertEqual(args.rpc_password, "file-password")
         self.assertEqual(args.address, "file-address")
@@ -259,9 +259,9 @@ class ConfigDispatchTests(unittest.TestCase):
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main([
                 "--config", str(self.file), "train", "--job-sequence",
-                '[["main", 2, 70], ["decoy", 3, 0], ["main", 0, -1]]',
+                '[["main", 2, 70], ["side-job", 3, 0], ["main", 0, -1]]',
             ]), 0)
-        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 2, 70), ("decoy", 3, 0), ("main", 0, -1)])
+        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 2, 70), ("side-job", 3, 0), ("main", 0, -1)])
         self.assertFalse(hasattr(train.call_args.args[0], "max_gpu_utilization"))
 
     def test_solo_effort_override_is_validated_before_network_or_helpers(self):
@@ -269,7 +269,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.settings["vpn"].update(enabled=True, link="vless://SECRET@vpn.example:443")
         self.write_config()
         for schedule in ("not-json", "[]", "[[0, 70]]", '[["MAIN", 1, 80]]',
-                         '[["main", 0, 70]]', '[["decoy", 1, 101]]',
+                         '[["main", 0, 70]]', '[["side-job", 1, 101]]',
                          '[["main", 1, true]]', '[["main", 1, -2]]'):
             with self.subTest(schedule=schedule), \
                     patch("LRAEP_trainer.vpn.ManagedVPN") as vpn, \
@@ -301,7 +301,7 @@ class ConfigDispatchTests(unittest.TestCase):
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main(["train"]), 0)
         self.assertEqual(train.call_args.args[0].job_sequence, [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
-        self.assertFalse(hasattr(train.call_args.args[0], "decoy_effort"))
+        self.assertFalse(hasattr(train.call_args.args[0], "side_job_effort"))
 
     def test_immediate_exit_skips_network_helpers_and_mining_entrypoints(self):
         self.settings["training"]["job_sequence"] = [["main", 0, -1]]

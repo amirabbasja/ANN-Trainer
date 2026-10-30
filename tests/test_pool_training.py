@@ -192,36 +192,54 @@ class PoolLoopTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 2)
 
     def test_schedule_switches_effort_and_repeats_from_the_first_interval(self):
-        with self.clocked_schedule([("main", 10, 80), ("decoy", 20, 70)], batches=5) as (clock, pacer), \
-                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
+        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 70)], batches=5) as (clock, pacer), \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn:
             prepared_at = []
-            decoy_at = []
+            side_job_at = []
+            statuses = []
+            display = self.progress.return_value.__enter__.return_value
+            display.update.side_effect = lambda text, **_: statuses.append((clock.now, text))
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
-            cnn.return_value.step.side_effect = lambda **_kw: (decoy_at.append(clock.now), True)[1]
-            pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
+            cnn.return_value.step.side_effect = lambda **_kw: (side_job_at.append(clock.now), True)[1]
+            cnn.return_value.status.side_effect = lambda *_: f"Side-job | Epoch 1 | Step {cnn.return_value.step.call_count}/20"
+
+            def pace(*_a, **kw):
+                if clock.now % 30 == 10:
+                    self.assertEqual(statuses[-1][1],
+                                     f"Side-job | Epoch 1 | Step {cnn.return_value.step.call_count}/20")
+                clock.now = kw["deadline"]
+
+            pacer.wait.side_effect = pace
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         self.assertEqual(prepared_at, [0, 30, 60, 90, 120])
-        self.assertEqual(decoy_at, [10, 40, 70, 100])
+        self.assertEqual(side_job_at, [10, 40, 70, 100])
         self.assertEqual(self.session.wait_job.call_count, 5)
         self.assertEqual(pacer.set_utilization.call_args_list,
                          [call(80), call(70), call(80), call(70), call(80),
                           call(70), call(80), call(70), call(80)])
         self.assertEqual(self.search.call_count, 5)
         self.assertEqual(self.session.submit.call_count, 5)
-        cnn.assert_called_once_with(self.configuration)
+        cnn.assert_called_once_with(self.configuration, before_log=display.clear)
+        self.assertTrue(any(now == 10 and text == "Side-job | Epoch 1 | Step 1/20"
+                            for now, text in statuses))
+        self.assertTrue(any(now == 30 and text.startswith("Main | Step 2/5")
+                            for now, text in statuses), "main progress must resume after a side-job interval")
         cnn.return_value.close.assert_called_once()
 
-    def test_initial_decoy_trains_before_pool_connection_or_job_wait(self):
-        with self.clocked_schedule([("decoy", 10, 70), ("main", 20, 80)]) as (clock, _), \
-                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
-            def decoy_batch(**_kw):
+    def test_initial_side_job_trains_before_pool_connection_or_job_wait(self):
+        with self.clocked_schedule([("side-job", 10, 70), ("main", 20, 80)]) as (clock, _), \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn:
+            def side_job_batch(**_kw):
                 self.factory.assert_not_called()
                 self.session.wait_job.assert_not_called()
                 self.prepare.assert_not_called()
+                display = self.progress.return_value.__enter__.return_value
+                self.assertEqual(display.update.call_args.args[0], "Side-job | Epoch 1 | Preparing")
                 clock.now = 10
                 return True
 
-            cnn.return_value.step.side_effect = decoy_batch
+            cnn.return_value.step.side_effect = side_job_batch
+            cnn.return_value.status.return_value = "Side-job | Epoch 1 | Preparing"
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         self.prepare.assert_called_once()
         self.session.submit.assert_called_once()
@@ -229,8 +247,8 @@ class PoolLoopTests(unittest.TestCase):
         cnn.return_value.close.assert_called_once()
 
     def test_role_transition_cancels_old_preparation_at_unchanged_gpu_cap(self):
-        with self.clocked_schedule([("main", 10, 70), ("decoy", 20, 70)]) as (clock, pacer), \
-                patch("LRAEP_trainer.decoy.DecoyJob") as cnn:
+        with self.clocked_schedule([("main", 10, 70), ("side-job", 20, 70)]) as (clock, pacer), \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
 
             def prepare(*_a, **_kw):
@@ -245,7 +263,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_called_once()
         self.assertEqual(pacer.set_utilization.call_args_list, [call(70)])
         self.assertIn("Main effort GPU duty-cycle target: 70%", " ".join(messages.output))
-        self.assertIn("Decoy effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("Side-job effort GPU duty-cycle target: 70%", " ".join(messages.output))
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
         with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
@@ -319,20 +337,23 @@ class PoolLoopTests(unittest.TestCase):
         self.search.assert_called_once()
         self.session.submit.assert_called_once()
 
-    def test_progress_reports_gpu_and_final_share_counters_without_batch_log_spam(self):
+    def test_progress_reports_training_steps_and_gpu_without_mining_counter_logs(self):
         self.configuration["training"]["max_batches"] = 3
         self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
         with self.assertLogs(worker.LOG, level="INFO") as messages:
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         output = " ".join(messages.output)
-        self.assertNotIn("Pool training batches=", output)
-        self.assertIn("accepted=3", output)
+        self.assertIn("Main job stopped: steps=3 elapsed=", output)
+        self.assertNotIn("Pool accepted training share", output)
         display = self.progress.return_value.__enter__.return_value
         last_status = display.update.call_args.args[0]
-        self.assertIn("Hashrate(avg)", last_status)
+        self.assertIn("Main | Step 3/3 (100.0%)", last_status)
         self.assertIn("GPU 42%", last_status)
-        self.assertIn("accepted=3", last_status)
-        self.assertIn("batches=3", last_status)
+        self.assertIn("elapsed=", last_status)
+        for text in (output, last_status):
+            for label in ("Hashrate", "accepted=", "rejected=", "submitted=", "batches=", "attempts=", "stale="):
+                self.assertNotIn(label, text)
+        self.assertEqual(self.session.submit.call_count, 3)
         self.monitor.return_value.start.return_value.close.assert_called_once()
 
     def test_telemetry_is_closed_when_pool_authentication_fails(self):
@@ -381,9 +402,10 @@ class PoolLoopTests(unittest.TestCase):
         with self.assertLogs(worker.LOG, level="INFO") as messages:
             self.assertEqual(worker.run_pool_training(self.configuration), 0)
         output = " ".join(messages.output)
-        self.assertIn("rejected=1", output)
-        self.assertIn("accepted=0", output)
+        self.assertIn("Pool rejected training share", output)
+        self.assertIn("low difficulty", output)
         self.assertNotIn("Pool accepted training share", output)
+        self.session.submit.assert_called_once()
 
     def test_authentication_failure_stops_without_reconnect_loop(self):
         self.session.__enter__.side_effect = PoolAuthenticationError("invalid account")
@@ -470,20 +492,21 @@ class PoolLoopTests(unittest.TestCase):
 
 
 class PoolStatusTests(unittest.TestCase):
-    def test_rate_uses_LRAEP_mac_work_units_instead_of_tile_attempts_or_double_ops(self):
+    def test_unbounded_steps_use_training_format_and_elapsed_time(self):
         cfg = TrainingConfig(m=128, n=128, k=2048)
         stats = worker.PoolTrainingStats(batches=2, attempts=512, submitted=3,
                                          accepted=2, rejected=1, stale=4)
-        status = worker.pool_status(stats, cfg, 1, 75)
-        self.assertIn("Hashrate(avg) 67.11 MH/s", status)
-        self.assertIn("GPU 75%", status)
-        self.assertIn("accepted=2 rejected=1", status)
-        self.assertIn("submitted=3 batches=2 attempts=512 stale=4", status)
+        status = worker.pool_status(stats, cfg, 3723, 75)
+        self.assertEqual(status, "Main | Step 2 | elapsed=01:02:03 | GPU 75%")
 
-    def test_missing_gpu_utilization_is_unavailable_and_zero_work_has_zero_rate(self):
+    def test_configured_batch_limit_has_true_step_progress(self):
+        status = worker.pool_status(worker.PoolTrainingStats(batches=2), TrainingConfig(), 1, 75,
+                                    max_batches=10)
+        self.assertEqual(status, "Main | Step 2/10 (20.0%) | elapsed=00:00:01 | GPU 75%")
+
+    def test_missing_gpu_utilization_and_unstarted_work(self):
         status = worker.pool_status(worker.PoolTrainingStats(), TrainingConfig(), 0, None)
-        self.assertIn("0.00 H/s", status)
-        self.assertIn("GPU N/A", status)
+        self.assertEqual(status, "Main | Step 0 | elapsed=00:00:00 | GPU N/A")
 
 
 class LocalGPUIntegrationTests(unittest.TestCase):
@@ -575,7 +598,7 @@ class LocalGPUIntegrationTests(unittest.TestCase):
             return itertools.islice(original_search(*args), 1)
 
         with patch.object(worker, "search_batch", side_effect=one_candidate), \
-                self.assertLogs(worker.LOG, level="INFO") as messages:
+                self.assertLogs(worker.LOG, level="DEBUG") as messages:
             result = worker.run_pool_training(cfg)
         server.join(timeout=3)
         self.assertFalse(server.is_alive(), "local pool server did not stop")

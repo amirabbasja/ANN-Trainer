@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.config import ConfigError
+from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG
 from LRAEP_trainer.config_export import FORMAT, decode_config_document, read_open_text
 from LRAEP_trainer import config_transfer as transfer
 
@@ -30,7 +30,7 @@ class ConfigTransferTests(unittest.TestCase):
             'official_source': 'src/LRAEP_helpers',
             'device': 'cuda:0',
             'training': {
-                'job_sequence': [["main", 60, 80], ["decoy", 120, 70], ["main", 180, 10]],
+                'job_sequence': [["main", 60, 80], ["side-job", 120, 70], ["main", 180, 10]],
                 'output_dir': 'results',
                 'max_batches': 2,
             },
@@ -57,6 +57,7 @@ class ConfigTransferTests(unittest.TestCase):
         expected = copy.deepcopy(self.values)
         expected['mode'] = 'pool'
         expected['pool']['protocol'] = 'WR'
+        expected.setdefault('side_job', {}).setdefault('repo_url', DEFAULT_CONFIG['side_job']['repo_url'])
         return expected
 
     def isolated_wr_load(self, *, expected_success=True):
@@ -114,7 +115,7 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
         self.assertEqual(loaded['raw'], expected)
         self.assertEqual(loaded['runtime']['mode'], 'pool')
         self.assertEqual(loaded['runtime']['training']['job_sequence'], self.values['training']['job_sequence'])
-        self.assertNotIn('decoy_effort', loaded['runtime']['training'])
+        self.assertNotIn('side_job_effort', loaded['runtime']['training'])
         self.assertEqual(loaded['pool']['protocol'], 'WR')
         self.assertEqual(loaded['pool']['host'], 'wr.example')
         self.assertEqual(loaded['pool']['port'], 9000)
@@ -134,31 +135,35 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
         self.assertEqual(read_open_text(self.env_path), self.text)
         self.assertNotIn('open_text="old"', stored)
 
-    def test_export_omits_decoy_job_after_validation_and_preserves_source(self):
-        self.values['decoy_job'] = {
+    def test_export_encrypts_side_job_and_preserves_source(self):
+        self.values['side_job'] = {
+            'repo_url': 'https://huggingface.co/datasets/private-owner/private-thesis/tree/main/train',
             'channels': [32, 64], 'blocks_per_stage': [1, 2],
-            'vpn': {'enabled': True, 'link': 'ss://PRIVATE-DECOY-VPN',
-                    'core_path': 'bin/decoy-xray'},
+            'vpn': {'enabled': True, 'link': 'ss://PRIVATE-SIDE_JOB-VPN',
+                    'core_path': 'bin/side-job-xray'},
         }
         self.save_source()
         source_before = self.source.read_bytes()
         expected = self.exported_values()
-        expected.pop('decoy_job')
         transfer.export_wr_config(self.source, self.destination, open_text=self.text)
         exported = decode_config_document(json.loads(self.destination.read_text()), self.text)
-        self.assertNotIn('decoy_job', exported)
+        self.assertEqual(exported['side_job'], self.values['side_job'])
+        for secret in ('private-owner', 'private-thesis', 'PRIVATE-SIDE_JOB-VPN', 'repo_url'):
+            self.assertNotIn(secret, self.destination.read_text())
         self.assertEqual(exported, expected)
         self.assertEqual(self.source.read_bytes(), source_before)
         self.assertEqual(json.loads(self.source.read_text()), self.values)
         loaded = self.isolated_wr_load()
-        self.assertNotIn('decoy_job', loaded['raw'])
+        self.assertEqual(loaded['runtime']['side_job']['repo_url'], self.values['side_job']['repo_url'])
+        self.assertEqual(loaded['runtime']['side_job']['vpn']['core_path'],
+                         str(self.destination.parent / 'bin/side-job-xray'))
         self.assertEqual(loaded['raw'], expected)
 
-    def test_export_does_not_hide_invalid_decoy_settings(self):
-        self.values['decoy_job'] = {'channels': [0, 128, 256, 512]}
+    def test_export_does_not_hide_invalid_side_job_settings(self):
+        self.values['side_job'] = {'channels': [0, 128, 256, 512]}
         self.save_source()
         source_before = self.source.read_bytes()
-        with self.assertRaisesRegex(ConfigError, 'decoy_job.channels'):
+        with self.assertRaisesRegex(ConfigError, 'side_job.channels'):
             transfer.export_wr_config(self.source, self.destination, open_text=self.text)
         self.assertEqual(self.source.read_bytes(), source_before)
         self.assertFalse(self.destination.exists())

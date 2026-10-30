@@ -29,7 +29,7 @@ class ConfigNotebookTests(unittest.TestCase):
             "official_source": "src/LRAEP_helpers",
             "training": {
                 "output_dir": "results",
-                "job_sequence": [["main", 5, 80], ["decoy", 1, 0], ["main", 0, -1]],
+                "job_sequence": [["main", 5, 80], ["side-job", 1, 0], ["main", 0, -1]],
             },
             "pool": {
                 "protocol": "KEX", "WR_wallet": "test-wr-wallet",
@@ -38,6 +38,7 @@ class ConfigNotebookTests(unittest.TestCase):
                 "WR": {"host": "wr.example", "port": 9000, "tls": False},
             },
             "vpn": {"enabled": True, "link": "vless://test-id@vpn.example:443"},
+            "side_job": {"repo_url": "https://huggingface.co/datasets/private-owner/private-thesis"},
         }
 
     def execute_cells(self):
@@ -94,12 +95,14 @@ class ConfigNotebookTests(unittest.TestCase):
         expected["mode"] = "pool"
         expected["pool"]["protocol"] = "WR"
         self.assertEqual(decode_config_document(envelope, key_text), expected)
+        self.assertNotIn("private-thesis", self.destination.read_text())
         self.assertEqual(read_open_text(env_path), key_text)
         self.assertTrue(env_path.read_text().startswith('KEEP_SETTING="preserve exactly"\n'))
         self.assertEqual(output.getvalue(),
                          f"Encoded WR configuration: {self.destination}\n"
                          f"Decode key saved in: {env_path}\n")
         self.assertNotIn("PRIVATE-SOURCE-PASSWORD", output.getvalue())
+        self.assertNotIn("private-thesis", output.getvalue())
         self.assertNotIn(key_text, output.getvalue())
         self.assertNotIn("decode_key", namespace)
         self.assertNotIn("open_text", namespace)

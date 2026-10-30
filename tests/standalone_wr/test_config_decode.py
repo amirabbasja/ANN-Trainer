@@ -50,6 +50,44 @@ class ConfigDecodeTests(unittest.TestCase):
         self.path.write_text(json.dumps(document), encoding='utf-8')
         self.assertEqual(read_config(self.path), self.config)
 
+    def test_cnn_repository_and_vpn_are_only_stored_in_ciphertext(self):
+        private_repo = 'https://huggingface.co/datasets/private-owner/private-thesis/tree/main/train'
+        self.config['side_job'].update(repo_url=private_repo, channels=[8], blocks_per_stage=[1])
+        self.config['side_job']['vpn'].update(enabled=True, link='ss://PRIVATE-CNN-PROXY', core_path='bin/cnn-xray')
+        self.config['training']['job_sequence'] = [['main', 60, 100, 0], ['side-job', 30, 100, 0]]
+        key_before = (self.directory / '.env').read_bytes()
+        save_config(self.path, self.config)
+        contents = self.path.read_text()
+        for secret in (private_repo, 'private-owner', 'private-thesis', 'PRIVATE-CNN-PROXY', 'repo_url'):
+            self.assertNotIn(secret, contents)
+        self.assertEqual(read_config(self.path), self.config)
+        loaded = load_config(self.path)
+        self.assertEqual(loaded['side_job']['repo_url'], private_repo)
+        self.assertEqual(loaded['side_job']['vpn']['core_path'], str(self.directory / 'bin/cnn-xray'))
+        self.assertEqual(loaded['training']['job_sequence'], [('main', 60, 100, 0), ('side-job', 30, 100, 0)])
+        self.assertEqual((self.directory / '.env').read_bytes(), key_before)
+
+    def test_cnn_schedule_requires_an_explicit_repository_and_errors_hide_values(self):
+        self.config['training']['job_sequence'] = [['side-job', 60, 100]]
+        with self.assertRaisesRegex(ConfigError, 'side_job.repo_url'):
+            save_config(self.path, self.config)
+        self.config['side_job']['repo_url'] = 'https://PRIVATE-REPOSITORY.invalid/SECRET'
+        with self.assertRaisesRegex(ConfigError, 'side_job.repo_url') as caught:
+            save_config(self.path, self.config)
+        self.assertNotIn('PRIVATE-REPOSITORY', str(caught.exception))
+        self.assertNotIn('SECRET', str(caught.exception))
+        self.assertFalse(self.path.exists())
+
+    def test_existing_mining_config_without_cnn_settings_still_loads(self):
+        self.config.pop('side_job')
+        save_config(self.path, self.config)
+        self.assertEqual(load_config(self.path)['side_job']['repo_url'], '')
+
+    def test_cnn_validation_does_not_borrow_the_main_vpn_link(self):
+        self.config['side_job']['vpn'].update(enabled=True, link='')
+        with self.assertRaisesRegex(ConfigError, 'side_job.vpn.link'):
+            save_config(self.path, self.config)
+
     def test_adjacent_dotenv_wins_over_cwd_and_process_environment(self):
         self.write_envelope()
         other = self.directory / 'other'

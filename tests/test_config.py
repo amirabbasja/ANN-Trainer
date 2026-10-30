@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["official_source"], str(self.directory / "src/LRAEP_helpers"))
         self.assertEqual(result["training"]["output_dir"], str(artifacts_dir().resolve()))
         self.assertEqual(result["training"]["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
-        self.assertNotIn("decoy_effort", result["training"])
+        self.assertNotIn("side_job_effort", result["training"])
         self.assertNotIn("max_gpu_utilization", result["training"])
         self.assertEqual(result["pool"]["host"], "")
         self.assertEqual(result["pool"]["port"], 7048)
@@ -47,22 +47,22 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
 
     def test_job_sequence_preserves_order_pause_exit_and_roles(self):
-        sequence = [["main", 0.5, 100], ["decoy", 2, 1], ["main", 1, 0], ["decoy", 0, -1]]
+        sequence = [["main", 0.5, 100], ["side-job", 2, 1], ["main", 1, 0], ["side-job", 0, -1]]
         original = copy.deepcopy(sequence)
         result = self.load({"version": 1, "training": {"job_sequence": sequence}})
         self.assertEqual(result["training"]["job_sequence"],
-                         [("main", 0.5, 100), ("decoy", 2, 1), ("main", 1, 0), ("decoy", 0, -1)])
+                         [("main", 0.5, 100), ("side-job", 2, 1), ("main", 1, 0), ("side-job", 0, -1)])
         self.assertEqual(sequence, original)
         self.assertNotIn("main_effort", result["training"])
-        self.assertNotIn("decoy_effort", result["training"])
+        self.assertNotIn("side_job_effort", result["training"])
 
     def test_job_sequence_rejects_invalid_entries_without_echoing_values(self):
         malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ["main", 1, 80],
-                     [[1, 80]], [["main"]], [["main", 1]], [["main", 1, 80, 2]],
-                     [["MAIN", 1, 80]], [["Decoy", 1, 80]], [["PRIVATE_SEQUENCE", 1, 80]],
+                     [[1, 80]], [["main"]], [["main", 1]], [["main", 1, 80, 2, 0]],
+                     [["MAIN", 1, 80]], [["Side-job", 1, 80]], [["PRIVATE_SEQUENCE", 1, 80]],
                      [[None, 1, 80]], [[True, 1, 80]], [[[], 1, 80]], [[{}, 1, 80]],
-                     [["main", 0, 80]], [["decoy", -1, 80]], [["main", True, 80]],
-                     [["main", "1", 80]], [["main", 1, -2]], [["decoy", 1, 101]],
+                     [["main", 0, 80]], [["side-job", -1, 80]], [["main", True, 80]],
+                     [["main", "1", 80]], [["main", 1, -2]], [["side-job", 1, 101]],
                      [["main", 1, True]], [["main", 1, 70.5]],
                      [["main", 1, "PRIVATE_SEQUENCE"]], [["main", -1, -1]])
         for value in malformed:
@@ -72,12 +72,12 @@ class ConfigTests(unittest.TestCase):
 
     def test_job_sequence_durations_must_be_finite_for_both_roles(self):
         for duration in (float("inf"), float("-inf"), float("nan")):
-            for role in ("main", "decoy"):
+            for role in ("main", "side-job"):
                 with self.subTest(role=role, duration=duration), self.assertRaises(ConfigError):
                     self.load({"version": 1, "training": {"job_sequence": [[role, duration, 80]]}})
 
     def test_separate_effort_keys_are_rejected_without_echoing_values(self):
-        for field in ("main_effort", "decoy_effort"):
+        for field in ("main_effort", "side_job_effort"):
             with self.subTest(field=field), self.assertRaisesRegex(ConfigError, "replaced by training.job_sequence") as caught:
                 self.load({"version": 1, "training": {field: "PRIVATE_SEQUENCE"}})
             self.assertNotIn("PRIVATE_SEQUENCE", str(caught.exception))
@@ -102,10 +102,10 @@ class ConfigTests(unittest.TestCase):
 
     def test_effort_defaults_are_independent_between_loads_and_export(self):
         result = self.load({"version": 1})
-        result["training"]["job_sequence"].append(("decoy", 1, 100))
+        result["training"]["job_sequence"].append(("side-job", 1, 100))
         again = self.load({"version": 1})
         self.assertEqual(again["training"]["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
-        self.assertNotIn("decoy_effort", again["training"])
+        self.assertNotIn("side_job_effort", again["training"])
         exported = copy.deepcopy(DEFAULT_CONFIG["training"])
         try:
             DEFAULT_CONFIG["training"]["job_sequence"][0][2] = 99

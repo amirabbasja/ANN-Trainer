@@ -36,24 +36,33 @@ selected GPU. It sends the measured work rate after the first completed batch,
 then about every 10 seconds during the connection's first two minutes, and
 about every 120 seconds afterward, at a batch boundary. Each report contains
 one device object with its actual GPU name and a numeric rate in H/s.
-For example, a console rate of 4 TH/s corresponds to about `4000000000000`
+For example, a diagnostic rate of 4 TH/s corresponds to about `4000000000000`
 H/s in the report. Login-only checks send no GPU reports.
 
-Each report prints the rate sent and its request ID in the terminal. Compare
-the newest `PearlHash GPU report sent` line with the website. The live console
-average continues changing between reports, and the website may refresh later.
+Each report records the rate sent and its request ID at the `DEBUG` log level.
+Compare the newest `PearlHash GPU report sent` diagnostic with the website.
+The completed-work average continues changing between reports, and the website
+may refresh later.
 Early batches can run slower during allocation and GPU warmup; the frequent
 startup updates replace that initial low sample promptly.
 
-The rate uses the same completed matrix work and elapsed wall-clock time as
-the console's local average. The initial report can be zero before work has
-completed. A new connection registers the GPU again. A connected worker alone
+The rate uses completed matrix work and elapsed wall-clock time. The initial
+report can be zero before work has completed. A new connection registers the GPU
+again. A connected worker alone
 does not provide this device information: without reports the dashboard can
 show an online worker with zero GPUs and zero connected-worker hashrate.
 
 Report acknowledgements are tracked separately from share acknowledgements.
 They do not increment submitted or accepted share counters. Reported device
 rate is distinct from pool credit, which depends on accepted mining shares.
+
+The normal terminal row uses training-style progress: `Main | Step 100 |
+elapsed=00:02:30 | GPU 42%`. A configured main-batch limit adds a total and
+percentage. Scheduled CNN work shows its actual epoch, optimizer steps,
+percentage, running loss and accuracy instead. Hashrate and submission counters
+stay out of the normal display; detailed counters and successful submission
+messages remain available at `DEBUG`. GPU reports and submission behavior are
+unchanged, and rejected work still logs a warning.
 
 ## Deterministic work
 

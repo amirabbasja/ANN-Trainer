@@ -15,7 +15,7 @@ import tempfile
 import torch
 from torch import nn
 
-LOG = logging.getLogger("LRAEP_trainer.decoy")
+LOG = logging.getLogger("LRAEP_trainer.side_job")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if not (PROJECT_ROOT / "ann_trainer.py").is_file():
     PROJECT_ROOT = Path.cwd()
@@ -112,17 +112,17 @@ def save_checkpoint(directory, checkpoint, *, rotate=True):
             temporary.unlink(missing_ok=True)
 
 
-class DecoyJob:
+class SideJob:
     """Keep training state across scheduled intervals; create network clients lazily.
 
-    All generated files stay under the trainer checkout's data/decoy-job. The
+    All generated files stay under the trainer checkout's data/side-job. The
     explicit project_root argument supports embedding and isolated local tests.
     """
 
-    def __init__(self, config, *, project_root=None):
-        self.config = copy.deepcopy(config["decoy_job"])
+    def __init__(self, config, *, project_root=None, before_log=None):
+        self.config = copy.deepcopy(config["side_job"])
         self.device = torch.device(config["device"])
-        self.directory = Path(project_root or PROJECT_ROOT) / "data" / "decoy-job"
+        self.directory = Path(project_root or PROJECT_ROOT) / "data" / "side-job"
         self.directory.mkdir(parents=True, exist_ok=True)
         self._stack = ExitStack()
         self.model = None
@@ -137,7 +137,37 @@ class DecoyJob:
         self.next_shard = None
         self.examples = self.correct = 0
         self.total_loss = 0.0
+        self.epoch_batches = 0
+        self.total_examples = None
+        self.total_batches = None
+        self._progress_epoch = 1
+        self._progress_phase = "Preparing"
+        self.before_log = before_log
         self.closed = False
+
+    def _log(self, message, *args):
+        if self.before_log is not None:
+            self.before_log()
+        LOG.info(message, *args)
+
+    def status(self, gpu_percent=None):
+        """Report actual optimizer progress in the current one-shard epoch."""
+        epoch = str(self._progress_epoch)
+        if self.config["epochs"]:
+            epoch += f"/{self.config['epochs']}"
+        details = ["Side-job", f"Epoch {epoch}"]
+        if self.total_examples is None:
+            details.append(self._progress_phase)
+        else:
+            percentage = 100 * self.examples / max(self.total_examples, 1)
+            details.append(f"Step {self.epoch_batches}/{self.total_batches} ({percentage:.1f}%)")
+            if self.examples:
+                details.append(f"loss={self.total_loss / self.examples:.4f} "
+                               f"accuracy={100 * self.correct / self.examples:.1f}%")
+            if self._progress_phase == "Complete":
+                details.append("Complete")
+        details.append("GPU N/A" if gpu_percent is None else f"GPU {gpu_percent}%")
+        return " | ".join(details)
 
     def _architecture(self):
         return {name: self.config[name] for name in ("channels", "blocks_per_stage", "hidden_size")}
@@ -151,10 +181,10 @@ class DecoyJob:
 
     def _initialize(self):
         if self.device.type != "cuda" or not torch.cuda.is_available():
-            raise ValueError("decoy job requires an available CUDA GPU")
+            raise ValueError("side-job requires an available CUDA GPU")
         if self.device.index is not None and self.device.index >= torch.cuda.device_count():
-            raise ValueError("decoy job device selects an unavailable CUDA GPU")
-        from .decoy_data import DatasetSource
+            raise ValueError("side-job device selects an unavailable CUDA GPU")
+        from .side_job_data import DatasetSource
 
         torch.manual_seed(self.config["seed"])
         self.model = OrientationCNN(**self._architecture()).to(self.device)
@@ -185,18 +215,21 @@ class DecoyJob:
                 else:
                     self.model.load_state_dict(state)
             except (OSError, RuntimeError, ValueError, TypeError, KeyError, EOFError, pickle.UnpicklingError) as exc:
-                raise RuntimeError("could not load decoy weights.pth; check its architecture and checkpoint format") from exc
+                raise RuntimeError("could not load side-job weights.pth; check its architecture and checkpoint format") from exc
             # Deliberate config changes to optimizer settings take effect on resume.
             for group in self.optimizer.param_groups:
                 group["lr"] = self.config["learning_rate"]
                 group["weight_decay"] = self.config["weight_decay"]
-            LOG.info("Resumed decoy weights at epoch %d", self.epoch)
+            self._log("Resumed side-job weights at epoch %d", self.epoch)
         else:
             save_checkpoint(self.directory, self._checkpoint(), rotate=False)
-            LOG.info("Created new decoy weights")
-        LOG.info("Decoy CNN: %s; %s parameters", torch.cuda.get_device_name(self.device),
-                 f"{sum(parameter.numel() for parameter in self.model.parameters()):,}")
+            self._log("Created new side-job weights")
+        self._progress_epoch = self.epoch + 1
+        self._log("Side-job CNN: %s; %s parameters", torch.cuda.get_device_name(self.device),
+                  f"{sum(parameter.numel() for parameter in self.model.parameters()):,}")
         if self.config["epochs"] and self.epoch >= self.config["epochs"]:
+            self._progress_epoch = self.epoch
+            self._progress_phase = "Complete"
             return
         # No main-miner routing context or environment proxy is inherited.
         proxy = None
@@ -206,11 +239,17 @@ class DecoyJob:
         self.source = DatasetSource(self.config["repo_url"], proxy=proxy)
         self.shards = self.source.list_shards()
         if not self.shards:
-            raise RuntimeError("decoy dataset contains no training Parquet shards")
+            raise RuntimeError("side-job dataset contains no training Parquet shards")
 
     def _start_epoch(self, cancelled=None):
-        from .decoy_data import ShardDataset
+        from .side_job_data import PrefetchedBatches, ShardDataset
 
+        self._progress_epoch = self.epoch + 1
+        self._progress_phase = "Preparing"
+        self.total_examples = self.total_batches = None
+        self.epoch_batches = 0
+        self.examples = self.correct = 0
+        self.total_loss = 0.0
         name = self.next_shard if self.next_shard in self.shards else self.shards[self.epoch % len(self.shards)]
         self.shard_path = self.directory / "train.parquet"
         # A process killed mid-epoch may have left its disposable shard behind.
@@ -219,24 +258,31 @@ class DecoyJob:
             partial.unlink(missing_ok=True)
         self.source.download_shard(name, self.shard_path, cancelled=cancelled)
         dataset = ShardDataset(self.shard_path, image_size=self.config["image_size"],
-                               seed=self.config["seed"] + self.epoch)
-        self.iterator = iter(torch.utils.data.DataLoader(
+                               seed=self.config["seed"] + self.epoch,
+                               passes=self.config.get("passes_per_shard", 1),
+                               cache_limit_mb=self.config.get("cache_limit_mb", 2048))
+        self.total_examples = len(dataset)
+        self.total_batches = (self.total_examples + self.config["batch_size"] - 1) // self.config["batch_size"]
+        loader = torch.utils.data.DataLoader(
             dataset, batch_size=self.config["batch_size"], num_workers=0, pin_memory=True,
-        ))
+        )
+        prefetch = self.config.get("prefetch_batches", 2)
+        self.iterator = PrefetchedBatches(loader, depth=prefetch) if prefetch else iter(loader)
         self.next_shard = self.shards[(self.shards.index(name) + 1) % len(self.shards)]
-        self.examples = self.correct = 0
-        self.total_loss = 0.0
+        self._progress_phase = "Training"
         self.model.train()
-        LOG.info("Decoy epoch %d: %s (one shard)", self.epoch + 1, name)
+        self._log("Side-job epoch %d: %s (%d steps, %d examples, %d passes)", self.epoch + 1, name,
+                  self.total_batches, self.total_examples, self.config.get("passes_per_shard", 1))
 
     def _finish_epoch(self):
         if not self.examples:
-            raise RuntimeError("decoy training shard is empty")
+            raise RuntimeError("side-job training shard is empty")
         self.epoch += 1
         save_checkpoint(self.directory, self._checkpoint())
-        LOG.info("Decoy epoch %d complete: loss=%.4f accuracy=%.1f%% examples=%d",
-                 self.epoch, self.total_loss / self.examples,
-                 100 * self.correct / self.examples, self.examples)
+        self._progress_phase = "Complete"
+        self._log("Side-job epoch %d complete: loss=%.4f accuracy=%.1f%% examples=%d",
+                  self.epoch, self.total_loss / self.examples,
+                  100 * self.correct / self.examples, self.examples)
         self._clear_shard()
 
     def _clear_shard(self):
@@ -244,10 +290,13 @@ class DecoyJob:
         self.pending_batch = None
         if self.iterator is not None:
             iterator, self.iterator = self.iterator, None
-            fetcher = getattr(iterator, "_dataset_fetcher", None)
-            generator = getattr(fetcher, "dataset_iter", None)
-            if generator is not None and hasattr(generator, "close"):
-                generator.close()
+            if hasattr(iterator, "close"):
+                iterator.close()
+            else:
+                fetcher = getattr(iterator, "_dataset_fetcher", None)
+                generator = getattr(fetcher, "dataset_iter", None)
+                if generator is not None and hasattr(generator, "close"):
+                    generator.close()
         if self.shard_path is not None:
             self.shard_path.unlink(missing_ok=True)
             self.shard_path = None
@@ -255,7 +304,7 @@ class DecoyJob:
     def step(self, *, cancelled=None):
         """Run one optimizer batch. False means the configured epoch limit is met."""
         if self.closed:
-            raise RuntimeError("decoy job is closed")
+            raise RuntimeError("side-job is closed")
         if cancelled is not None and cancelled():
             return True
         if self.model is None:
@@ -265,7 +314,7 @@ class DecoyJob:
         if cancelled is not None and cancelled():
             return True
         if self.iterator is None:
-            from .decoy_data import DatasetCancelled
+            from .side_job_data import DatasetCancelled
             try:
                 self._start_epoch(cancelled)
             except DatasetCancelled:
@@ -290,11 +339,12 @@ class DecoyJob:
             logits = self.model(images)
             loss = nn.functional.cross_entropy(logits, labels)
         if not torch.isfinite(loss):
-            raise RuntimeError("decoy training produced a nonfinite loss")
+            raise RuntimeError("side-job training produced a nonfinite loss")
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
         count = labels.numel()
+        self.epoch_batches += 1
         self.examples += count
         self.total_loss += loss.detach().item() * count
         self.correct += (logits.detach().argmax(dim=1) == labels).sum().item()
@@ -313,8 +363,10 @@ class DecoyJob:
 def main(argv=None):
     from .config import load_config
     from .paths import default_config_path
+    from .progress import LiveProgress
+    from .telemetry import GpuUtilization
 
-    parser = argparse.ArgumentParser(description="Train the decoy page-orientation CNN on CUDA")
+    parser = argparse.ArgumentParser(description="Train the side-job page-orientation CNN on CUDA")
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument("--epochs", type=int, help="total completed epochs, including resumed epochs; 0 repeats")
     args = parser.parse_args(argv)
@@ -325,11 +377,19 @@ def main(argv=None):
         if args.epochs is not None:
             if args.epochs < 0:
                 parser.error("--epochs must be nonnegative")
-            config["decoy_job"]["epochs"] = args.epochs
+            config["side_job"]["epochs"] = args.epochs
         torch.set_num_threads(min(4, os.cpu_count() or 1))
-        job = DecoyJob(config)
-        while job.step():
-            pass
+        with ExitStack() as resources:
+            telemetry_device = torch.device(config["device"])
+            if telemetry_device.type == "cuda" and telemetry_device.index is None:
+                telemetry_device = torch.device("cuda", torch.cuda.current_device())
+            gpu = resources.enter_context(GpuUtilization(str(telemetry_device)))
+            progress = resources.enter_context(LiveProgress())
+            job = SideJob(config, before_log=progress.clear)
+            progress.update(job.status(gpu.read()), force=True)
+            while job.step():
+                progress.update(job.status(gpu.read()))
+            progress.update(job.status(gpu.read()), force=True)
         return 0
     except KeyboardInterrupt:
         LOG.info("Stopped; the last completed epoch is saved")

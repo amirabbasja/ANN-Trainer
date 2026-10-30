@@ -11,7 +11,7 @@
     "tile_w": 8,
     "max_batches": 0,
     "max_seconds": 0,
-    "job_sequence": [["main", 60, 80], ["main", 120, 70], ["main", 180, 10]],
+    "job_sequence": [["main", 60, 80, 5], ["main", 120, 70, 5], ["main", 180, 10, 5]],
     "output_dir": "~/.local/share/LRAEP/artifacts"
   },
   "pool": {
@@ -61,13 +61,16 @@
     "links_file": "links.txt",
     "check_url": "https://api.ipify.org"
   },
-  "decoy_job": {
+  "side_job": {
     "repo_url": "https://huggingface.co/datasets/BDRC/tibetan-page-orientation-classifier-dataset/tree/main/train",
     "channels": [64, 128, 256, 512],
     "blocks_per_stage": [2, 2, 2, 2],
     "hidden_size": 512,
     "image_size": 224,
     "batch_size": 16,
+    "prefetch_batches": 2,
+    "passes_per_shard": 1,
+    "cache_limit_mb": 2048,
     "learning_rate": 0.001,
     "weight_decay": 0.0001,
     "epochs": 0,

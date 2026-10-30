@@ -39,6 +39,22 @@ def _fit_columns(text: str, columns: int) -> str:
     return "".join(result)
 
 
+def format_elapsed(seconds: float) -> str:
+    """Format a monotonic elapsed duration without wrapping after 24 hours."""
+    hours, remainder = divmod(int(max(0, seconds)), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def main_status(steps: int, elapsed: float, gpu_percent: int | None, *, max_steps: int = 0) -> str:
+    """Report completed compute steps without inventing model-training metrics."""
+    step = str(steps)
+    if max_steps:
+        step += f"/{max_steps} ({100 * steps / max_steps:.1f}%)"
+    utilization = "N/A" if gpu_percent is None else f"{gpu_percent}%"
+    return f"Main | Step {step} | elapsed={format_elapsed(elapsed)} | GPU {utilization}"
+
+
 class LiveProgress:
     """Rewrite one terminal row, or emit one final line when redirected.
 

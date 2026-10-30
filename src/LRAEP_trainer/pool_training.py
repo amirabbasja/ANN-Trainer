@@ -13,8 +13,8 @@ import torch
 
 from .gpu import TrainingCancelled
 from .gpu_pacing import GpuPacer
-from .effort import JobSequence, ScheduledDecoy
-from .progress import LiveProgress
+from .effort import JobSequence, ScheduledSideJob
+from .progress import LiveProgress, format_elapsed, main_status
 from .protocol import (TrainingConfig, load_official_helpers, pool_share_target,
                        prepare_batch, search_batch, verified_pool_share)
 from .telemetry import GpuUtilization
@@ -57,14 +57,9 @@ def format_hashrate(rate: float) -> str:
 
 
 def pool_status(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float,
-                gpu_utilization: int | None) -> str:
-    """Display the same sustained work rate used by WR's GPU reports."""
-    rate = format_hashrate(pool_hashrate(stats, cfg, elapsed))
-    utilization = "N/A" if gpu_utilization is None else f"{gpu_utilization}%"
-    return (f"Hashrate(avg) {rate} | GPU {utilization} | "
-            f"accepted={stats.accepted} rejected={stats.rejected} | "
-            f"submitted={stats.submitted} batches={stats.batches} "
-            f"attempts={stats.attempts} stale={stats.stale}")
+                gpu_utilization: int | None, *, max_batches: int = 0) -> str:
+    """Show completed compute steps using the CNN job's progress layout."""
+    return main_status(stats.batches, elapsed, gpu_utilization, max_steps=max_batches)
 
 
 def select_pool_protocol(settings: dict) -> str:
@@ -201,7 +196,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
     use_native = (not login_only and (cfg.tile_h, cfg.tile_w) == (8, 8)
                   and native_cuda.available(configuration["device"]))
     if not login_only:
-        LOG.info("Mining backend: %s", "native CUDA DP4A" if use_native else "PyTorch reference")
+        LOG.info("Compute backend: %s", "native CUDA DP4A" if use_native else "PyTorch reference")
     torch.set_num_threads(min(4, torch.get_num_threads()))
     stats = PoolTrainingStats()
     rng = np.random.default_rng()
@@ -218,35 +213,49 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
         return expired() or (max_batches > 0 and stats.batches >= max_batches)
 
     with ExitStack() as resources:
-        decoy = ScheduledDecoy(configuration) if not login_only else None
-        if decoy is not None:
-            resources.callback(decoy.close)
         progress = resources.enter_context(LiveProgress())
         monitor = None
         if not login_only:
             monitor = GpuUtilization(str(device)).start()
             resources.callback(monitor.close)
 
+        active_job = "main"
+
+        def show_side_job(job):
+            nonlocal active_job
+            force = active_job != "side-job"
+            active_job = "side-job"
+            progress.update(job.status(monitor.read() if monitor is not None else None), force=force)
+
+        side_job = (ScheduledSideJob(configuration, before_log=progress.clear, on_progress=show_side_job)
+                 if not login_only else None)
+        if side_job is not None:
+            resources.callback(side_job.close)
+
         def update_progress(force=False):
+            nonlocal active_job
             if monitor is not None:
+                force = force or active_job != "main"
+                active_job = "main"
                 progress.update(pool_status(stats, cfg, time.monotonic() - started,
-                                            monitor.read()), force=force)
+                                            monitor.read(), max_batches=max_batches), force=force)
 
         def log(level, message, *args):
-            progress.clear()
-            LOG.log(level, message, *args)
+            if LOG.isEnabledFor(level):
+                progress.clear()
+                LOG.log(level, message, *args)
 
         def report_gpu(session, sample_time):
             rate = pool_hashrate(stats, cfg, sample_time - started)
             request_id = session.report_info(gpu_name, rate)
-            log(logging.INFO, "PearlHash GPU report sent: %s (request=%d)",
+            log(logging.DEBUG, "PearlHash GPU report sent: %s (request=%d)",
                 format_hashrate(rate), request_id)
 
         update_progress(force=True)
         while not finished():
             if effort is not None and not effort.wait(stopped, deadline=deadline):
                 break
-            if decoy is not None and decoy.run_if_active(effort, stopped, pacer, deadline=deadline):
+            if side_job is not None and side_job.run_if_active(effort, stopped, pacer, deadline=deadline):
                 continue
             session = None
             try:
@@ -278,7 +287,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                                 break
                             if paused:
                                 job_deadline = time.monotonic() + pool["read_timeout"]
-                        if decoy is not None and decoy.run_if_active(effort, stopped, pacer, deadline=deadline):
+                        if side_job is not None and side_job.run_if_active(effort, stopped, pacer, deadline=deadline):
                             job_deadline = time.monotonic() + pool["read_timeout"]
                             continue
                         update_progress()
@@ -299,7 +308,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                         header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
                         target = pool_share_target(job.target, cfg, "base")
                         if login_only:
-                            log(logging.INFO, "Authenticated job verified: header=%d bytes, target=%d bits; no GPU work or shares submitted",
+                            log(logging.INFO, "Authenticated job verified: header=%d bytes, target=%d bits; no GPU work performed",
                                 len(job.header_bytes), target.bit_length())
                             return 0
 
@@ -368,7 +377,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                             stats.submitted += 1
                             if result.accepted:
                                 stats.accepted += 1
-                                log(logging.INFO, "Pool accepted training share job=%s", job.job_id)
+                                log(logging.DEBUG, "Pool accepted training share job=%s", job.job_id)
                             else:
                                 stats.rejected += 1
                                 log(logging.WARNING, "Pool rejected training share job=%s: %s", job.job_id, result.error)
@@ -402,8 +411,13 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                 if limit > 0:
                     delay = min(delay, max(0, limit - (time.monotonic() - started)))
                 stopped.wait(delay)
-        update_progress(force=True)
-    LOG.info("Pool training stopped: batches=%d submitted=%d accepted=%d rejected=%d stale=%d",
+        if active_job == "side-job" and side_job is not None and side_job.job is not None:
+            progress.update(side_job.job.status(monitor.read()), force=True)
+        else:
+            update_progress(force=True)
+    LOG.info("Main job stopped: steps=%d elapsed=%s", stats.batches,
+             format_elapsed(time.monotonic() - started))
+    LOG.debug("Pool training stopped: batches=%d submitted=%d accepted=%d rejected=%d stale=%d",
              stats.batches, stats.submitted, stats.accepted, stats.rejected, stats.stale)
     if login_only:
         raise RuntimeError("no authenticated pool job was received before stopping")

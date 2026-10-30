@@ -127,7 +127,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                 with patch.object(worker.native_cuda, "available", return_value=native), \
                         patch.object(worker, "search_batch", side_effect=one_candidate), \
                         patch.object(worker, "pool_hashrate", side_effect=measured_rate), \
-                        self.assertLogs(worker.LOG, level="INFO") as messages:
+                        self.assertLogs(worker.LOG, level="DEBUG") as messages:
                     result = worker.run_pool_training(configuration)
             finally:
                 server.join(5)

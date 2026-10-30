@@ -15,7 +15,9 @@ import os
 from pathlib import Path
 import random
 import re
+import queue
 import tempfile
+import threading
 from urllib.parse import quote, unquote, urljoin, urlsplit
 import urllib.request
 
@@ -32,6 +34,106 @@ class DatasetError(RuntimeError):
 
 class DatasetCancelled(DatasetError):
     """The caller stopped a shard download before it was committed."""
+
+
+class PrefetchedBatches:
+    """Prepare a bounded number of CPU batches alongside the training thread.
+
+    The producer creates and closes the source iterator in its own thread.
+    Closing waits for an in-flight batch to finish, then releases the source;
+    it never closes a dataset generator while that generator is executing.
+    """
+
+    def __init__(self, iterable, *, depth=2):
+        if type(depth) is not int or depth < 1:
+            raise ValueError("prefetch depth must be a positive integer")
+        self._iterable = iterable
+        self._queue = queue.Queue(maxsize=depth)
+        self._stopped = threading.Event()
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._produce, name="LRAEP-side-job-input", daemon=True,
+        )
+        self._thread.start()
+
+    def _put(self, item):
+        while not self._stopped.is_set():
+            try:
+                self._queue.put(item, timeout=0.05)
+                return True
+            except queue.Full:
+                pass
+        return False
+
+    def _produce(self):
+        iterator = None
+        error = None
+        try:
+            iterator = iter(self._iterable)
+            while not self._stopped.is_set():
+                # Only this thread puts items into the queue, so once space
+                # exists, the consumer cannot take that space away. Waiting
+                # before next() also bounds decoded-but-unconsumed batches.
+                while self._queue.full() and not self._stopped.wait(0.05):
+                    pass
+                if self._stopped.is_set():
+                    break
+                try:
+                    batch = next(iterator)
+                except StopIteration:
+                    break
+                if not self._put((True, batch)):
+                    break
+        except BaseException as exc:
+            error = exc
+        finally:
+            try:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
+                # A single-process torch DataLoader keeps its iterable
+                # dataset's generator on the fetcher rather than the loader.
+                fetcher = getattr(iterator, "_dataset_fetcher", None)
+                generator = getattr(fetcher, "dataset_iter", None)
+                if generator is not iterator and hasattr(generator, "close"):
+                    generator.close()
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+            self._iterable = None
+            self._put((False, error))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._closed:
+            raise StopIteration
+        while not self._stopped.is_set():
+            try:
+                has_batch, value = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if has_batch:
+                return value
+            self.close()
+            if value is not None:
+                raise value
+            raise StopIteration
+        raise StopIteration
+
+    def close(self):
+        """Stop filling the queue and release the source before returning."""
+        self._closed = True
+        self._stopped.set()
+        if threading.current_thread() is not self._thread:
+            self._thread.join()
+        # Drop queued CPU tensors promptly on cancellation.
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
 
 
 def _parts(value):
@@ -69,7 +171,7 @@ def _repository(repo_url):
             raise ValueError
         return repo, parts[4], "/".join(parts[5:]) or "train"
     except (TypeError, ValueError, UnicodeError):
-        raise DatasetError("decoy_job.repo_url must be a Hugging Face dataset repository or tree URL") from None
+        raise DatasetError("side_job.repo_url must be a Hugging Face dataset repository or tree URL") from None
 
 
 class DatasetSource:
@@ -103,7 +205,7 @@ class DatasetSource:
                 raise DatasetError("dataset listing contains a repeated pagination link")
             visited.add(url)
             try:
-                request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-decoy-job/0.1"})
+                request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-side-job/0.1"})
                 with self.opener.open(request, timeout=self.timeout) as response:
                     payload = response.read(8 * 1024 * 1024 + 1)
                     links = response.headers.get("Link", "")
@@ -152,7 +254,7 @@ class DatasetSource:
                f"/resolve/{quote(self.revision, safe='')}/{quote(shard, safe='/')}")
         temporary = None
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-decoy-job/0.1"})
+            request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-side-job/0.1"})
             with self.opener.open(request, timeout=self.timeout) as response:
                 content_length = response.headers.get("Content-Length")
                 expected = int(content_length) if content_length is not None else self._sizes.get(shard)
@@ -218,32 +320,69 @@ def _image_tensor(value, image_size):
 class ShardDataset(IterableDataset):
     """Decode bounded Parquet batches from exactly one local shard per epoch."""
 
-    def __init__(self, path, *, image_size, seed=42):
+    def __init__(self, path, *, image_size, seed=42, passes=1, cache_limit_mb=2048):
         super().__init__()
         self.path = Path(path)
         if type(image_size) is not int or image_size < 1:
             raise DatasetError("dataset image_size must be a positive integer")
+        if type(passes) is not int or not 1 <= passes <= 100:
+            raise DatasetError("dataset passes must be an integer between 1 and 100")
+        if type(cache_limit_mb) is not int or not 16 <= cache_limit_mb <= 16384:
+            raise DatasetError("dataset cache_limit_mb must be an integer between 16 and 16384")
         self.image_size = image_size
         self.seed = seed
+        self.passes = passes
+        self.cache_limit_mb = cache_limit_mb
+
+    def __len__(self):
+        """Read the shard's row count from its footer without decoding images."""
+        try:
+            import pyarrow.parquet as parquet
+        except ImportError:
+            raise DatasetError("the side-job requires pyarrow; install the project requirements") from None
+        try:
+            with parquet.ParquetFile(self.path) as shard:
+                return shard.metadata.num_rows * self.passes
+        except (OSError, ValueError, TypeError):
+            raise DatasetError("could not read the selected Parquet training shard") from None
 
     def __iter__(self):
         try:
             import pyarrow.parquet as parquet
         except ImportError:
-            raise DatasetError("the decoy job requires pyarrow; install the project requirements") from None
+            raise DatasetError("the side-job requires pyarrow; install the project requirements") from None
         worker = get_worker_info()
+        if self.passes > 1 and worker is not None:
+            raise DatasetError("cached dataset passes require a single-process DataLoader")
         rng = random.Random(self.seed)
+        cache = [] if self.passes > 1 else None
         try:
             with parquet.ParquetFile(self.path) as shard:
                 if not {"image_bytes", "class"}.issubset(shard.schema_arrow.names):
                     raise DatasetError("dataset shard must contain image_bytes and class columns")
+                if cache is not None:
+                    required = shard.metadata.num_rows * 3 * self.image_size**2 * 4
+                    if required > self.cache_limit_mb * 1024**2:
+                        raise DatasetError(
+                            "decoded dataset shard exceeds cache_limit_mb; lower image_size, "
+                            "use one pass per shard, or increase the cache limit"
+                        )
                 for index, batch in enumerate(shard.iter_batches(batch_size=32, columns=["image_bytes", "class"])):
                     if worker is not None and index % worker.num_workers != worker.id:
                         continue
                     rows = batch.to_pylist()
                     rng.shuffle(rows)
                     for row in rows:
-                        yield _image_tensor(row["image_bytes"], self.image_size), _label(row["class"])
+                        sample = _image_tensor(row["image_bytes"], self.image_size), _label(row["class"])
+                        if cache is not None:
+                            cache.append(sample)
+                        yield sample
+            if cache is not None:
+                indices = list(range(len(cache)))
+                for _ in range(1, self.passes):
+                    rng.shuffle(indices)
+                    for index in indices:
+                        yield cache[index]
         except DatasetError:
             raise
         except (OSError, ValueError, TypeError):

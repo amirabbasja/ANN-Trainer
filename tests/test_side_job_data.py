@@ -1,4 +1,4 @@
-"""Decoy downloads have independent routing and keep only local embedded data."""
+"""Side-job downloads have independent routing and keep only local embedded data."""
 
 import io
 import json
@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import Mock, patch
@@ -13,8 +14,9 @@ from unittest.mock import Mock, patch
 import torch
 from PIL import Image
 
-from LRAEP_trainer import network
-from LRAEP_trainer.decoy_data import DatasetCancelled, DatasetError, DatasetSource, ShardDataset
+from LRAEP_trainer import side_job_data, network
+from LRAEP_trainer.side_job_data import (DatasetCancelled, DatasetError, DatasetSource,
+                                    PrefetchedBatches, ShardDataset)
 
 
 REPOSITORY = "https://huggingface.co/datasets/BDRC/tibetan-page-orientation-classifier-dataset"
@@ -34,6 +36,163 @@ def image_bytes(size=(30, 10), color="black"):
     stream = io.BytesIO()
     Image.new("RGB", size, color).save(stream, format="PNG")
     return stream.getvalue()
+
+
+class PrefetchedBatchesTests(unittest.TestCase):
+    def test_depth_must_be_a_positive_integer(self):
+        for depth in (0, -1, True, 1.5, None):
+            with self.subTest(depth=depth), self.assertRaisesRegex(ValueError, "positive integer"):
+                PrefetchedBatches([], depth=depth)
+
+    def test_batches_arrive_once_in_original_order_and_exhaustion_closes_thread(self):
+        batches = PrefetchedBatches(range(27), depth=3)
+        self.addCleanup(batches.close)
+        self.assertEqual(list(batches), list(range(27)))
+        self.assertFalse(batches._thread.is_alive())
+        with self.assertRaises(StopIteration):
+            next(batches)
+
+    def test_unconsumed_batches_are_bounded_and_full_queue_close_does_not_hang(self):
+        filled, advanced = threading.Event(), threading.Event()
+        seen = []
+
+        def source():
+            for value in range(10):
+                seen.append(value)
+                if len(seen) == 2:
+                    filled.set()
+                if len(seen) == 3:
+                    advanced.set()
+                yield value
+
+        batches = PrefetchedBatches(source(), depth=2)
+        self.addCleanup(batches.close)
+        self.assertTrue(filled.wait(2), "producer did not prepare its bounded queue")
+        self.assertFalse(advanced.wait(0.1), "producer decoded beyond the prefetch bound")
+        self.assertEqual(next(batches), 0)
+        self.assertTrue(advanced.wait(2), "producer did not resume after consumption")
+        batches.close()
+        batches.close()
+        self.assertFalse(batches._thread.is_alive())
+        with self.assertRaises(StopIteration):
+            next(batches)
+
+    def test_source_iteration_and_file_cleanup_belong_to_producer_thread(self):
+        owner = threading.get_ident()
+        thread_ids = []
+        streams = []
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "input.txt"
+            path.write_text("first\nsecond\nthird\n")
+
+            class Source:
+                def __iter__(self):
+                    thread_ids.append(threading.get_ident())
+                    return self.rows()
+
+                def rows(self):
+                    try:
+                        with path.open() as stream:
+                            streams.append(stream)
+                            yield from stream
+                    finally:
+                        thread_ids.append(threading.get_ident())
+
+            batches = PrefetchedBatches(Source(), depth=1)
+            try:
+                self.assertEqual(next(batches), "first\n")
+            finally:
+                batches.close()
+            self.assertEqual(len(thread_ids), 2)
+            self.assertNotEqual(thread_ids[0], owner)
+            self.assertEqual(thread_ids[0], thread_ids[1])
+            self.assertTrue(streams[0].closed)
+
+    def test_loader_dataset_generator_is_closed_on_its_producing_thread(self):
+        closed_by = []
+
+        def rows():
+            try:
+                yield from range(20)
+            finally:
+                closed_by.append(threading.get_ident())
+
+        class LoaderIterator:
+            def __init__(self):
+                self._dataset_fetcher = SimpleNamespace(dataset_iter=rows())
+
+            def __next__(self):
+                return next(self._dataset_fetcher.dataset_iter)
+
+        class Loader:
+            def __iter__(self):
+                return LoaderIterator()
+
+        batches = PrefetchedBatches(Loader(), depth=1)
+        self.assertEqual(next(batches), 0)
+        batches.close()
+        self.assertEqual(closed_by, [batches._thread.ident])
+
+    def test_iteration_and_iterator_creation_failures_reach_the_consumer(self):
+        error = DatasetError("bad local shard")
+
+        def rows():
+            yield "first"
+            raise error
+
+        batches = PrefetchedBatches(rows(), depth=2)
+        self.addCleanup(batches.close)
+        self.assertEqual(next(batches), "first")
+        with self.assertRaises(DatasetError) as caught:
+            next(batches)
+        self.assertIs(caught.exception, error)
+        self.assertFalse(batches._thread.is_alive())
+
+        class BrokenSource:
+            def __iter__(self):
+                raise error
+
+        batches = PrefetchedBatches(BrokenSource())
+        self.addCleanup(batches.close)
+        with self.assertRaises(DatasetError) as caught:
+            next(batches)
+        self.assertIs(caught.exception, error)
+
+    def test_close_waits_for_in_flight_batch_before_closing_generator(self):
+        entered, release, closing, finished = (threading.Event() for _ in range(4))
+        closed_by = []
+
+        def rows():
+            try:
+                yield 1
+                entered.set()
+                if not release.wait(2):
+                    raise RuntimeError("test did not release input preparation")
+                yield 2
+            finally:
+                closed_by.append(threading.get_ident())
+
+        batches = PrefetchedBatches(rows(), depth=1)
+        self.assertEqual(next(batches), 1)
+        self.assertTrue(entered.wait(2))
+
+        def close():
+            closing.set()
+            batches.close()
+            finished.set()
+
+        closer = threading.Thread(target=close, daemon=True)
+        closer.start()
+        try:
+            self.assertTrue(closing.wait(2))
+            self.assertFalse(finished.wait(0.05), "close returned while source was still executing")
+        finally:
+            release.set()
+            closer.join(2)
+            batches.close()
+        self.assertTrue(finished.is_set())
+        self.assertFalse(batches._thread.is_alive())
+        self.assertEqual(closed_by, [batches._thread.ident])
 
 
 class DatasetSourceTests(unittest.TestCase):
@@ -137,12 +296,12 @@ class DatasetSourceTests(unittest.TestCase):
             server.server_close()
             thread.join(3)
 
-    def test_explicit_decoy_proxy_passed_even_under_main_vpn(self):
+    def test_explicit_side_job_proxy_passed_even_under_main_vpn(self):
         main_proxy = network.SocksProxy("127.0.0.1", 1080)
-        decoy_proxy = network.SocksProxy("127.0.0.1", 1081)
+        side_job_proxy = network.SocksProxy("127.0.0.1", 1081)
         with network.routed(main_proxy), patch.object(network, "http_opener") as opener:
-            DatasetSource(REPOSITORY, proxy=decoy_proxy)
-            opener.assert_called_once_with(decoy_proxy)
+            DatasetSource(REPOSITORY, proxy=side_job_proxy)
+            opener.assert_called_once_with(side_job_proxy)
             self.assertIs(network.current_proxy(), main_proxy)
 
     def test_atomic_download_is_in_requested_directory(self):
@@ -223,6 +382,62 @@ class ShardDatasetTests(unittest.TestCase):
 
     def write(self, rows):
         self.parquet.write_table(self.arrow.Table.from_pylist(rows), self.path)
+
+    def test_length_reads_footer_without_decoding_any_images(self):
+        self.write([{"image_bytes": b"not an image", "class": index % 2} for index in range(5)])
+        dataset = ShardDataset(self.path, image_size=8)
+        with patch("LRAEP_trainer.side_job_data._image_tensor", side_effect=AssertionError("must not decode")):
+            self.assertEqual(len(dataset), 5)
+
+    def test_length_errors_use_the_same_sanitized_shard_error(self):
+        self.path.write_bytes(b"invalid parquet")
+        with self.assertRaisesRegex(DatasetError, "could not read the selected Parquet training shard"):
+            len(ShardDataset(self.path, image_size=8))
+
+    def test_cached_passes_decode_each_image_once_and_preserve_every_example(self):
+        self.write([{"image_bytes": image_bytes(color=(index * 30, 0, 0)), "class": index % 2}
+                    for index in range(5)])
+        dataset = ShardDataset(self.path, image_size=24, passes=3, seed=123)
+        self.assertEqual(len(dataset), 15)
+        with patch.object(side_job_data, "_image_tensor", wraps=side_job_data._image_tensor) as decode:
+            rows = list(dataset)
+        self.assertEqual(decode.call_count, 5)
+        self.assertEqual(len(rows), 15)
+        first = {id(image): label for image, label in rows[:5]}
+        self.assertEqual(len(first), 5)
+        for start in (0, 5, 10):
+            self.assertEqual({id(image): label for image, label in rows[start:start + 5]}, first)
+        # Repeating the iterator with the same seed keeps its ordering reproducible.
+        signature = lambda examples: [(image[:, 12, 12].tolist(), label) for image, label in examples]
+        self.assertEqual(signature(rows), signature(list(dataset)))
+
+    def test_cached_tensor_budget_is_checked_before_decoding(self):
+        self.write([{"image_bytes": b"do not decode", "class": index % 2} for index in range(3)])
+        dataset = ShardDataset(self.path, image_size=1024, passes=2, cache_limit_mb=16)
+        with patch.object(side_job_data, "_image_tensor", side_effect=AssertionError("must not decode")), \
+             self.assertRaisesRegex(DatasetError, "exceeds cache_limit_mb.*one pass"):
+            list(dataset)
+
+    def test_one_pass_keeps_streaming_without_the_repeated_pass_cache_budget(self):
+        self.write([{"image_bytes": image_bytes(), "class": index % 2} for index in range(3)])
+        dataset = ShardDataset(self.path, image_size=1024, passes=1, cache_limit_mb=16)
+        self.assertEqual(len(dataset), 3)
+        self.assertEqual(len(list(dataset)), 3)
+
+    def test_cached_passes_reject_worker_processes(self):
+        self.write([{"image_bytes": image_bytes(), "class": 0}])
+        dataset = ShardDataset(self.path, image_size=24, passes=2)
+        with patch.object(side_job_data, "get_worker_info", return_value=SimpleNamespace(id=0, num_workers=1)), \
+             self.assertRaisesRegex(DatasetError, "single-process DataLoader"):
+            list(dataset)
+
+    def test_pass_and_cache_limits_require_valid_integers(self):
+        for passes in (0, -1, True, 1.5, None, 101):
+            with self.subTest(passes=passes), self.assertRaisesRegex(DatasetError, "dataset passes"):
+                ShardDataset(self.path, image_size=24, passes=passes)
+        for limit in (0, 15, 16385, True, 1.5, None):
+            with self.subTest(limit=limit), self.assertRaisesRegex(DatasetError, "cache_limit_mb"):
+                ShardDataset(self.path, image_size=24, cache_limit_mb=limit)
 
     def test_binary_images_and_string_labels_decode_without_orientation_change(self):
         self.write([{"image_bytes": image_bytes(), "class": "non_flipped"},
