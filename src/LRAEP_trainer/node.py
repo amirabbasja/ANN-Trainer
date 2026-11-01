@@ -1,4 +1,4 @@
-"""Direct JSON-RPC connection to a PEARL node and official block helpers."""
+"""Direct JSON-RPC connection to a S6 node and official block helpers."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
 
 
 class NodeClient:
-    """Talk to pearld directly; HTTPS always verifies the server certificate.
+    """Talk to S6d directly; HTTPS always verifies the server certificate.
 
     HTTP is supported for a node explicitly configured without TLS. A remote
     node must be selected explicitly; the default endpoint is loopback HTTPS.
@@ -146,7 +146,7 @@ class NodeClient:
         return reply["result"]
 
     def raw_template(self) -> dict[str, Any]:
-        """Fetch a SegWit block template using PEARL's official request format."""
+        """Fetch a SegWit block template using S6's official request format."""
         result = self.rpc(
             "getblocktemplate",
             [{"capabilities": ["coinbasevalue", "workid", "coinbase/append"], "rules": ["segwit"]}],
@@ -156,7 +156,7 @@ class NodeClient:
         return result
 
     def get_template(self, address: str) -> Any:
-        """Construct a template using the pinned official PEARL helper files."""
+        """Construct a template using the pinned official S6 helper files."""
         from LRAEP_gateway.comm.dataclasses import BlockTemplate
         from LRAEP_gateway.rpc_types import GetBlockTemplateResponse
 

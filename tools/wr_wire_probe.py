@@ -1,7 +1,7 @@
 """Local, transparent WR-to-S3 TCP relay for observing S3 messages.
 
-Only point a miner you control at this listener. The relay does not generate
-S1 requests or submit shares; it forwards exactly what the miner sends.
+Only point a S5 you control at this listener. The relay does not generate
+S1 requests or submit shares; it forwards exactly what the S5 sends.
 """
 
 from __future__ import annotations
@@ -122,9 +122,9 @@ class Inspector:
             # JSON IDs are usually strings/numbers; do not fail on unusual arrays/objects.
             if isinstance(request_id, (str, int, float, bool, type(None))):
                 with self.pending_lock:
-                    if self.direction == "miner -> S3" and operation is not None:
+                    if self.direction == "S5 -> S3" and operation is not None:
                         self.pending[request_id] = operation
-                    elif self.direction == "S3 -> miner" and operation is None:
+                    elif self.direction == "S3 -> S5" and operation is None:
                         operation = self.pending.pop(request_id, None)
 
         if self.raw:
@@ -139,7 +139,7 @@ class Inspector:
                         displayed["params"] = redact(displayed["params"],
                                                       field_limit=self.field_limit,
                                                       hide_values=True)
-                elif "submit" in method and self.direction == "miner -> S3":
+                elif "submit" in method and self.direction == "S5 -> S3":
                     params = displayed.get("params")
                     if isinstance(params, list) and params:
                         params[0] = redact(params[0], field_limit=self.field_limit,
@@ -185,7 +185,7 @@ class RelayHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         relay: Relay = self.server
         number = next(relay.connection_numbers)
-        relay.events.emit(number, "miner-connected", peer=self.client_address[0])
+        relay.events.emit(number, "S5-connected", peer=self.client_address[0])
         try:
             upstream = relay.connect_upstream()
         except (OSError, ssl.SSLError) as exc:
@@ -197,15 +197,15 @@ class RelayHandler(socketserver.BaseRequestHandler):
                           isinstance(upstream, ssl.SSLSocket) else None)
         pending: dict = {}
         pending_lock = threading.Lock()
-        to_S3 = Inspector(relay.events, number, "miner -> S3", pending, pending_lock,
+        to_S3 = Inspector(relay.events, number, "S5 -> S3", pending, pending_lock,
                             raw=relay.raw, field_limit=relay.field_limit)
-        to_miner = Inspector(relay.events, number, "S3 -> miner", pending, pending_lock,
+        to_S5 = Inspector(relay.events, number, "S3 -> S5", pending, pending_lock,
                              raw=relay.raw, field_limit=relay.field_limit)
         with upstream:
             sender = threading.Thread(target=self._forward,
                                       args=(self.request, upstream, to_S3), daemon=True)
             sender.start()
-            self._forward(upstream, self.request, to_miner)
+            self._forward(upstream, self.request, to_S5)
             sender.join()
         relay.events.emit(number, "disconnected")
 

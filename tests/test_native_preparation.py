@@ -21,7 +21,7 @@ class NativePreparationTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         try:
             load_official_helpers(root / "src" / "LRAEP_helpers")
-            from miner_base.noise_generation import NoiseGenerator
+            from S5_base.noise_generation import NoiseGenerator
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         cls.reference = NoiseGenerator(noise_rank=128)

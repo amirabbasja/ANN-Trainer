@@ -1,7 +1,7 @@
-# PearlHash work derivation and validation
+# S7 work derivation and validation
 
 The custom trainer implements the observed WR 0.51.8 generation-3 work
-format in Python/CUDA. It does not execute or load WR. Its normal PEARL
+format in Python/CUDA. It does not execute or load WR. Its normal S6
 helpers still supply commitment derivation, sparse noise and transcript rules.
 The local checker supplied the wire captures and offline research evidence.
 
@@ -24,7 +24,7 @@ Both unmodified signal matrices contain signed byte value 64. A's final
 sixteen bytes replace those constant values with this deterministic tail:
 
 ```python
-raw = blake3(worker_nonce + miner_nonce).digest()[:16]
+raw = blake3(worker_nonce + S5_nonce).digest()[:16]
 tail = bytes((value % 129 - 64) & 255 for value in raw)
 ```
 
@@ -33,7 +33,7 @@ nonce is exactly eight bytes in the original wire byte order. The mapping's
 signed range is `[-64, 64]`.
 
 The native CPU checker begins at `0x13ebf0`. At `0x13ee2b` it constructs
-`worker_nonce || miner_nonce`; `0x13ee82` calls the unkeyed BLAKE3 helper
+`worker_nonce || S5_nonce`; `0x13ee82` calls the unkeyed BLAKE3 helper
 `0x5b936`. The loop at `0x13eea0` through `0x13eec1` maps the first sixteen
 digest bytes. The checker appends that tail to a saved matrix prefix at
 `0x13eef5` and finalizes the root at `0x13ef0a`. The prefix generator at
@@ -44,7 +44,7 @@ captured vector:
 
 ```text
 worker_nonce = f8d10b2c6c027fee
-miner_nonce  = 0200000000000000
+S5_nonce  = 0200000000000000
 BLAKE3       = 15a00bb270d285ad2a35c5faddeb5baeda2f71e67940962648d8ac76622b4236
 tail bytes   = d5dfcbf13011c4eceaf504391c2a1bed
 ```
@@ -62,10 +62,11 @@ followed by the 52-byte S1 configuration. Both matrices use row-major
 signal bytes, padded with zeros to a 1024-byte chunk boundary before keyed
 BLAKE3 hashing. A includes the nonce tail before padding; B is constant 64.
 
-Generation 3 uses the normal PEARL dimension-bound root derivation. Native
+Generation 3 uses the normal S6 dimension-bound root derivation. Native
 salt constants match the bundled helpers exactly: file `0x577080` contains
-`blake3(b"pearl/cert-v3/noise-seed/A")`, while `0x57cde0` contains
-`blake3(b"pearl/cert-v3/noise-seed/B")`. The B generation-3 branch begins at
+`blake3(S6_NOISE_SEED_PREFIX + b"A")`, while `0x57cde0` contains
+`blake3(S6_NOISE_SEED_PREFIX + b"B")`. The prefix is decoded from Base64 in
+`LRAEP_trainer.wire_constants`. The B generation-3 branch begins at
 `0x1b1232`. The resulting seeds feed the usual rank-128 sparse noise and keyed
 transcript hashing.
 
@@ -78,7 +79,7 @@ Before submission, `reconstruct_wr_digest()` rebuilds the compact witness
 independently on the CPU. It derives its own signals, full roots, noise seeds
 and selected noisy rows/columns, then computes the standard transcript. It
 checks the GPU's candidate digest and exact adjusted target. It does not trust
-GPU buffers or substitute a KEX base64 proof for PearlHash's nonces and
+GPU buffers or substitute a KEX base64 proof for S7's nonces and
 indices.
 
 ## Three accepted-share fixtures

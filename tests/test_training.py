@@ -50,7 +50,7 @@ class TrainingControlFlowTests(unittest.TestCase):
 
         # The real training implementation imports the native verifier and the
         # address helper lazily. Replace them before train() is entered, so
-        # these tests never need native PEARL helpers or a real payout address.
+        # these tests never need native S6 helpers or a real payout address.
         pm = ModuleType("LRAEP_trainer.primitives")
         self.verify = MagicMock(return_value=(True, "Verified"))
         pm.verify_plain_proof_for_cert_version = self.verify

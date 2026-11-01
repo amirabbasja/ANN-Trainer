@@ -19,7 +19,7 @@ epochs. `0` means repeat indefinitely. The launcher finds the checkout's shared
 config by default and also works when called by absolute path from another
 directory. `Ctrl+C` stops training and removes the current downloaded shard.
 
-The miner's `training.job_sequence` also runs this CNN for positive `side-job`
+The S5's `training.job_sequence` also runs this CNN for positive `side-job`
 intervals. For example, `[["main", 60, 80], ["side-job", 120, 50]]` alternates mining
 and CNN batches, applying the interval's GPU duty-cycle target. Model and partial
 epoch state remain in memory between intervals. Main-batch limits count mining
@@ -154,7 +154,7 @@ Downloads, initial decoding, checkpoints and schedule pauses can still show 0%.
 The [PyTorch performance guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide)
 explains why overlapping input preparation with training reduces GPU waits.
 
-**Downloads use direct connections by default**, ignoring the main miner's VPN
+**Downloads use direct connections by default**, ignoring the main S5's VPN
 route and proxy environment variables. To use a separate VPN, set
 `side_job.vpn.enabled` to `true` and put its VLESS, VMess, Trojan or Shadowsocks
 share link in `side_job.vpn.link`. The job starts its own Xray core using that

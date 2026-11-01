@@ -54,9 +54,9 @@ class PreparationReferenceTests(unittest.TestCase):
         np.testing.assert_array_equal(batch.bt.numpy(), expected_bt)
 
     def assert_official_reference(self, batch, version, device_type):
-        from miner_base.commitment_hash import CommitmentHasher
-        from miner_base.matrix_merkle_tree import MatrixMerkleTree
-        from miner_base.noise_generation import NoiseGenerator
+        from S5_base.commitment_hash import CommitmentHasher
+        from S5_base.matrix_merkle_tree import MatrixMerkleTree
+        from S5_base.noise_generation import NoiseGenerator
 
         self.assertEqual(batch.a.device.type, "cpu")
         self.assertEqual(batch.bt.device.type, "cpu")

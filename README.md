@@ -1,16 +1,16 @@
 # LRAEP GPU trainer
 
-LRAEP is a Python client for the PEARL network with a native CUDA search loop
-and selectable Kryptex or WildRig/PearlHash pool connections. A bundled subset of PEARL's official
+LRAEP is a Python client for the S6 network with a native CUDA search loop
+and selectable Kryptex or WildRig/S7 pool connections. A bundled subset of S6's official
 helpers supplies deterministic noise, commitments, Merkle proofs, and proof
 verification. The helper packages use LRAEP names; their upstream authorship
-and license notices are retained. Solo operation also supports a `pearld`
+and license notices are retained. Solo operation also supports a `S6d`
 node. No external trainer application is required or launched.
 
 For brevity, source code, filenames, configuration values and CLI choices use
 **KEX** for **Kryptex** and **WR** for **WildRig**. Full names are kept in README
 files for explanation and source attribution. Use `pool.protocol: "KEX"` or
-`"WR"`, or `pool --miner KEX` / `pool --miner WR`. Older full-name protocol
+`"WR"`, or `pool --S5 KEX` / `pool --S5 WR`. Older full-name protocol
 values and filenames have been replaced; automatic selection by hostname has
 been removed.
 
@@ -20,7 +20,7 @@ and TLS settings in your own private configuration. Existing private endpoint
 and account settings are retained. The endpoint table below is a human
 reference; it is not loaded by the program.
 
-Here, **neural network training** names the PEARL work loop. The generated
+Here, **neural network training** names the S6 work loop. The generated
 workload is integer matrix multiplication; it does not fit a neural network,
 update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
@@ -73,7 +73,7 @@ use a different name.
 Maintain the app settings in `config.json`. The trainer finds this file beside
 `ann_trainer.py`, even when launched from another directory. `--config` remains
 available if you store the shared file elsewhere. `config.example.json` is the
-single public template; it contains both miner profiles with blank hosts.
+single public template; it contains both S5 profiles with blank hosts.
 The private `trainer/config.json` stays plain JSON so you can edit it directly.
 It is ignored by git because it can contain credentials. The shared trainer can
 use this source file for either KEX or WR. The standalone WR trainer uses an
@@ -156,7 +156,7 @@ that documentation, upstream source attribution and license notices in this
 shared trainer directory.
 
 The standalone trainer requires no cryptocurrency-specific packages, SDKs, or
-external miner installations. Its protocol and proof support is bundled
+external S5 installations. Its protocol and proof support is bundled
 locally. Its installation requirements are general-purpose Python packages:
 `numpy`, `torch`, `blake3`, `pydantic`, `loguru`, `cryptography`, `ipykernel`,
 `Pillow`, and `pyarrow`. In particular, `cryptography` supplies configuration
@@ -211,32 +211,32 @@ section keeps both identities and separate connection settings:
 "pool": {
   "protocol": "KEX",
   "KEX_uname": "krxYOURID",
-  "WR_wallet": "prl1YOUR_PEARL_ADDRESS",
+  "WR_wallet": "prl1YOUR_S6_ADDRESS",
   "worker": "Rig01",
   "KEX": {"host": "", "port": 8048, "tls": true},
   "WR": {"host": "", "port": 9000, "tls": false, "certificate_version": 3}
 }
 ```
 
-`--miner KEX` selects `pool.KEX` and `pool.KEX_uname`; `--miner WR` selects
+`--S5 KEX` selects `pool.KEX` and `pool.KEX_uname`; `--S5 WR` selects
 `pool.WR` and `pool.WR_wallet`. Without that option, `pool.protocol` selects
-the default miner. The worker, password, timeouts and unknown-request settings
+the default S5. The worker, password, timeouts and unknown-request settings
 are shared. Each connection profile can set `host`, `port`, `tls`, `ca_file`,
 `compression`, `certificate_version` and `protocol_documentation`.
 A missing selected profile or host produces an error before networking starts;
-the other miner's connection settings are never used as a fallback.
+the other S5's connection settings are never used as a fallback.
 
-Run either miner with the same file:
+Run either S5 with the same file:
 
 ```bash
-.venv/bin/python ann_trainer.py pool --miner KEX
-.venv/bin/python ann_trainer.py pool --miner WR
+.venv/bin/python ann_trainer.py pool --S5 KEX
+.venv/bin/python ann_trainer.py pool --S5 WR
 ```
 
-KEX uses the Kryptex protocol. WR implements the recovered WildRig/PearlHash
+KEX uses the Kryptex protocol. WR implements the recovered WildRig/S7
 protocol in this Python/CUDA client and does not launch WildRig. `KEX_uname`
-accepts your Kryptex Mining Username or a PEARL receiving address. `WR_wallet`
-takes your PEARL receiving address for PearlHash. Keep each identity separate
+accepts your Kryptex Mining Username or a S6 receiving address. `WR_wallet`
+takes your S6 receiving address for S7. Keep each identity separate
 from `pool.worker`; the client constructs the appropriate login.
 
 These endpoints are human references for your private profile settings:
@@ -246,13 +246,13 @@ These endpoints are human references for your private profile settings:
 | KEX global | `prl.kryptex.network` | `8048` | Yes |
 | KEX global TCP | `prl.kryptex.network` | `7048` | No |
 | KEX Hong Kong | `prl-hk.kryptex.network` | `8048` | Yes |
-| WR/PearlHash captured endpoint | `pool.pearlhash.xyz` | `9000` | No |
+| WR/S7 captured endpoint | `pool.pearlhash.xyz` | `9000` | No |
 
 See the [Kryptex pool page](https://pool.kryptex.com/en/prl) and
 [WR work and unknown-request guide](docs/wr-training.md). The public template
 contains no real pool hostname. The former `pool.wallet` field is replaced by
 `KEX_uname` and `WR_wallet`; older flat connection settings still load, while
-the shared template and private config use profiles for switching miners.
+the shared template and private config use profiles for switching S5s.
 
 Start with these checks from `/workspace/trainer`:
 
@@ -273,19 +273,19 @@ client with:
 With `mode` set to `"pool"`, omitting the subcommand starts the same pool
 training loop. A full node and node RPC credentials are unnecessary in pool
 mode. The client uses the received header and certificate version, applies
-PEARL's official share-target adjustment, and verifies candidates locally.
-Kryptex receives native proofs; PearlHash receives compact nonce/index witnesses.
+S6's official share-target adjustment, and verifies candidates locally.
+Kryptex receives native proofs; S7 receives compact nonce/index witnesses.
 A matching reply with literal `result: true` and no error is
 counted as accepted. A missing reply is not counted as acceptance.
-PearlHash also requires `status: 1` on a matching submission acknowledgement.
+S7 also requires `status: 1` on a matching submission acknowledgement.
 Login and telemetry acknowledgements never count as accepted shares.
 
-The miner choice selects the matching connection profile and identity in
+The S5 choice selects the matching connection profile and identity in
 the shared configuration:
 
 ```bash
-.venv/bin/python ann_trainer.py pool --miner WR
-.venv/bin/python ann_trainer.py pool --miner KEX
+.venv/bin/python ann_trainer.py pool --S5 WR
+.venv/bin/python ann_trainer.py pool --S5 KEX
 ```
 
 `training.job_sequence` controls mining effort over time in both trainers. Each
@@ -333,7 +333,7 @@ update_config("config.json", {"training": {
 }})
 ```
 
-The miner finishes each GPU batch, synchronizes CUDA work, and rests to target
+The S5 finishes each GPU batch, synchronizes CUDA work, and rests to target
 the active entry's average duty cycle. It submits completed shares before
 resting. Waits respond to sequence changes, `Ctrl+C`, and time limits. A single
 kernel can still show 100% utilization; other processes using the GPU are not
@@ -361,7 +361,7 @@ displayed unchanged; they are not clipped to the target. See
 
 The sequence follows elapsed wall time, including pauses and reconnections.
 Transitions are checked between computation stages; an in-flight CUDA kernel
-or synchronous verification finishes before the miner pauses or exits.
+or synchronous verification finishes before the S5 pauses or exits.
 
 Older configurations with `training.max_gpu_utilization` remain readable. When
 `job_sequence` is absent, a legacy value such as `70` becomes
@@ -413,9 +413,9 @@ Normal connection, training, and error messages clear the status row before
 being logged. The row fits the terminal width to prevent wrapping. Redirected
 output writes only the final status, rather than a line for every batch.
 `Ctrl+C` finishes the status row
-and stops the sampler along with the miner.
+and stops the sampler along with the S5.
 
-For WR/PearlHash, the client also reports the selected GPU's name and measured
+For WR/S7, the client also reports the selected GPU's name and measured
 rate using `report_info`. It registers the GPU after login, updates the rate
 after the first completed batch, then about every 10 seconds during the first
 two minutes and every two minutes afterward. Each report logs the rate sent
@@ -423,7 +423,7 @@ and its request ID at `DEBUG` so it can be compared with the dashboard.
 The wire rate uses raw H/s calculated from completed matrix work as
 `batches * m * n * k / elapsed_seconds`. One work unit is an int8
 multiply-accumulate at the supported rank 128. This follows the official
-helper's `inner_hash_per_matmul` counter and PEARL's target scaling. These reports
+helper's `inner_hash_per_matmul` counter and S6's target scaling. These reports
 supply connected-worker GPU information; their acknowledgements never count
 as accepted mining shares. Pool credit still depends on accepted shares.
 
@@ -431,18 +431,18 @@ Pool protocol options:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `protocol` | `"KEX"` | Explicitly select `"KEX"` or `"WR"`; `"pearlhash"` is an alias for `"WR"`. Hostnames do not select an adapter. |
-| `KEX_uname` | `""` | KEX Mining Username or PEARL receiving address, used only by KEX. |
-| `WR_wallet` | `""` | PEARL receiving address, used only by WR/PearlHash. |
+| `protocol` | `"KEX"` | Explicitly select `"KEX"` or `"WR"`; `"S7"` is an alias for `"WR"`. Hostnames do not select an adapter. |
+| `KEX_uname` | `""` | KEX Mining Username or S6 receiving address, used only by KEX. |
+| `WR_wallet` | `""` | S6 receiving address, used only by WR/S7. |
 | `KEX.compression` / `WR.compression` | `"none"` | Native uncompressed proof bytes; `"gzip"` requests the pool's optional gzip session. |
 | `KEX.certificate_version` / `WR.certificate_version` | `null` | Use the explicit job field. An integer `1`, `2`, or `3` is a fallback only when a job omits it. Unknown versions fail. |
 | `agent` | `"LRAEP-trainer/0.1"` | Client identifier sent during authentication. |
-| `stop_on_unknown_request` | `true` | Record unknown PearlHash messages, stop work, close the connection, and report an error without reconnecting. |
+| `stop_on_unknown_request` | `true` | Record unknown S7 messages, stop work, close the connection, and report an error without reconnecting. |
 | `unknown_request_dir` | `null` | Diagnostic directory, relative to the config file. Defaults to `training.output_dir/unknown-pool-requests`. |
 
 Gzip is used only after the pool confirms `type: "v2"` in a successful
 authentication reply. Otherwise proofs remain uncompressed. This session
-version does not change PEARL's native proof serialization. Each profile's
+version does not change S6's native proof serialization. Each profile's
 `protocol_documentation` setting records a reference; it is never executed.
 
 Kryptex uses static difficulty `2097152` by default. Optional password `d=N`
@@ -513,7 +513,7 @@ The pool client automatically selects the native CUDA DP4A backend for 8×8
 hash tiles. Startup reports `Compute backend: native CUDA DP4A`. The first run
 builds this project's CUDA sources with `nvcc`; later runs reuse the app's
 cache at `~/.cache/LRAEP/native/`.
-No external miner executable is loaded. If CUDA compilation is unavailable,
+No external S5 executable is loaded. If CUDA compilation is unavailable,
 startup explains the failure and selects the PyTorch reference backend.
 
 The application source is in `src/LRAEP_trainer`. Required upstream Python
@@ -565,7 +565,7 @@ started. Selected official Python modules are imported as bundled helper files.
 
 ## Train against your node
 
-First run a synced official PEARL node and obtain your own PEARL Taproot payout
+First run a synced official S6 node and obtain your own S6 Taproot payout
 address. See the official repository's node and wallet setup instructions.
 This client does not create a wallet, handle private keys, or start a node.
 
@@ -576,7 +576,7 @@ the placeholders:
 export LRAEPD_RPC_URL='https://127.0.0.1:44107'
 export LRAEPD_RPC_USER='your-rpc-user'
 export LRAEPD_RPC_PASSWORD='your-rpc-password'
-export LRAEPD_RPC_CA='/absolute/path/to/your/pearld/rpc.cert'
+export LRAEPD_RPC_CA='/absolute/path/to/your/S6d/rpc.cert'
 export LRAEP_TRAINING_ADDRESS='your-prl1p-taproot-address'
 
 .venv/bin/python -m LRAEP_trainer train
@@ -671,7 +671,7 @@ reward rate or live accepted share is implied by local hashrate measurements.
 The unit tests compare GPU transcripts against an independent integer oracle,
 including negative values and transcript slot reuse. Node tests exercise RPC
 requests, certificate handling, rejection handling, and response errors.
-The offline self-test compares against PEARL's official CPU reference and
+The offline self-test compares against S6's official CPU reference and
 verifies real plain proofs for all three certificate versions.
 
 `tests/test_local_dependencies.py` checks both trainers for cryptocurrency SDK
@@ -681,20 +681,20 @@ does not require a cryptocurrency package installation.
 
 ## Sources and permitted protocol references
 
-Matrix arithmetic and proof helpers are pinned to PEARL commit
+Matrix arithmetic and proof helpers are pinned to S6 commit
 `0798903bced203de8cfcb49441f44fd9b51b18eb`. The bundled subset has renamed
 modules and build paths; its source checksums are recorded in
 `src/LRAEP_helpers/manifest.json`. The cryptographic domains, address format,
 proof serialization, and Kryptex messages retain upstream-compatible bytes.
 The user additionally authorized **"Allow protocol references only"** for
 implementing pool networking. Public wire captures and Kryptex's published gzip
-note inform the custom client. Official PEARL proof helpers and their required
-proof-system dependencies are bundled; no external miner's GPU implementation
+note inform the custom client. Official S6 proof helpers and their required
+proof-system dependencies are bundled; no external S5's GPU implementation
 or executable is used. Exact protocol references and limits are recorded in
 `docs/kex-protocol-review.md`.
 
 The bundled helpers retain their upstream license notices in
-`src/LRAEP_helpers/`, including the PEARL ISC notice and the proof-system
+`src/LRAEP_helpers/`, including the S6 ISC notice and the proof-system
 dependency licenses. See `THIRD_PARTY_NOTICES.md` and
 `src/LRAEP_helpers/README.md` for attribution and vendoring details.
 
@@ -724,10 +724,17 @@ that workspace's `captures/...` directory. It is not a runtime dependency.
 | wallet | S2 |
 | pool | S3 |
 | stratum | S4 |
+| miner | S5 |
+| pearl | S6 |
+| pearlhash | S7 |
 
 These substitutions apply case-insensitively to local names, filenames, imports,
 configuration keys, and CLI commands (for example, `pool` becomes `S3` and
-`WR_wallet` becomes `WR_S2`). Existing README examples retain their original
-spelling; substitute the abbreviations when using them. External protocol
-literals, upstream URLs, package APIs, and license text retain their required
-spellings.
+`WR_wallet` becomes `WR_S2`, and `--miner` becomes `--S5`). Existing README
+examples retain the original S1–S4 spellings; substitute those abbreviations
+when using them. S5–S7 examples use the renamed spellings; the longer S7 term
+is replaced before S6. Fixed protocol names and cryptographic domain bytes are
+stored as Base64 in `src/LRAEP_trainer/wire_constants.py` and decoded before
+use, preserving network and proof bytes. The previous S7 protocol alias also
+remains accepted through its decoded spelling. Upstream URLs, endpoint
+hostnames, source attribution, and license text retain their required spellings.

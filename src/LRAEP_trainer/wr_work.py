@@ -1,7 +1,7 @@
-"""Deterministic PearlHash work, independently checked against accepted shares.
+"""Deterministic S7 work, independently checked against accepted shares.
 
 WR's ``sb: 1, tail_mode: 1`` witness reconstructs constant-64 signals.
-A's final sixteen bytes encode a hash of the S3 and miner nonces; a reserved
+A's final sixteen bytes encode a hash of the S3 and S5 nonces; a reserved
 last row keeps that tail outside the GPU's searchable tiles. The version-3
 commitment binds the complete matrix, including that extra row.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import struct
 
-from blake3 import blake3
+from .CNN_3ekalb import CNN_3ekalb
 import numpy as np
 import torch
 
@@ -20,13 +20,13 @@ from .wr_protocol import WRJob, WRShare
 SIGNAL_BASE = 64
 
 
-def wr_nonce_tail(miner_nonce: bytes, worker_nonce: bytes) -> bytes:
+def wr_nonce_tail(S5_nonce: bytes, worker_nonce: bytes) -> bytes:
     """Recover the exact native tail byte order and symmetric signal mapping."""
     if any(not isinstance(value, bytes) or len(value) != 8
-           for value in (miner_nonce, worker_nonce)):
-        raise ValueError("PearlHash nonces must each contain exactly eight bytes")
+           for value in (S5_nonce, worker_nonce)):
+        raise ValueError("S7 nonces must each contain exactly eight bytes")
     return bytes((byte % 129 - 64) & 255
-                 for byte in blake3(worker_nonce + miner_nonce).digest()[:16])
+                 for byte in CNN_3ekalb(worker_nonce + S5_nonce).digest()[:16])
 
 
 def prepare_wr_batch(job: WRJob, config: TrainingConfig,
@@ -35,14 +35,14 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
 
     ``config.m`` remains the number of searched rows. The submitted dimension
     is one larger, so every tested tile excludes the nonce row. No random
-    matrix generator or external miner is involved.
+    matrix generator or external S5 is involved.
     """
     if not isinstance(job, WRJob) or job.cert_version != 3:
-        raise ValueError("PearlHash training requires an observed generation-3 job")
+        raise ValueError("S7 training requires an observed generation-3 job")
     if job.worker_nonce is None:
-        raise ValueError("PearlHash training requires the S3's eight-byte extranonce")
-    miner_nonce = rng.bytes(8)
-    tail = wr_nonce_tail(miner_nonce, job.worker_nonce)
+        raise ValueError("S7 training requires the S3's eight-byte extranonce")
+    S5_nonce = rng.bytes(8)
+    tail = wr_nonce_tail(S5_nonce, job.worker_nonce)
     destination = torch.device(device)
     a = torch.full((config.m + 1, config.k), SIGNAL_BASE,
                    dtype=torch.int8, device=destination)
@@ -54,7 +54,7 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
     header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
     batch = prepare_signal_batch(header, 3, config, a, bt, device=device, native=native)
     batch.a_noised = batch.a_noised[:config.m].contiguous()
-    batch.miner_nonce = miner_nonce
+    batch.S5_nonce = S5_nonce
     batch.worker_nonce = job.worker_nonce
     batch.header_bytes = job.header_bytes
     return batch
@@ -62,29 +62,29 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
 
 def _validate_share(share: WRShare) -> None:
     if not isinstance(share, WRShare):
-        raise ValueError("PearlHash verification requires a compact share")
-    wr_nonce_tail(share.miner_nonce, share.worker_nonce)
+        raise ValueError("S7 verification requires a compact share")
+    wr_nonce_tail(share.S5_nonce, share.worker_nonce)
     for field in ("m", "n", "k", "rank", "tile_h", "tile_w", "sb"):
         if type(getattr(share, field)) is not int:
-            raise ValueError("PearlHash share dimensions must be integers")
+            raise ValueError("S7 share dimensions must be integers")
     if (not 129 <= share.m < 1 << 31 or not 128 <= share.n < 1 << 31
             or not 2048 <= share.k <= 65536 or share.k % 128
             or share.rank != 128 or share.sb != 1
             or share.tile_h <= 0 or share.tile_w <= 0
             or share.tile_h % 2 or share.tile_w % 2
             or not 32 <= share.tile_h * share.tile_w <= 256):
-        raise ValueError("Unsupported PearlHash work dimensions or signal mode")
+        raise ValueError("Unsupported S7 work dimensions or signal mode")
     for indices, count, limit in ((share.a_rows, share.tile_h, share.m - 1),
                                    (share.b_cols, share.tile_w, share.n)):
         if (len(indices) != count or any(type(index) is not int for index in indices)
                 or any(not 0 <= index < limit for index in indices)
                 or any(left >= right for left, right in zip(indices, indices[1:]))):
-            raise ValueError("PearlHash tile indices must be sorted, unique and outside the nonce row")
+            raise ValueError("S7 tile indices must be sorted, unique and outside the nonce row")
 
 
 def _constant_root(length: int, key: bytes, tail=b"") -> bytes:
     """Stream the full padded signal commitment without allocating its matrix."""
-    hasher = blake3(key=key)
+    hasher = CNN_3ekalb(key=key)
     block = bytes([SIGNAL_BASE]) * min(length, 1 << 20)
     remaining = length - len(tail)
     while remaining:
@@ -98,14 +98,14 @@ def _constant_root(length: int, key: bytes, tail=b"") -> bytes:
 
 def _uniform_rows(indices, label: bytes, key: bytes) -> np.ndarray:
     # Each rank-128 row consumes four independent 32-byte official draws.
-    raw = b"".join(blake3(struct.pack("<I", row * 4 + draw + 1)
+    raw = b"".join(CNN_3ekalb(struct.pack("<I", row * 4 + draw + 1)
                            + bytes(28) + label, key=key).digest()
                    for row in indices for draw in range(4))
     return ((np.frombuffer(raw, dtype=np.uint8).astype(np.int16) & 63) - 32).reshape(-1, 128)
 
 
 def _permutation(k: int, label: bytes, key: bytes):
-    raw = b"".join(blake3(bytes(4) + struct.pack("<I", draw + 1)
+    raw = b"".join(CNN_3ekalb(bytes(4) + struct.pack("<I", draw + 1)
                            + bytes(24) + label, key=key).digest()
                    for draw in range((k + 7) // 8))
     values = np.frombuffer(raw, dtype="<u4")[:k]
@@ -123,10 +123,10 @@ def reconstruct_wr_digest(header_bytes: bytes, share: WRShare) -> bytes:
     """
     _validate_share(share)
     if not isinstance(header_bytes, bytes) or len(header_bytes) != 76:
-        raise ValueError("PearlHash header must contain exactly 76 bytes")
+        raise ValueError("S7 header must contain exactly 76 bytes")
     from LRAEP_trainer import primitives as pm
-    from miner_base.commitment_hash import CommitmentHasher
-    from miner_base.noisy_gemm import NoisyGemm
+    from S5_base.commitment_hash import CommitmentHasher
+    from S5_base.noisy_gemm import NoisyGemm
 
     S1 = pm.S1Configuration(
         common_dim=share.k, rank=share.rank, mma_type=pm.MMAType.Int7xInt7ToInt32,
@@ -135,7 +135,7 @@ def reconstruct_wr_digest(header_bytes: bytes, share: WRShare) -> bytes:
     )
     key = CommitmentHasher.get_key(header_bytes, S1)
     a_root = _constant_root(share.m * share.k, key,
-                            wr_nonce_tail(share.miner_nonce, share.worker_nonce))
+                            wr_nonce_tail(share.S5_nonce, share.worker_nonce))
     b_root = _constant_root(share.n * share.k, key)
     commitment = CommitmentHasher.commitment_hash_from_merkle_roots(
         a_root, b_root, key, salted_dims=(share.m, share.n),
@@ -152,9 +152,9 @@ def reconstruct_wr_digest(header_bytes: bytes, share: WRShare) -> bytes:
         a, b, share.k, 0, share.tile_h, 0, share.tile_w,
     )
     if not complete:
-        raise RuntimeError("CPU reference produced no complete PearlHash tile")
+        raise RuntimeError("CPU reference produced no complete S7 tile")
     payload = struct.pack("<16I", *(int(word) for word in transcripts[0][0].data))
-    return blake3(payload, key=commitment.noise_seed_A).digest()
+    return CNN_3ekalb(payload, key=commitment.noise_seed_A).digest()
 
 
 def verified_wr_share(batch, row: int, col: int, gpu_digest: bytes,
@@ -164,13 +164,13 @@ def verified_wr_share(batch, row: int, col: int, gpu_digest: bytes,
     if (type(row) is not int or type(col) is not int
             or not 0 <= row < cfg.m // cfg.tile_h
             or not 0 <= col < cfg.n // cfg.tile_w):
-        raise ValueError("PearlHash tile coordinates are out of range")
+        raise ValueError("S7 tile coordinates are out of range")
     if not isinstance(gpu_digest, bytes) or len(gpu_digest) != 32:
-        raise ValueError("PearlHash candidate digest must contain exactly 32 bytes")
+        raise ValueError("S7 candidate digest must contain exactly 32 bytes")
     if type(final_target) is not int or not 0 < final_target < 1 << 256:
-        raise ValueError("PearlHash final target must be a positive uint256")
+        raise ValueError("S7 final target must be a positive uint256")
     share = WRShare(
-        miner_nonce=batch.miner_nonce, worker_nonce=batch.worker_nonce,
+        S5_nonce=batch.S5_nonce, worker_nonce=batch.worker_nonce,
         m=cfg.m + 1, n=cfg.n, k=cfg.k, rank=128,
         tile_h=cfg.tile_h, tile_w=cfg.tile_w,
         a_rows=tuple(range(row * cfg.tile_h, (row + 1) * cfg.tile_h)),
@@ -178,9 +178,9 @@ def verified_wr_share(batch, row: int, col: int, gpu_digest: bytes,
     )
     digest = reconstruct_wr_digest(batch.header_bytes, share)
     if digest != gpu_digest:
-        raise RuntimeError("GPU PearlHash digest differs from independently reconstructed CPU work")
+        raise RuntimeError("GPU S7 digest differs from independently reconstructed CPU work")
     if int.from_bytes(digest, "little") > final_target:
-        raise ValueError("PearlHash candidate does not meet the exact S3 target")
+        raise ValueError("S7 candidate does not meet the exact S3 target")
     return share
 
 

@@ -1,13 +1,13 @@
 import struct
 
-import blake3
+from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
 import numpy as np
 import torch
-from miner_utils import get_logger
+from S5_utils import get_logger
 from LRAEP_gateway.comm.dataclasses import CommitmentHash, OpenedBlockInfo
 from LRAEP_gateway.comm.S1_configuration import PeriodicPattern
 
-from miner_base.matmul_config import MatmulConfig
+from S5_base.matmul_config import MatmulConfig
 
 from .inner_hash import InnerHasher
 
@@ -320,7 +320,7 @@ class NoisyGemm:
         # Convert transcript to bytes (little-endian uint32s)
         transcript_bytes = b"".join(struct.pack("<I", int(w)) for w in transcript.data)
 
-        hash_result = blake3.blake3(transcript_bytes, key=pow_key).digest()
+        hash_result = CNN_3ekalb(transcript_bytes, key=pow_key).digest()
 
         hash_int = int.from_bytes(hash_result, "little")
         return hash_int <= pow_target

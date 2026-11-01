@@ -1,10 +1,10 @@
 # LRAEP KEX wire protocol and implementation evidence
 
 Reviewed October 25, 2026. The user authorized **"Allow protocol references
-only"** after the original restriction to PEARL's official helpers. This
+only"** after the original restriction to S6's official helpers. This
 permits reading public networking documentation and captured messages; it
 does not authorize using an external trainer application. GPU arithmetic and
-proof construction continue to use this project's code and official PEARL
+proof construction continue to use this project's code and official S6
 helpers. The required upstream subset is now bundled under
 `src/LRAEP_helpers` with LRAEP package names, retained attribution, and a source
 checksum manifest. The rename leaves network and proof bytes unchanged.
@@ -39,20 +39,20 @@ Optional gzip uses one object-form authorization:
 
 Only a successful matching reply explicitly confirming `type: "v2"` enables
 gzip. Without confirmation, the proof is uncompressed. Session `v1`/`v2`
-compression is separate from PEARL's certificate versions.
+compression is separate from S6's certificate versions.
 
 `mining.notify.params` contains `job_id`, `header`, `height`, `target`, and
 `cert_version`. The header is exactly 152 hexadecimal characters representing
-the original 76-byte incomplete PEARL header. Its network `nbits` remains
+the original 76-byte incomplete S6 header. Its network `nbits` remains
 unchanged when processing the easier share target.
 
 The target is a big-endian hexadecimal **base target**. At difficulty 2097152,
 the capture contains `00000000000007ff...ffff`, equivalent to
 `2^224 / difficulty - 1`. This differs from the Bitcoin pdiff formula by the
 factor `65535/65536`. The client preserves the received target and uses the
-official PEARL target-adjustment helper; it never recomputes from a job ID or
+official S6 target-adjustment helper; it never recomputes from a job ID or
 password. The final jackpot digest is interpreted little endian as required
-by PEARL.
+by S6.
 
 Shares use `mining.submit` with object parameters
 `{"worker":"S2.worker","job_id":"...","plain_proof":"BASE64"}`.
@@ -71,13 +71,13 @@ fallback. No fork height is hardcoded.
 
 This project checks protocol parsing, authentication/compression negotiation,
 share encoding, stale-work handling, and acceptance semantics with local tests.
-The GPU path is compared with official PEARL reference math and native proof
+The GPU path is compared with official S6 reference math and native proof
 verification. Transport checks reached KEX TCP and verified TLS endpoints.
 The user's payout identity is configured locally, and TLS authentication and
 live V3 job reception have been confirmed. No live accepted share or credited
 user balance has been confirmed. Native CUDA acceleration preserves the same
 KEX wire adapter; complete proof exchanges are checked with a local S3
-whose server verifies proofs using PEARL's official native helper.
+whose server verifies proofs using S6's official native helper.
 
 KEX's [OpenAPI specification](../README.md#pool-reference-links) is
 for monitoring. It is not used as a substitute for the S4 exchange.

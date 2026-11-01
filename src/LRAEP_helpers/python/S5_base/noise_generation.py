@@ -2,8 +2,8 @@ from math import ceil
 
 import numpy as np
 import torch
-from blake3 import blake3
-from miner_utils import get_logger
+from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
+from S5_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -37,8 +37,8 @@ class NoiseGenerator:
         if noise_range > 128:
             raise ValueError("noise_range must fit in uint7")
 
-        if noise_rank % blake3.digest_size != 0:
-            raise ValueError(f"noise_rank must be divisible by {blake3.digest_size=}")
+        if noise_rank % CNN_3ekalb.digest_size != 0:
+            raise ValueError(f"noise_rank must be divisible by {CNN_3ekalb.digest_size=}")
 
         logger.info(
             f"Initialized NoiseGenerator with noise_rank={noise_rank}, noise_range={noise_range}"
@@ -102,7 +102,7 @@ class NoiseGenerator:
         message_prepend = np.zeros(8, dtype=np.int32)
         message_prepend[prepend_index] = 1 + index
         message_bytes = message_prepend.tobytes() + seed
-        return blake3(message_bytes, key=key).digest()
+        return CNN_3ekalb(message_bytes, key=key).digest()
 
     def __generate_uniform_random_matrix(
         self,
@@ -117,7 +117,7 @@ class NoiseGenerator:
         assert len(key) == 32, "key must be 32 bytes"
         noise_matrix = torch.zeros(rows, cols, dtype=torch.int8)
 
-        draws = int(ceil(rows * cols / blake3.digest_size))
+        draws = int(ceil(rows * cols / CNN_3ekalb.digest_size))
 
         # draw all required hashes
         random_bytes = b"".join(self.__get_random_hash(i, seed, key, 0) for i in range(draws))
@@ -158,7 +158,7 @@ class NoiseGenerator:
             assert cols == self.noise_rank, "cols must be equal to noise_rank"
 
         bytes_per_lines = 4
-        draws = int(ceil(required_lines * bytes_per_lines / blake3.digest_size))
+        draws = int(ceil(required_lines * bytes_per_lines / CNN_3ekalb.digest_size))
 
         # We draw 4 bytes for each matrix element
         for i in range(draws):
@@ -167,7 +167,7 @@ class NoiseGenerator:
                 random_hash,
                 dtype=np.uint32,
             )
-            for k in range(blake3.digest_size // bytes_per_lines):
+            for k in range(CNN_3ekalb.digest_size // bytes_per_lines):
                 random_uint32 = random_uint32_array[k]
                 first_idx = random_uint32 & self.rank_mask
                 second_idx = first_idx ^ (
@@ -176,7 +176,7 @@ class NoiseGenerator:
                 permutation = torch.zeros(self.noise_rank, dtype=torch.int8)
                 permutation[first_idx] = 1
                 permutation[second_idx] = -1
-                assignment_index = i * blake3.digest_size // bytes_per_lines + k
+                assignment_index = i * CNN_3ekalb.digest_size // bytes_per_lines + k
                 if assignment_index >= required_lines:
                     break
                 if assign_columns:

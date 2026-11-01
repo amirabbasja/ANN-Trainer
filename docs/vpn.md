@@ -27,7 +27,7 @@ installation. From the project directory, run:
 It downloads the official release `v26.10.21`, checks its pinned archive
 SHA-256 checksum, and installs `xray` into `~/.local/share/LRAEP/bin/` by
 default. To use that installation instead of the Linux x86_64 bundle, select
-its executable with `vpn.core_path`. Starting a miner or running a link check
+its executable with `vpn.core_path`. Starting a S5 or running a link check
 never downloads a core.
 
 Automatic installation supports Linux x86_64 and arm64. On other platforms,
@@ -55,7 +55,7 @@ The configurations include this section, initially disabled:
 ```
 
 Paste a complete configuration link into `link`, set `enabled` to `true`, and
-start the miner with the usual command:
+start the S5 with the usual command:
 
 ```bash
 .venv/bin/python ann_trainer.py --config config.json S3

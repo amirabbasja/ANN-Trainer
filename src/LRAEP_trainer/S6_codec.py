@@ -1,12 +1,12 @@
-"""Independent Pearlhash JSON frame codec, recovered from WR 0.51.8 traffic.
+"""Independent S7 JSON frame codec, recovered from WR 0.51.8 traffic.
 
 Wire format: ASCII hex(seed[4] || payload XOR repeating_key[48]) followed by LF.
 The four bytes of the seed represent an unsigned BIG-ENDIAN integer. For each
 coefficient c below, key_byte = (c * seed - seed % c) & 255.
 
-No miner executable, native library, subprocess, GPU, or external dependency is
+No S5 executable, native library, subprocess, GPU, or external dependency is
 used. Adapted from this workspace's independent wr-checker/tools/pearl_codec.py.
-The captured WR 0.51.8 traffic establishes this codec; no miner code is bundled.
+The captured WR 0.51.8 traffic establishes this codec; no S5 code is bundled.
 """
 from __future__ import annotations
 

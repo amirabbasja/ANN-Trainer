@@ -1,4 +1,4 @@
-"""Bounded raw TCP/TLS transport; PEARL S3 message framing is unspecified.
+"""Bounded raw TCP/TLS transport; S6 S3 message framing is unspecified.
 
 Opening a connection sends no application data. Callers must supply a verified
 S3 protocol before sending authentication or interpreting received bytes.

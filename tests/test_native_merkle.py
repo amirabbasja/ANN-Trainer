@@ -1,4 +1,4 @@
-"""CUDA commitment roots against PEARL's unmodified CPU Merkle helper."""
+"""CUDA commitment roots against S6's unmodified CPU Merkle helper."""
 
 from pathlib import Path
 import unittest
@@ -16,7 +16,7 @@ class NativeMerkleTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         try:
             load_official_helpers(root / "src" / "LRAEP_helpers")
-            from miner_base.matrix_merkle_tree import MatrixMerkleTree
+            from S5_base.matrix_merkle_tree import MatrixMerkleTree
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         from LRAEP_trainer import native_cuda

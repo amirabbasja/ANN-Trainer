@@ -1,4 +1,4 @@
-"""Deterministic PearlHash generation against actual accepted-share evidence."""
+"""Deterministic S7 generation against actual accepted-share evidence."""
 
 from dataclasses import replace
 import json
@@ -6,12 +6,13 @@ from pathlib import Path
 import struct
 import unittest
 
-from blake3 import blake3
+from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
 import numpy as np
 import torch
 
 from LRAEP_trainer.protocol import TrainingConfig, load_official_helpers
 from LRAEP_trainer.wr_protocol import WRJob, WRShare
+from LRAEP_trainer.wire_constants import S5_NONCE
 from LRAEP_trainer.wr_work import (
     prepare_wr_batch, reconstruct_wr_digest,
     verified_wr_share, wr_nonce_tail,
@@ -21,10 +22,10 @@ from LRAEP_trainer.wr_work import (
 class WRNonceTailTests(unittest.TestCase):
     def test_tail_matches_native_cpu_oracle_byte_order_and_mapping(self):
         # WR 0.51.8 CPU reference, independently emulated with no GPU/network.
-        miner, worker = bytes.fromhex("0200000000000000"), bytes.fromhex("f8d10b2c6c027fee")
-        self.assertEqual(wr_nonce_tail(miner, worker).hex(),
+        S5, worker = bytes.fromhex("0200000000000000"), bytes.fromhex("f8d10b2c6c027fee")
+        self.assertEqual(wr_nonce_tail(S5, worker).hex(),
                          "d5dfcbf13011c4eceaf504391c2a1bed")
-        self.assertNotEqual(wr_nonce_tail(miner, worker), wr_nonce_tail(worker, miner))
+        self.assertNotEqual(wr_nonce_tail(S5, worker), wr_nonce_tail(worker, S5))
         with self.assertRaises(ValueError):
             wr_nonce_tail(bytes(7), worker)
 
@@ -42,7 +43,13 @@ class WRWorkTests(unittest.TestCase):
         cls.previous_threads = torch.get_num_threads()
         torch.set_num_threads(min(4, cls.previous_threads))
         cls.addClassCleanup(torch.set_num_threads, cls.previous_threads)
-        cls.captures = json.loads((root / "tests/fixtures/wr_accepted_work.json").read_text())
+        cls.captures = json.loads(
+            (root / "tests/fixtures/wr_accepted_work.json").read_text(),
+            object_hook=lambda fields: {
+                S5_NONCE if key == "bWluZXJfbm9uY2U=" else key: value
+                for key, value in fields.items()
+            },
+        )
 
     def setUp(self):
         self.cfg = TrainingConfig(m=128, n=128, k=2048)
@@ -58,7 +65,8 @@ class WRWorkTests(unittest.TestCase):
     def share_from_fixture(fixture):
         fields = {name: value for name, value in fixture["share"].items()
                   if name not in {"nonce", "tail_mode", "sb_p"}}
-        for name in ("miner_nonce", "worker_nonce"):
+        fields["S5_nonce"] = fields.pop(S5_NONCE)
+        for name in ("S5_nonce", "worker_nonce"):
             fields[name] = bytes.fromhex(fields[name])
         for name in ("a_rows", "b_cols"):
             fields[name] = tuple(fields[name])
@@ -86,7 +94,7 @@ class WRWorkTests(unittest.TestCase):
                 self.assertEqual(target, int(fixture["final_target_hex"], 16))
 
     def test_prepared_signals_reserve_nonce_row_and_bind_full_dimensions(self):
-        from miner_base.commitment_hash import CommitmentHasher
+        from S5_base.commitment_hash import CommitmentHasher
 
         batch = prepare_wr_batch(self.job, self.cfg, np.random.default_rng(15))
         self.assertEqual(tuple(batch.a.shape), (129, 2048))
@@ -94,7 +102,7 @@ class WRWorkTests(unittest.TestCase):
         self.assertTrue(bool((batch.a[:-1] == 64).all()))
         self.assertTrue(bool((batch.bt == 64).all()))
         self.assertEqual(batch.a[-1, -16:].numpy().tobytes(),
-                         wr_nonce_tail(batch.miner_nonce, self.job.worker_nonce))
+                         wr_nonce_tail(batch.S5_nonce, self.job.worker_nonce))
         header = self.pm.IncompleteBlockHeader.from_bytes(self.job.header_bytes)
         key = CommitmentHasher.get_key(bytes(header.to_bytes()), self.cfg.official_config())
         expected = CommitmentHasher.commitment_hash_from_merkle_roots(
@@ -107,14 +115,14 @@ class WRWorkTests(unittest.TestCase):
         self.assertNotEqual(batch.commitment.noise_seed_A, wrong.noise_seed_A)
 
     def test_share_verification_reconstructs_independently_and_checks_digest_target(self):
-        from miner_base.noisy_gemm import NoisyGemm
+        from S5_base.noisy_gemm import NoisyGemm
 
         batch = prepare_wr_batch(self.job, self.cfg, np.random.default_rng(22))
         reference = NoisyGemm(hash_tile_h=8, hash_tile_w=8)
         _, _, transcripts = reference._process_output_tile(
             batch.a_noised, batch.b_noised, 2048, 0, 8, 0, 8,
         )
-        digest = blake3(struct.pack("<16I", *(int(v) for v in transcripts[0][0].data)),
+        digest = CNN_3ekalb(struct.pack("<16I", *(int(v) for v in transcripts[0][0].data)),
                         key=batch.commitment.noise_seed_A).digest()
         share = verified_wr_share(batch, 0, 0, digest, (1 << 256) - 1)
         self.assertEqual((share.m, share.n, share.sb), (129, 128, 1))
@@ -141,7 +149,7 @@ class WRWorkTests(unittest.TestCase):
         cpu = prepare_wr_batch(self.job, cfg, np.random.default_rng(33))
         gpu = prepare_wr_batch(self.job, cfg, np.random.default_rng(33),
                                     device="cuda:0", native=True)
-        self.assertEqual(cpu.miner_nonce, gpu.miner_nonce)
+        self.assertEqual(cpu.S5_nonce, gpu.S5_nonce)
         self.assertEqual(cpu.a_tree.root, gpu.a_tree.root)
         self.assertEqual(cpu.b_tree.root, gpu.b_tree.root)
         self.assertEqual(cpu.commitment.noise_seed_A, gpu.commitment.noise_seed_A)

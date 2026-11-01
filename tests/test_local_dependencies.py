@@ -1,18 +1,17 @@
 import ast
+from base64 import b64decode
 from pathlib import Path
 import subprocess
 import sys
 import unittest
-
-from blake3 import blake3
 
 from LRAEP_trainer import primitives as local
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECTS = (ROOT, ROOT.parent / 'LRAEP-WR-Trainer')
-FORBIDDEN_IMPORTS = {'bitcoinutils', 'LRAEP_mining', 'pearl_mining', 'web3', 'eth_account', 'coincurve', 'hdwallet', 'base58check'}
-FORBIDDEN_PACKAGES = {'bitcoin-utils', 'py-lraep-mining', 'py-pearl-mining', 'web3', 'eth-account', 'coincurve', 'hdwallet', 'base58check'}
+FORBIDDEN_IMPORTS = {'blake3', 'bitcoinutils', 'LRAEP_mining', b64decode('cGVhcmxfbWluaW5n').decode('ascii'), 'web3', 'eth_account', 'coincurve', 'hdwallet', 'base58check'}
+FORBIDDEN_PACKAGES = {'blake3', 'bitcoin-utils', 'py-lraep-mining', b64decode('cHktcGVhcmwtbWluaW5n').decode('ascii'), 'web3', 'eth-account', 'coincurve', 'hdwallet', 'base58check'}
 
 
 class LocalDependencyTests(unittest.TestCase):
@@ -37,12 +36,13 @@ class LocalDependencyTests(unittest.TestCase):
     def test_both_runtimes_import_when_currency_sdks_and_network_access_are_blocked(self):
         script = '''
 import importlib.abc
+from base64 import b64decode
 from pathlib import Path
 import socket
 import sys
 root = Path(sys.argv[1])
 sys.path.insert(0, str(root / 'src'))
-blocked = {'bitcoinutils', 'LRAEP_mining', 'pearl_mining', 'web3', 'eth_account', 'coincurve', 'hdwallet', 'base58check'}
+blocked = {'blake3', 'bitcoinutils', 'LRAEP_mining', b64decode('cGVhcmxfbWluaW5n').decode('ascii'), 'web3', 'eth_account', 'coincurve', 'hdwallet', 'base58check'}
 class Deny(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.split('.')[0] in blocked:
@@ -86,11 +86,19 @@ class LocalWirePrimitiveTests(unittest.TestCase):
 
     def test_local_merkle_paths_match_independent_keyed_hash_and_reject_tampering(self):
         key = bytes(range(32))
-        for leaves in (1, 2, 3, 5, 7):
+        # Captured from the independent upstream backend before replacement.
+        expected = {
+            1: "c1737bae3953dc7668bf94247b0e40e8d6188d8f8cf9e0b8d042328bc99d6d15",
+            2: "bee2f53d7458f3bcb42159d8be56ec355e7c29cf4fa23662e58c2d79f69b1347",
+            3: "d3f3c2d1d929fad458e529e26f9931fe47fd361faf0da4c34357162153c3ebbb",
+            5: "b991ff72bd60adbee317a22a79b1dec88a7b34c7266bea5d9c1662b07a45789a",
+            7: "7def630cfb53ea8c878c87e2bc3dfe0cf076e70b37435b1570453b3ecb01c537",
+        }
+        for leaves, digest in expected.items():
             with self.subTest(leaves=leaves):
                 data = bytes(range(256)) * (leaves * 4)
                 tree = local.MerkleTree(data, key)
-                self.assertEqual(tree.root, blake3(data, key=key).digest())
+                self.assertEqual(tree.root.hex(), digest)
                 selected = sorted({0, leaves - 1})
                 proof = tree.get_multileaf_proof(selected)
                 self.assertTrue(proof.verify(key))

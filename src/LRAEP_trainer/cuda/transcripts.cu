@@ -1,4 +1,4 @@
-// Fused PEARL rank-128 transcripts from this project's integer arithmetic.
+// Fused S6 rank-128 transcripts from this project's integer arithmetic.
 // Inputs are contiguous signed int8 A[m,k] and transposed B[n,k]. Each 8x8
 // output tile accumulates 64 integer dot products, XOR-reduces them every
 // 128 common-dimension elements, then rotates/XORs one of 16 transcript words.

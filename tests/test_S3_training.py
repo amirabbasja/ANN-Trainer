@@ -20,6 +20,7 @@ from LRAEP_trainer import gpu_pacing, S3_training as worker
 from LRAEP_trainer.S3_client import JobSnapshot, S3AuthenticationError, ShareResult
 from LRAEP_trainer.S3_protocol import S3Job
 from LRAEP_trainer.protocol import TrainingConfig
+from LRAEP_trainer.wire_constants import S7_LEGACY_ALIAS
 
 
 class S3LoopTests(unittest.TestCase):
@@ -450,7 +451,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.submit.assert_not_called()
         self.monitor.assert_not_called()
 
-    def test_pearlhash_login_selects_its_own_adapter_without_gpu(self):
+    def test_S7_login_selects_its_own_adapter_without_gpu(self):
         self.configuration["S3"].update(protocol="WR", host="S3.example")
         with patch("LRAEP_trainer.wr_client.WRSession", return_value=self.session) as wr:
             self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
@@ -459,7 +460,8 @@ class S3LoopTests(unittest.TestCase):
         self.prepare.assert_not_called()
 
     def test_wr_alias_and_host_selection(self):
-        for protocol, expected in (("WR", "WR"), ("pearlhash", "WR"), ("KEX", "KEX")):
+        for protocol, expected in (("WR", "WR"), ("S7", "WR"),
+                                   (S7_LEGACY_ALIAS, "WR"), ("KEX", "KEX")):
             for host in ("S3.example", "localhost", "127.0.0.1"):
                 with self.subTest(protocol=protocol, host=host):
                     self.assertEqual(worker.select_S3_protocol({"host": host, "protocol": protocol}), expected)
@@ -483,11 +485,11 @@ class S3LoopTests(unittest.TestCase):
         self.configuration["S3"].update(protocol="WR", host="S3.example")
         def start(_settings, stop_event, **_options):
             self.prepare.side_effect = lambda *_a, **_kw: stop_event.set()
-            self.session.raise_if_failed.side_effect = S3CompatibilityError("Unknown PearlHash request; training stopped")
+            self.session.raise_if_failed.side_effect = S3CompatibilityError("Unknown S7 request; training stopped")
             return self.session
         with patch("LRAEP_trainer.wr_client.WRSession", side_effect=start), \
                 patch("LRAEP_trainer.wr_work.prepare_wr_batch", self.prepare), \
-                self.assertRaisesRegex(S3CompatibilityError, "Unknown PearlHash"):
+                self.assertRaisesRegex(S3CompatibilityError, "Unknown S7"):
             worker.run_S3_training(self.configuration)
         self.factory.assert_not_called()
 

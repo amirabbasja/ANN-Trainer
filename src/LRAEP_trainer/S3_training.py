@@ -1,4 +1,4 @@
-"""Our GPU training loop connected directly to a supported PEARL S3."""
+"""Our GPU training loop connected directly to a supported S6 S3."""
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -20,6 +20,7 @@ from .protocol import (TrainingConfig, load_official_helpers, S3_share_target,
 from .telemetry import GpuUtilization
 from .telegram import TelegramUpdates
 from . import native_cuda
+from .wire_constants import S7_LEGACY_ALIAS
 
 LOG = logging.getLogger("LRAEP_trainer")
 WR_REPORT_INTERVAL = 120.0
@@ -38,7 +39,7 @@ class S3TrainingStats:
 
 
 def S3_hashrate(stats: S3TrainingStats, cfg: TrainingConfig, elapsed: float) -> float:
-    """Return completed PEARL matrix work per second in raw S3 H/s units.
+    """Return completed S6 matrix work per second in raw S3 H/s units.
 
     At rank 128 each hash tile contributes tile_h * tile_w * k units to
     the target scaling. For our fully tiled matrices this is m * n * k
@@ -68,7 +69,7 @@ def select_S3_protocol(settings: dict) -> str:
     selected = settings.get("protocol", "KEX")
     if selected == "auto":
         raise ValueError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
-    if selected == "pearlhash":
+    if selected in ("S7", S7_LEGACY_ALIAS):
         selected = "WR"
     if selected not in ("KEX", "WR"):
         raise ValueError("S3.protocol must select KEX or WR")
@@ -79,7 +80,7 @@ def validate_S3_endpoint(settings: dict) -> None:
     """Require the user's endpoint before helper setup or any network activity."""
     host = settings.get("host", "")
     if not isinstance(host, str) or not host.strip():
-        profile = "WR" if settings.get("protocol") in ("WR", "pearlhash") else "KEX"
+        profile = "WR" if settings.get("protocol") in ("WR", "S7", S7_LEGACY_ALIAS) else "KEX"
         raise ValueError(
             f"fill S3.host for a flat configuration, or S3.{profile}.host in the shared configuration, "
             "with your S3 hostname or IP address"
@@ -108,7 +109,7 @@ def validate_S3_identity(settings: dict, selected_protocol: str | None = None, *
         try:
             get_script_pubkey_from_p2tr_address(identity)
         except ValueError:
-            raise ValueError(f"S3.{identity_field} must contain a valid PEARL Taproot address") from None
+            raise ValueError(f"S3.{identity_field} must contain a valid S6 Taproot address") from None
 
 
 @contextmanager
@@ -261,7 +262,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         def report_gpu(session, sample_time):
             rate = S3_hashrate(stats, cfg, sample_time - started)
             request_id = session.report_info(gpu_name, rate)
-            log(logging.DEBUG, "PearlHash GPU report sent: %s (request=%d)",
+            log(logging.DEBUG, "S7 GPU report sent: %s (request=%d)",
                 format_hashrate(rate), request_id)
 
         update_progress(force=True)
@@ -312,7 +313,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                         job = snapshot.job
                         if snapshot.generation != previous_generation:
                             if selected_protocol == "WR":
-                                log(logging.INFO, "PearlHash job=%s generation=%d", job.job_id, job.cert_version)
+                                log(logging.INFO, "S7 job=%s generation=%d", job.job_id, job.cert_version)
                             else:
                                 log(logging.INFO, "S3 job=%s height=%d certificate=V%d",
                                     job.job_id, job.height, job.cert_version)

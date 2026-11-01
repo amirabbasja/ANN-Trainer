@@ -94,7 +94,7 @@ class SideJobConfigTests(unittest.TestCase):
                 self.load({field: value})
             self.assertNotIn("PRIVATE_NUMBER", str(caught.exception))
 
-    def test_side_job_vpn_validation_does_not_borrow_miner_link(self):
+    def test_side_job_vpn_validation_does_not_borrow_S5_link(self):
         invalid = ({"enabled": True}, {"enabled": 1}, {"link": "https://PRIVATE_VPN"},
                    {"startup_timeout": 0}, {"startup_timeout": 61}, {"core_path": 17})
         for vpn in invalid:

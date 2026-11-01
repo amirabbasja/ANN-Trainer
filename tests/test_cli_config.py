@@ -73,9 +73,9 @@ class ConfigDispatchTests(unittest.TestCase):
             vpn.assert_not_called()
             helpers.assert_not_called()
 
-    def test_pearlhash_requires_identity_before_network(self):
+    def test_S7_requires_identity_before_network(self):
         self.settings["S3"]["host"] = "S3.example"
-        self.settings["S3"]["protocol"] = "pearlhash"
+        self.settings["S3"]["protocol"] = "S7"
         self.write_config()
         with patch("LRAEP_trainer.S3_transport.S3Transport") as transport, \
                 self.assertLogs(cli.LOG, level="ERROR") as messages:
@@ -95,7 +95,7 @@ class ConfigDispatchTests(unittest.TestCase):
                         patch("LRAEP_trainer.vpn.ManagedVPN") as vpn, \
                         patch.object(cli, "load_official_helpers") as helpers, \
                         self.assertLogs(cli.LOG, level="ERROR") as messages:
-                    self.assertEqual(cli.main(["--config", str(self.file), command, "--miner", selected]), 1)
+                    self.assertEqual(cli.main(["--config", str(self.file), command, "--S5", selected]), 1)
                 output = " ".join(messages.output)
                 self.assertIn(f"fill S3.{required}", output)
                 self.assertNotIn("PRIVATE_OTHER_S3_IDENTITY", output)
@@ -103,16 +103,16 @@ class ConfigDispatchTests(unittest.TestCase):
                 vpn.assert_not_called()
                 helpers.assert_not_called()
 
-    def test_miner_selection_overrides_adapter_and_preserves_endpoint(self):
+    def test_S5_selection_overrides_adapter_and_preserves_endpoint(self):
         self.settings["S3"].update(host="S3.example", port=9000,
                                      KEX_uname="test-kex-account", WR_S2="test-wr-address")
         self.write_config()
-        for miner in ("KEX", "WR"):
-            for arguments in (["S3", "--miner", miner], ["--miner", miner, "S3"]):
+        for S5 in ("KEX", "WR"):
+            for arguments in (["S3", "--S5", S5], ["--S5", S5, "S3"]):
                 with self.subTest(arguments=arguments), patch.object(cli, "S3_train", return_value=0) as train:
                     self.assertEqual(cli.main(["--config", str(self.file), *arguments]), 0)
                     effective = train.call_args.args[0]["S3"]
-                    self.assertEqual(effective["protocol"], miner)
+                    self.assertEqual(effective["protocol"], S5)
                     self.assertEqual(effective["host"], "S3.example")
                     self.assertEqual(effective["port"], 9000)
 
@@ -123,21 +123,21 @@ class ConfigDispatchTests(unittest.TestCase):
             WR={"host": "wr.example", "port": 9000, "tls": False, "certificate_version": 3},
         )
 
-    def test_one_unchanged_config_selects_each_miners_endpoint_and_identity(self):
+    def test_one_unchanged_config_selects_each_S5s_endpoint_and_identity(self):
         self.add_profiles()
         self.settings["S3"]["host"] = "stale-shared.example"
         self.write_config()
         original = self.file.read_bytes()
-        for miner, host, port, tls in (("WR", "wr.example", 9000, False),
+        for S5, host, port, tls in (("WR", "wr.example", 9000, False),
                                        ("KEX", "kex.example", 8048, True)):
-            for arguments in (["--miner", miner, "S3"], ["S3", "--miner", miner]):
+            for arguments in (["--S5", S5, "S3"], ["S3", "--S5", S5]):
                 with self.subTest(arguments=arguments), \
                         patch.object(cli, "S3_train", return_value=0) as train:
                     self.assertEqual(cli.main(["--config", str(self.file), *arguments]), 0)
                 effective = train.call_args.args[0]
                 self.assertEqual((effective["S3"]["protocol"], effective["S3"]["host"],
                                   effective["S3"]["port"], effective["S3"]["tls"]),
-                                 (miner, host, port, tls))
+                                 (S5, host, port, tls))
                 self.assertEqual(effective["S3"]["worker"], "shared-worker")
                 self.assertEqual(effective["S3"]["WR_S2"], "test-wr-address")
                 self.assertEqual(effective["S3"]["KEX_uname"], "test-kex-account")
@@ -158,7 +158,7 @@ class ConfigDispatchTests(unittest.TestCase):
                     patch("LRAEP_trainer.S3_transport.S3Transport") as transport, \
                     patch.object(cli, "load_official_helpers") as helpers, \
                     self.assertLogs(cli.LOG, level="ERROR"):
-                self.assertEqual(cli.main(["--config", str(self.file), "--miner", "WR", command]), 1)
+                self.assertEqual(cli.main(["--config", str(self.file), "--S5", "WR", command]), 1)
             vpn.assert_not_called()
             transport.assert_not_called()
             helpers.assert_not_called()
@@ -180,7 +180,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.write_config()
         with patch.object(cli, "default_config_path", return_value=self.file), \
                 patch.object(cli, "S3_train", return_value=0) as train:
-            self.assertEqual(cli.main(["--miner", "WR"]), 0)
+            self.assertEqual(cli.main(["--S5", "WR"]), 0)
         self.assertEqual(train.call_args.args[0]["S3"]["protocol"], "WR")
         self.assertEqual(train.call_args.args[0]["S3"]["host"], "wr.example")
 
@@ -204,7 +204,7 @@ class ConfigDispatchTests(unittest.TestCase):
                 patch.object(cli, "S3_train") as train, \
                 patch("LRAEP_trainer.vpn.ManagedVPN") as vpn, \
                 self.assertLogs(cli.LOG, level="ERROR"):
-            self.assertEqual(cli.main(["--miner", "WR", "S3"]), 1)
+            self.assertEqual(cli.main(["--S5", "WR", "S3"]), 1)
         train.assert_not_called()
         vpn.assert_not_called()
 
@@ -368,10 +368,10 @@ class DirectRuntimeProfileTests(unittest.TestCase):
         native = ModuleType("LRAEP_trainer.primitives")
         native.IncompleteBlockHeader = SimpleNamespace(from_bytes=MagicMock())
         before = copy.deepcopy(self.configuration)
-        for miner, target, host in (("WR", "LRAEP_trainer.wr_client.WRSession", "wr.example"),
+        for S5, target, host in (("WR", "LRAEP_trainer.wr_client.WRSession", "wr.example"),
                                      ("KEX", "LRAEP_trainer.S3_client.S3Session", "kex.example")):
-            self.configuration["S3"]["protocol"] = miner
-            with self.subTest(miner=miner), \
+            self.configuration["S3"]["protocol"] = S5
+            with self.subTest(S5=S5), \
                     patch.object(worker, "load_official_helpers"), \
                     patch.object(worker, "S3_share_target", return_value=1), \
                     patch.dict(sys.modules, {"LRAEP_trainer.primitives": native}), \
@@ -379,7 +379,7 @@ class DirectRuntimeProfileTests(unittest.TestCase):
                     patch(target, return_value=session) as factory:
                 self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
             resolved = factory.call_args.args[0]
-            self.assertEqual(resolved["protocol"], miner)
+            self.assertEqual(resolved["protocol"], S5)
             self.assertEqual(resolved["host"], host)
             self.assertEqual(resolved["worker"], "shared-worker")
             self.assertNotIn("WR", resolved)

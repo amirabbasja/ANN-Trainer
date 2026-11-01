@@ -1,6 +1,6 @@
-"""Custom PyTorch GPU transcript search, derived from PEARL's reference math.
+"""Custom PyTorch GPU transcript search, derived from S6's reference math.
 
-Reference: official miner/miner-base/src/miner_base/noisy_gemm.py and
+Reference: official S5/S5-base/src/S5_base/noisy_gemm.py and
 zk-pow/src/ffi/mine.rs, revision 0798903bced203de8cfcb49441f44fd9b51b18eb.
 The GPU performs the matrix arithmetic and transcript accumulation; callers
 check the resulting 64-byte messages with keyed BLAKE3.
@@ -185,7 +185,7 @@ def gpu_transcripts(
     device: str | torch.device = "cuda:0",
     cancelled: Callable[[], bool] = lambda: False,
 ) -> np.ndarray:
-    """Compute PEARL transcripts for every contiguous output tile.
+    """Compute S6 transcripts for every contiguous output tile.
 
     ``a_noised`` has shape [m, k] and ``b_noised`` has shape [k, n].
     Inputs must be int8. The rank is fixed at 128 and k must be a positive
@@ -197,7 +197,7 @@ def gpu_transcripts(
     2**24. Each slab is converted to int32 *before* cumulative addition.
     Products are batched in bounded chunks, accumulated by integer cumsum,
     and XOR-reduced across all slabs in each chunk together. This preserves
-    PEARL's integer arithmetic while avoiding a Python launch sequence for
+    S6's integer arithmetic while avoiding a Python launch sequence for
     every slab, including on the GTX 1650 without int32 matrix multiplication.
     """
     a = _as_int8_tensor(a_noised, "a_noised")

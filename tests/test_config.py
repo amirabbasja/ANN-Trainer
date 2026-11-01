@@ -8,6 +8,7 @@ import unittest
 
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config
 from LRAEP_trainer.paths import artifacts_dir
+from LRAEP_trainer.wire_constants import S7_LEGACY_ALIAS
 
 
 class ConfigTests(unittest.TestCase):
@@ -158,8 +159,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["S3"]["KEX_uname"], "my-account")
         self.assertEqual(result["S3"]["WR_S2"], "my-wr-address")
         self.assertEqual(result["S3"]["password"], "d=2097152")
-        self.assertEqual(self.load({"version": 1, "S3": {"protocol": "pearlhash"}})["S3"]["protocol"], "WR")
-        self.assertEqual(self.load({"version": 1, "S3": {"protocol": "WR"}})["S3"]["protocol"], "WR")
+        for protocol in ("S7", "WR", S7_LEGACY_ALIAS):
+            with self.subTest(protocol=protocol):
+                self.assertEqual(self.load({"version": 1, "S3": {"protocol": protocol}})["S3"]["protocol"], "WR")
 
     def test_S3_identity_fields_are_separate_and_case_sensitive(self):
         for protocol in ("KEX", "WR"):

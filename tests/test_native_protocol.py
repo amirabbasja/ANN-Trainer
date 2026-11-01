@@ -4,7 +4,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from blake3 import blake3
+try:
+    from blake3 import blake3 as reference_blake3
+except ImportError:
+    reference_blake3 = None
 import numpy as np
 import torch
 
@@ -20,9 +23,9 @@ class NativeProtocolTests(unittest.TestCase):
         try:
             protocol.load_official_helpers(root / "src" / "LRAEP_helpers")
             from LRAEP_trainer import primitives as pm
-            from miner_base.commitment_hash import CommitmentHasher
-            from miner_base.matrix_merkle_tree import MatrixMerkleTree
-            from miner_base.noise_generation import NoiseGenerator
+            from S5_base.commitment_hash import CommitmentHasher
+            from S5_base.matrix_merkle_tree import MatrixMerkleTree
+            from S5_base.noise_generation import NoiseGenerator
         except (ImportError, RuntimeError) as exc:
             raise unittest.SkipTest(f"official helper unavailable: {exc}") from None
         from LRAEP_trainer import native_cuda
@@ -57,10 +60,12 @@ class NativeProtocolTests(unittest.TestCase):
 
     @staticmethod
     def python_matches(transcripts, key, target):
+        if reference_blake3 is None:
+            raise unittest.SkipTest("optional independent hash reference unavailable")
         matches = []
         for row in range(transcripts.shape[0]):
             for col in range(transcripts.shape[1]):
-                digest = blake3(transcripts[row, col].astype("<u4").tobytes(), key=key).digest()
+                digest = reference_blake3(transcripts[row, col].astype("<u4").tobytes(), key=key).digest()
                 if int.from_bytes(digest, "little") <= target:
                     matches.append((row, col, digest))
         return matches
@@ -113,7 +118,7 @@ class NativeProtocolTests(unittest.TestCase):
         maximum_target = (1 << 256) - 1
         for version in (1, 2, 3):
             with self.subTest(certificate_version=version):
-                with patch("miner_base.matrix_merkle_tree.MatrixMerkleTree",
+                with patch("S5_base.matrix_merkle_tree.MatrixMerkleTree",
                            wraps=self.tree_type) as construct:
                     batch = self.prepare(version, seed=117 + version)
                     matches = list(protocol.search_batch(batch, maximum_target, "cuda:0"))

@@ -1,4 +1,4 @@
-"""Command line entry point for the LRAEP GPU miner."""
+"""Command line entry point for the LRAEP GPU S5."""
 
 import argparse
 from contextlib import ExitStack, contextmanager
@@ -88,7 +88,7 @@ def require_cuda(device: str) -> None:
 def self_test(args) -> int:
     """Exercise all supported certificate versions without contacting a network."""
     from LRAEP_trainer import primitives as pm
-    from miner_base.noisy_gemm import NoisyGemm
+    from S5_base.noisy_gemm import NoisyGemm
 
     require_cuda(args.device)
     cfg = TrainingConfig(m=128, n=128)
@@ -163,7 +163,7 @@ def train(args) -> int:
                 return 0
             require_cuda(args.device)
             if not args.address:
-                raise ValueError("set LRAEP_TRAINING_ADDRESS or provide --address (a PEARL Taproot payout address)")
+                raise ValueError("set LRAEP_TRAINING_ADDRESS or provide --address (a S6 Taproot payout address)")
             username = getattr(args, "rpc_username", os.environ.get("LRAEPD_RPC_USER", ""))
             password = getattr(args, "rpc_password", os.environ.get("LRAEPD_RPC_PASSWORD", ""))
             if not username or not password:
@@ -476,7 +476,7 @@ def _execute(args, configuration):
         from .vpn_check import run_vpn_check
 
         settings = configuration if configuration is not None else copy.deepcopy(DEFAULT_CONFIG)
-        settings = dict(settings, S3=resolve_S3_settings(settings["S3"], getattr(args, "miner", None)))
+        settings = dict(settings, S3=resolve_S3_settings(settings["S3"], getattr(args, "S5", None)))
         links = args.links if args.links is not None else settings["vpn"]["links_file"]
         return run_vpn_check(settings, links, timeout=args.timeout,
                              attempts=args.attempts, output=args.output)
@@ -486,7 +486,7 @@ def _execute(args, configuration):
         from .config import resolve_S3_settings
         from .S3_training import validate_S3_endpoint, validate_S3_identity
 
-        S3_settings = resolve_S3_settings(configuration["S3"], getattr(args, "miner", None))
+        S3_settings = resolve_S3_settings(configuration["S3"], getattr(args, "S5", None))
         configuration = dict(configuration, S3=S3_settings)
         validate_S3_endpoint(S3_settings)
         if args.command != "S3-check":
@@ -518,16 +518,16 @@ def _execute(args, configuration):
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="LRAEP GPU miner for the PRL network")
+    parser = argparse.ArgumentParser(description="LRAEP GPU S5 for the PRL network")
     parser.add_argument("--config", help="plain JSON configuration; defaults to the application config.json")
     parser.add_argument("--official-source", default=argparse.SUPPRESS)
     parser.add_argument("--device", default=argparse.SUPPRESS)
-    parser.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+    parser.add_argument("--S5", choices=("KEX", "WR"), default=argparse.SUPPRESS,
                         help="select KEX or WR and its connection settings from the shared configuration")
     commands = parser.add_subparsers(dest="command")
     check = commands.add_parser("self-test", help="compare GPU math and official proof verification offline")
     check.add_argument("--zk", action="store_true", help="also generate and verify a V3 ZK certificate")
-    run = commands.add_parser("train", help="train against your PEARL node and submit certified results")
+    run = commands.add_parser("train", help="train against your S6 node and submit certified results")
     run.add_argument("--address", default=argparse.SUPPRESS)
     run.add_argument("--rpc-url", default=argparse.SUPPRESS)
     run.add_argument("--rpc-ca", default=argparse.SUPPRESS)
@@ -537,16 +537,16 @@ def main(argv=None) -> int:
     _add_training_arguments(run)
     run.add_argument("--no-submit", action="store_true", help="save certified blocks locally")
     for name, help_text in (
-        ("S3", "train directly against a supported PEARL S3"),
+        ("S3", "train directly against a supported S6 S3"),
         ("S3-check", "check TCP/TLS transport from --config without sending a login"),
         ("S3-login-check", "authenticate and receive one S3 job without GPU work"),
     ):
         command = commands.add_parser(name, help=help_text)
-        command.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+        command.add_argument("--S5", choices=("KEX", "WR"), default=argparse.SUPPRESS,
                              help="select KEX or WR and its connection settings from the shared configuration")
     vpn = commands.add_parser("vpn-check", help="test V2Ray links through their tunnels without S1")
-    vpn.add_argument("--miner", choices=("KEX", "WR"), default=argparse.SUPPRESS,
-                     help="test the selected miner's S3 connection settings")
+    vpn.add_argument("--S5", choices=("KEX", "WR"), default=argparse.SUPPRESS,
+                     help="test the selected S5's S3 connection settings")
     vpn.add_argument("--links", help="one V2Ray link per line; defaults to vpn.links_file or links.txt")
     vpn.add_argument("--attempts", type=int, default=3, help="S3 connectivity attempts per link (1–20)")
     vpn.add_argument("--timeout", type=float, default=5, help="seconds per connection attempt (up to 60)")

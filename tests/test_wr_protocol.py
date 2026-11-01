@@ -1,4 +1,4 @@
-"""Independent capture vectors and conservative PearlHash schema validation."""
+"""Independent capture vectors and conservative S7 schema validation."""
 
 from dataclasses import replace
 import json
@@ -7,9 +7,10 @@ from pathlib import Path
 import sys
 import unittest
 
-from LRAEP_trainer import pearl_codec
-from LRAEP_trainer.pearl_requests import build_submit_request
+from LRAEP_trainer import S6_codec
+from LRAEP_trainer.S6_requests import build_submit_request
 from LRAEP_trainer.S3_protocol import S3ProtocolError
+from LRAEP_trainer.wire_constants import S5_NONCE
 from LRAEP_trainer.wr_protocol import (
     UnknownWRRequest, WRDialect, WRShare,
 )
@@ -19,31 +20,37 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def fixtures(name):
-    return json.loads((FIXTURES / ("wr_" + name + ".json")).read_text())
+    return json.loads(
+        (FIXTURES / ("wr_" + name + ".json")).read_text(),
+        object_hook=lambda fields: {
+            S5_NONCE if key == "bWluZXJfbm9uY2U=" else key: value
+            for key, value in fields.items()
+        },
+    )
 
 
 def job_result():
-    return next(frame["message"]["result"] for frame in fixtures("pearl_codec_frames")
+    return next(frame["message"]["result"] for frame in fixtures("S6_codec_frames")
                 if isinstance(frame["message"].get("result"), list)
                 and frame["message"]["result"][0] == "notify")
 
 
 def compact_share(job):
     return WRShare(
-        miner_nonce=bytes(8), worker_nonce=job.worker_nonce, m=16, n=16, k=64,
+        S5_nonce=bytes(8), worker_nonce=job.worker_nonce, m=16, n=16, k=64,
         rank=128, tile_h=8, tile_w=8, a_rows=tuple(range(8)), b_cols=tuple(range(8)),
     )
 
 
 class WRCodecTests(unittest.TestCase):
     def test_real_capture_plaintext_and_wire_are_exact(self):
-        for frame in fixtures("pearl_codec_frames"):
+        for frame in fixtures("S6_codec_frames"):
             with self.subTest(line=frame["source_line"], direction=frame["direction"]):
                 payload = bytes.fromhex(frame["plaintext_hex"])
-                self.assertEqual(pearl_codec.decode_payload(frame["wire"]), payload)
-                self.assertEqual(pearl_codec.decode_frame(frame["wire"]), frame["message"])
+                self.assertEqual(S6_codec.decode_payload(frame["wire"]), payload)
+                self.assertEqual(S6_codec.decode_frame(frame["wire"]), frame["message"])
                 self.assertEqual(
-                    pearl_codec.encode_payload(payload, bytes.fromhex(frame["wire"][:8])),
+                    S6_codec.encode_payload(payload, bytes.fromhex(frame["wire"][:8])),
                     frame["wire"].encode() + b"\n",
                 )
 
@@ -52,29 +59,30 @@ class WRCodecTests(unittest.TestCase):
             "8c687a466f88f5b34ebc16bdf575c532aad832fa3fe03e3fda0ffd0bb8c25a66"
             "ce0eb4aa068c0a1c2a66db7c3daaa0c9"
         )
-        self.assertEqual(pearl_codec.derive_key(0x74F4785A), expected)
-        self.assertEqual(pearl_codec.derive_key(bytes.fromhex("74f4785a")), expected)
-        self.assertEqual(pearl_codec.derive_key(0), bytes(48))
+        self.assertEqual(S6_codec.derive_key(0x74F4785A), expected)
+        self.assertEqual(S6_codec.derive_key(bytes.fromhex("74f4785a")), expected)
+        self.assertEqual(S6_codec.derive_key(0), bytes(48))
 
     def test_malformed_frames_and_ambiguous_json_fail(self):
         for payload in [b'{"id":1,"id":2}', b'[]', b'{"n":NaN}', b'{"s":"\xff"}',
                         b'{"id":' + b'1' * 5000 + b'}']:
-            with self.subTest(payload=payload), self.assertRaises(pearl_codec.CodecError):
-                pearl_codec.decode_frame(pearl_codec.encode_payload(payload, 0))
+            with self.subTest(payload=payload), self.assertRaises(S6_codec.CodecError):
+                S6_codec.decode_frame(S6_codec.encode_payload(payload, 0))
         for frame in [b"", b"00000000", b"00000000f", b"00000000gg", b"0000 00007b7d"]:
-            with self.subTest(frame=frame), self.assertRaises(pearl_codec.CodecError):
-                pearl_codec.decode_frame(frame)
+            with self.subTest(frame=frame), self.assertRaises(S6_codec.CodecError):
+                S6_codec.decode_frame(frame)
 
     def test_three_accepted_share_requests_reproduce_exact_wire(self):
         for fixture in fixtures("accepted_S3_shares"):
             request = fixture["request"]
             fields = {key: value for key, value in request["params"][0].items()
                       if key not in {"nonce", "tail_mode", "sb_p"}}
+            fields["S5_nonce"] = fields.pop(S5_NONCE)
             built = build_submit_request(request["id"], **fields)
             self.assertEqual(built, request)
-            self.assertEqual(pearl_codec.encode_frame(built, bytes.fromhex(fixture["request_wire"][:8])),
+            self.assertEqual(S6_codec.encode_frame(built, bytes.fromhex(fixture["request_wire"][:8])),
                              fixture["request_wire"].encode() + b"\n")
-            reply = pearl_codec.decode_frame(fixture["response_wire"])
+            reply = S6_codec.decode_frame(fixture["response_wire"])
             self.assertEqual(reply, fixture["response"])
             self.assertTrue(WRDialect.accept(reply))
 
@@ -94,7 +102,7 @@ class WRProtocolTests(unittest.TestCase):
                 WRDialect(WR_S2=value, worker="test-worker")
 
     def test_gpu_reports_match_recorded_raw_rates_and_device_names(self):
-        reports = [frame for frame in fixtures("pearl_codec_frames")
+        reports = [frame for frame in fixtures("S6_codec_frames")
                    if frame["message"].get("method") == "report_info"]
         self.assertEqual(len(reports), 8)
         for frame in reports:
@@ -103,7 +111,7 @@ class WRProtocolTests(unittest.TestCase):
             with self.subTest(request_id=captured["id"]):
                 report = self.dialect.report_request(device["name"], device["hashrate"], captured["id"])
                 self.assertEqual(report, captured)
-                self.assertEqual(report, pearl_codec.decode_frame(frame["wire"]))
+                self.assertEqual(report, S6_codec.decode_frame(frame["wire"]))
                 self.assertEqual(list(report["params"][0]), ["hashrate", "name"])
                 self.assertIsInstance(report["params"][0]["hashrate"], float)
                 self.assertEqual(report["params"][0]["name"], "NVIDIA GeForce GTX 1660 SUPER ")
@@ -134,7 +142,7 @@ class WRProtocolTests(unittest.TestCase):
                 self.dialect.report_request("GPU", 1.0, request_id)
 
     def test_three_recorded_jobs_recover_native_verified_headers(self):
-        for fixture in fixtures("pearl_jobs"):
+        for fixture in fixtures("S6_jobs"):
             result = list(job_result())
             result[1] = fixture["notify_payload_hex"]
             job = self.dialect.parse_job(result, worker_nonce=bytes.fromhex("19df092c6c027fee"))
@@ -178,7 +186,7 @@ class WRProtocolTests(unittest.TestCase):
         request = self.dialect.submit_request(job, share, 7)
         self.assertEqual(request["method"], "submit")
         self.assertEqual(request["params"][0]["worker_nonce"], job.worker_nonce.hex())
-        self.assertEqual(request["params"][0]["miner_nonce"], "00" * 8)
+        self.assertEqual(request["params"][0][S5_NONCE], "00" * 8)
         self.assertNotIn("plain_proof", request["params"][0])
         for incompatible in [replace(share, worker_nonce=b"x" * 8), "base64-proof"]:
             with self.assertRaises(S3ProtocolError):

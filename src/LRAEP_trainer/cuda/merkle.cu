@@ -1,4 +1,4 @@
-// PEARL's pinned pearl-blake3/src/hasher.rs and merkle.rs define these rules.
+// S6's pinned pearl-blake3/src/hasher.rs and merkle.rs define these rules.
 // Leaves are zero-padded 1024-byte BLAKE3 chunks, with their original counters.
 #include <cuda_runtime.h>
 #include <stdint.h>

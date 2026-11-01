@@ -250,7 +250,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         before = self.path.read_bytes()
         with patch.object(cli, "S3_train", return_value=0) as train, \
                 patch.object(cli, "load_official_helpers") as helpers:
-            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--miner", "KEX"]), 0)
+            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--S5", "KEX"]), 0)
         effective = train.call_args.args[0]
         self.assertEqual(effective["S3"]["host"], "kex.example")
         self.assertEqual(effective["S3"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
@@ -264,7 +264,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.key_path.write_text(self.key + "\n")
         before = self.path.read_bytes()
         with patch.object(cli, "S3_train", return_value=0) as train:
-            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--miner", "KEX"]), 0)
+            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--S5", "KEX"]), 0)
         self.assertEqual(train.call_args.args[0]["S3"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
         self.assertEqual(self.path.read_bytes(), before)
 

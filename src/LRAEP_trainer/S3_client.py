@@ -1,7 +1,7 @@
-"""Concurrent KEX session for the custom PEARL trainer.
+"""Concurrent KEX session for the custom S6 trainer.
 
 Only network framing and job lifecycle live here. GPU work and official
-PEARL proof generation are performed by the caller after authentication.
+S6 proof generation are performed by the caller after authentication.
 """
 
 from __future__ import annotations

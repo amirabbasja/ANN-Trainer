@@ -29,7 +29,7 @@ class WRWireProbeTests(unittest.TestCase):
 
     def test_keyed_login_and_long_fields(self):
         output = io.StringIO()
-        inspector = Inspector(Events(output), 1, "miner -> S3", {},
+        inspector = Inspector(Events(output), 1, "S5 -> S3", {},
                               threading.Lock(), field_limit=5)
         inspector.feed(b'{"method":"login","params":{"id":"S2.worker","password":"x","mode":1}}\n')
         record = json.loads(output.getvalue())
@@ -40,7 +40,7 @@ class WRWireProbeTests(unittest.TestCase):
     def test_partial_lines_and_unrecognized_bytes(self):
         output = io.StringIO()
         pending = {}
-        inspector = Inspector(Events(output), 1, "miner -> S3", pending,
+        inspector = Inspector(Events(output), 1, "S5 -> S3", pending,
                               threading.Lock())
         inspector.feed(b'{"id":1,"method":"mining.author')
         self.assertEqual(output.getvalue(), "")
@@ -111,16 +111,16 @@ class WRWireProbeTests(unittest.TestCase):
                                                  kwargs={"poll_interval": 0.01})
                 server_thread.start()
                 try:
-                    with socket.create_connection(relay.server_address, timeout=5) as miner:
-                        miner.settimeout(5)
-                        with miner.makefile("rb") as reader:
+                    with socket.create_connection(relay.server_address, timeout=5) as S5:
+                        S5.settimeout(5)
+                        with S5.makefile("rb") as reader:
                             login = b'{"id":1,"method":"mining.authorize","params":["S2.worker","x"]}\n'
                             share = b'{"id":2,"method":"mining.submit","params":["S2.worker","job-17","nonce"]}\n'
-                            miner.sendall(login)
+                            S5.sendall(login)
                             self.assertEqual(json.loads(reader.readline())["result"], True)
                             self.assertEqual(json.loads(reader.readline())["method"],
                                              "mining.notify")
-                            miner.sendall(share)
+                            S5.sendall(share)
                             self.assertEqual(json.loads(reader.readline())["result"], True)
                 finally:
                     relay.shutdown()

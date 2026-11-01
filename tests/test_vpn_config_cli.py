@@ -186,7 +186,7 @@ class VPNCommandTests(unittest.TestCase):
         self.assertEqual(operation.call_args.args[1], str(self.directory / "private/links.txt"))
         self.assertEqual(operation.call_args.kwargs, {"timeout": 5, "attempts": 3, "output": None})
 
-    def test_vpn_check_miner_flag_selects_profile_from_same_config_in_both_positions(self):
+    def test_vpn_check_S5_flag_selects_profile_from_same_config_in_both_positions(self):
         self.settings["S3"].update(
             protocol="KEX", WR_S2="wr-only-S2", KEX_uname="kex-only-name",
             KEX={"host": "kex.example", "port": 8048, "tls": True, "ca_file": None},
@@ -194,7 +194,7 @@ class VPNCommandTests(unittest.TestCase):
         )
         self.write()
         original = self.path.read_text()
-        for command in (["--miner", "WR", "vpn-check"], ["vpn-check", "--miner", "WR"]):
+        for command in (["--S5", "WR", "vpn-check"], ["vpn-check", "--S5", "WR"]):
             with self.subTest(command=command), \
                  patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
                  patch("LRAEP_trainer.vpn_check.run_vpn_check", return_value=0) as operation:
@@ -221,7 +221,7 @@ class VPNCommandTests(unittest.TestCase):
         with patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
              patch("LRAEP_trainer.vpn_check._probe_S3") as S3, \
              self.assertLogs(cli.LOG, level="ERROR") as logs:
-            self.assertEqual(cli.main(self.arguments(["vpn-check", "--miner", "WR"])), 1)
+            self.assertEqual(cli.main(self.arguments(["vpn-check", "--S5", "WR"])), 1)
         core.assert_not_called()
         S3.assert_not_called()
         self.assertIn("host", " ".join(logs.output))

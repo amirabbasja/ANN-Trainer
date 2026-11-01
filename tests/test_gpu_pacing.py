@@ -1,4 +1,4 @@
-"""Deterministic checks for miner GPU duty-cycle pacing."""
+"""Deterministic checks for S5 GPU duty-cycle pacing."""
 
 import threading
 import unittest

@@ -34,7 +34,7 @@ class UnknownRequestRecorder:
         now = datetime.now(timezone.utc)
         record = {
             "time_utc": now.isoformat(timespec="milliseconds"),
-            "event": "unknown-S3-request", "direction": "S3-to-miner",
+            "event": "unknown-S3-request", "direction": "S3-to-S5",
             "S3": {"host": self.host, "port": self.port, "tls": self.tls},
             "reason": reason, "raw_frame_hex": bytes(frame).hex(),
             "decoded_message": message, "training_stopped": fatal,
@@ -53,11 +53,11 @@ class UnknownRequestRecorder:
                     os.fsync(stream.fileno())
                 self.last_path = path
         except (OSError, ValueError, TypeError):
-            LOG.critical("Unrecognized PearlHash request; training stopped. Could not save its diagnostic record to %s",
+            LOG.critical("Unrecognized S7 request; training stopped. Could not save its diagnostic record to %s",
                          self.directory)
-            raise RuntimeError("Could not save the unknown PearlHash request; training stopped") from None
+            raise RuntimeError("Could not save the unknown S7 request; training stopped") from None
         LOG.log(logging.CRITICAL if fatal else logging.WARNING,
-                "Unrecognized PearlHash request; %s. Evidence saved to %s",
+                "Unrecognized S7 request; %s. Evidence saved to %s",
                 "training stopped" if fatal else "request recorded", path)
         if fatal and sys.stderr.isatty():
             sys.stderr.write("\a")

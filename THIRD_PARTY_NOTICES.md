@@ -1,14 +1,14 @@
 # LRAEP third-party notices
 
-LRAEP bundles a required subset of official PEARL Python helpers, its native
+LRAEP bundles a required subset of official S6 Python helpers, its native
 proof binding, and the Rust sources needed to rebuild that binding. The custom
-CUDA arithmetic also follows official PEARL reference helper files at commit
+CUDA arithmetic also follows official S6 reference helper files at commit
 `0798903bced203de8cfcb49441f44fd9b51b18eb`. Renamed modules and build paths do
 not change the original authorship of those helpers.
 
 The vendored source is under `src/LRAEP_helpers`. Its README, source provenance
 records, checksum manifest, and license files describe the included subset.
-The PEARL ISC license notice is retained below and in
+The S6 ISC license notice is retained below and in
 `src/LRAEP_helpers/LICENSE`. The bundled Plonky2 dependency retains its
 MIT/Apache-2.0 license files under `src/LRAEP_helpers/rust/plonky2/`. Rust
 registry dependencies retain their own applicable licenses.
@@ -57,9 +57,9 @@ by default under `~/.local/share/LRAEP/bin/`.
 ## Permitted networking references
 
 The custom S3 networking code was written independently using published
-wire specifications and factual captures. Official PEARL proof helpers and
+wire specifications and factual captures. Official S6 proof helpers and
 their proof-system dependencies are bundled as described above. No external
-miner's executable, GPU implementation, or networking client implementation
+S5's executable, GPU implementation, or networking client implementation
 is vendored or required at runtime.
 
 - KEX's public gzip and difficulty notes by Max Malysh:

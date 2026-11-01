@@ -4,6 +4,7 @@ import copy
 import unittest
 
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, resolve_S3_settings
+from LRAEP_trainer.wire_constants import S7_LEGACY_ALIAS
 
 
 class S3ProfileResolutionTests(unittest.TestCase):
@@ -42,7 +43,7 @@ class S3ProfileResolutionTests(unittest.TestCase):
         self.assertEqual(self.settings, before)
 
     def test_stored_protocol_and_alias_select_wr_without_a_separate_file(self):
-        for protocol in ("WR", "pearlhash"):
+        for protocol in ("WR", "S7", S7_LEGACY_ALIAS):
             self.settings["protocol"] = protocol
             effective = resolve_S3_settings(self.settings)
             self.assertEqual(effective["protocol"], "WR")

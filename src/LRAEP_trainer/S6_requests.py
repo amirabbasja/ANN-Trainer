@@ -1,6 +1,6 @@
-"""Pearlhash request fields verified with WR 0.51.8's offline serializer.
+"""S7 request fields verified with WR 0.51.8's offline serializer.
 
-This module needs no miner, native library, or network connection. It builds the
+This module needs no S5, native library, or network connection. It builds the
 JSON value only; framing/encoding and S1-result verification are separate.
 Adapted from this workspace's independent wr-checker/tools/pearl_requests.py.
 Three actual accepted shares subsequently confirmed this serializer byte for
@@ -9,6 +9,8 @@ byte. Serialization alone does not establish proof validity.
 from __future__ import annotations
 
 from collections.abc import Iterable
+
+from .wire_constants import S5_NONCE
 
 
 def _i32(value: int, name: str) -> int:
@@ -33,14 +35,14 @@ def _nonce(value: bytes | str, name: str) -> str:
 
 
 def build_submit_request(
-    request_id: int, *, miner_nonce: bytes | str, worker_nonce: bytes | str,
+    request_id: int, *, S5_nonce: bytes | str, worker_nonce: bytes | str,
     m: int, n: int, k: int, rank: int, tile_h: int, tile_w: int, sb: int,
     a_rows: Iterable[int], b_cols: Iterable[int],
 ) -> dict:
     """Reproduce the observed share serializer's exact field names and types.
 
     Nonces are byte-order-preserving 8-byte values or 16-character hex strings.
-    The native serializer emits ``nonce`` as an alias of ``miner_nonce``, and
+    The native serializer emits ``nonce`` as an alias of the S5 nonce field, and
     always emits ``tail_mode: 1`` and ``sb_p: []`` for this work structure. Its
     scalar and index storage is signed int32. ``sb`` is retained by its native
     name; no unverified interpretation is imposed here.
@@ -52,16 +54,16 @@ def build_submit_request(
     if (isinstance(request_id, bool) or not isinstance(request_id, int)
             or not 0 <= request_id < (1 << 64)):
         raise ValueError("request_id must be an unsigned 64-bit integer")
-    miner = _nonce(miner_nonce, "miner_nonce")
+    S5 = _nonce(S5_nonce, "S5_nonce")
     worker = _nonce(worker_nonce, "worker_nonce")
     params = {
         "a_rows": [_i32(value, "a_rows index") for value in a_rows],
         "b_cols": [_i32(value, "b_cols index") for value in b_cols],
         "k": _i32(k, "k"),
         "m": _i32(m, "m"),
-        "miner_nonce": miner,
+        S5_NONCE: S5,
         "n": _i32(n, "n"),
-        "nonce": miner,
+        "nonce": S5,
         "rank": _i32(rank, "rank"),
         "sb": _i32(sb, "sb"),
         "sb_p": [],

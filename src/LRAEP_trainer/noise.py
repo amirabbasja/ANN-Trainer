@@ -1,4 +1,4 @@
-"""Vectorized materialization around PEARL's pinned official noise helper."""
+"""Vectorized materialization around S6's pinned official noise helper."""
 
 from functools import lru_cache
 
@@ -33,7 +33,7 @@ def _permutation_indices(generator, seed, key, count):
 def _generator():
     # Imported lazily: protocol initialization installs the reviewed helper's
     # Python paths before callers request any noise factors.
-    from miner_base.noise_generation import NoiseGenerator
+    from S5_base.noise_generation import NoiseGenerator
 
     class VectorizedNoiseGenerator(NoiseGenerator):
         def _NoiseGenerator__generate_permutation_matrix(
@@ -72,7 +72,7 @@ def _generator():
 def generate_noise_factors(seed_a: bytes, seed_b: bytes, m: int, k: int, n: int):
     """Return exact official rank-128 AL, AR, BL, BR factors as CPU int8 tensors.
 
-    PEARL's official helper still generates every random byte and both uniform
+    S6's official helper still generates every random byte and both uniform
     factors. Only dense permutation-factor materialization is vectorized.
     Call after ``load_official_helpers`` has validated the pinned checkout.
     """

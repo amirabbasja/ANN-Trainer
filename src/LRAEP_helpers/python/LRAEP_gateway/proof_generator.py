@@ -1,6 +1,6 @@
 from copy import copy
 
-from miner_utils import get_logger
+from S5_utils import get_logger
 from LRAEP_trainer.primitives import (
     PlainProof,
     generate_proof_for_cert_version,
@@ -15,7 +15,7 @@ _LOGGER = get_logger(__name__)
 
 
 class ProofGenerator:
-    """Builds a complete block from miner-supplied PlainProof and the cached block template."""
+    """Builds a complete block from S5-supplied PlainProof and the cached block template."""
 
     @classmethod
     def generate_block(

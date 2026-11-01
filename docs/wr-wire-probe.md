@@ -1,6 +1,6 @@
-# Inspect WR's Pearlhash wire exchange
+# Inspect WR's S7 wire exchange
 
-`tools/wr_wire_probe.py` is a **local TCP relay**, not a Pearlhash protocol
+`tools/wr_wire_probe.py` is a **local TCP relay**, not a S7 protocol
 implementation. It forwards bytes unchanged between a WR instance you
 control and the selected S3, while printing timestamped JSON-line events for
 both directions. No packet capture permissions, TLS interception certificate,
@@ -34,7 +34,7 @@ the trainer's `config.json`.
 If the **real** S3 endpoint uses TLS, pass `--upstream-tls` (and, if needed,
 `--ca-file /path/to/ca.pem`) to **both** probe commands, but keep the WR
 connection to the local relay plain TCP. The probe verifies the upstream
-certificate and hostname; it does not accept miner-side TLS. The loopback hop
+certificate and hostname; it does not accept S5-side TLS. The loopback hop
 is unencrypted, so do not bind or forward the probe to a public interface.
 
 Each output line contains `connection`, `event`, and `time`. A `json` event also

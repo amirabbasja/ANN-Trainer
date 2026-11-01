@@ -1,4 +1,4 @@
-"""KEX's PEARL message framing, independent of transport and GPU code.
+"""KEX's S6 message framing, independent of transport and GPU code.
 
 Protocol references only:
 * KEX's published gzip note, gist eaaf4332dbc5ca99d0a78f24a733fffe,
@@ -8,7 +8,7 @@ Protocol references only:
   tests/fixtures/capture-kex-8048-authorize.jsonl.
 * That revision's docs/protocol/kex.md for submission fields.
 
-All proof construction and matrix arithmetic remain in PEARL's official
+All proof construction and matrix arithmetic remain in S6's official
 helpers and this project's own GPU implementation.
 """
 
@@ -52,7 +52,7 @@ def _text(value: Any, name: str, maximum: int, *, allow_empty: bool = False) -> 
 def _certificate(value: Any) -> int:
     version = _integer(value, "certificate version", 1)
     if version not in (1, 2, 3):
-        raise S3ProtocolError(f"unsupported PEARL certificate version {version}")
+        raise S3ProtocolError(f"unsupported S6 certificate version {version}")
     return version
 
 
@@ -95,9 +95,9 @@ class S3Job:
 
 
 class KEXDialect:
-    """Build and validate PEARL S4 requests without opening a connection.
+    """Build and validate S6 S4 requests without opening a connection.
 
-    The default session sends uncompressed native PEARL PlainProof bytes.
+    The default session sends uncompressed native S6 PlainProof bytes.
     Gzip requires both an explicit request and the S3's matching auth reply.
     Neither session type changes the native proof's binary structure.
     """

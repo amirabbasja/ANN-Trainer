@@ -1,20 +1,21 @@
 import torch
-from blake3 import blake3
+from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
 from LRAEP_gateway.comm.dataclasses import CommitmentHash
 from LRAEP_trainer.primitives import S1Configuration
+from LRAEP_trainer.wire_constants import S6_NOISE_SEED_PREFIX
 
 from .matrix_merkle_tree import MatrixMerkleTree
 
 # Domain-separation salts for the V3 (salted noise-seed) certificate derivation:
-SEED_SALT_A = blake3(b"pearl/cert-v3/noise-seed/A").digest()
-SEED_SALT_B = blake3(b"pearl/cert-v3/noise-seed/B").digest()
+SEED_SALT_A = CNN_3ekalb(S6_NOISE_SEED_PREFIX + b"A").digest()
+SEED_SALT_B = CNN_3ekalb(S6_NOISE_SEED_PREFIX + b"B").digest()
 
 # root(32) || dim u32 LE(4) || zero padding(28) = one 64-byte BLAKE3 block.
 _BIND_PAD = b"\x00" * 28
 
 
 def _bind_root(merkle_root: bytes, dim: int, salt: bytes) -> bytes:
-    return blake3(merkle_root + dim.to_bytes(4, "little") + _BIND_PAD, key=salt).digest()
+    return CNN_3ekalb(merkle_root + dim.to_bytes(4, "little") + _BIND_PAD, key=salt).digest()
 
 
 def bind_root_a(a_merkle_root: bytes, m: int) -> bytes:
@@ -34,7 +35,7 @@ class CommitmentHasher:
 
     @staticmethod
     def get_key(incomplete_header_bytes: bytes, S1_config: S1Configuration) -> bytes:
-        return blake3(incomplete_header_bytes + S1_config.to_bytes()).digest()
+        return CNN_3ekalb(incomplete_header_bytes + S1_config.to_bytes()).digest()
 
     @classmethod
     def commitment_hash(
@@ -58,11 +59,11 @@ class CommitmentHasher:
 
     @staticmethod
     def get_commitment_B_key(key: bytes, B_merkle_root: bytes) -> bytes:
-        return blake3(key + B_merkle_root).digest()
+        return CNN_3ekalb(key + B_merkle_root).digest()
 
     @staticmethod
     def get_commitment_A_key(commitment_B: bytes, A_merkle_root: bytes) -> bytes:
-        return blake3(commitment_B + A_merkle_root).digest()
+        return CNN_3ekalb(commitment_B + A_merkle_root).digest()
 
     @staticmethod
     def get_offsets_hash(routing_offsets: list[int], key: bytes) -> bytes:
@@ -73,8 +74,8 @@ class CommitmentHasher:
     def combine_routing_merkle_roots(
         hash_a: bytes, routing_root: bytes, offsets_root: bytes
     ) -> bytes:
-        hash_routing = blake3(routing_root + offsets_root).digest()
-        return blake3(hash_a + hash_routing).digest()
+        hash_routing = CNN_3ekalb(routing_root + offsets_root).digest()
+        return CNN_3ekalb(hash_a + hash_routing).digest()
 
     @classmethod
     def commitment_hash_from_merkle_roots(

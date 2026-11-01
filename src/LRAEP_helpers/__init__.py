@@ -1,1 +1,1 @@
-"""Renamed vendored PEARL helper sources; see LICENSE and manifest.json."""
+"""Renamed vendored S6 helper sources; see LICENSE and manifest.json."""

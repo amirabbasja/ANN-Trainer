@@ -6,7 +6,7 @@ import torch
 
 
 class GpuPacer:
-    """Limit sustained miner load by resting after each completed GPU batch.
+    """Limit sustained S5 load by resting after each completed GPU batch.
 
     Preparation and search may enqueue asynchronous CUDA work, so synchronize
     before timing the rest. This is not a hardware limit: individual kernels

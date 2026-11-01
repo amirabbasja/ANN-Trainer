@@ -72,7 +72,7 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.session.submit.assert_not_called()
         output = ' '.join(logs.output)
         self.assertIn('Main job stopped: steps=1 elapsed=00:00:01', output)
-        self.assertNotIn('PearlHash GPU report sent', output)
+        self.assertNotIn('S7 GPU report sent', output)
         self.assertNotIn('submitted=', output)
         status = self.progress.return_value.__enter__.return_value.update.call_args.args[0]
         self.assertEqual(status, 'Main | Step 1/1 (100.0%) | elapsed=00:00:01 | GPU 37%')

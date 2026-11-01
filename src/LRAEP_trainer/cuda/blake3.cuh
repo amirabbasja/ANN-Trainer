@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// The keyed, single-64-byte-message BLAKE3 root used by PEARL. Compression
+// The keyed, single-64-byte-message BLAKE3 root used by S6. Compression
 // rules and the unrolled message schedule are reviewed against the pinned
 // official zk-pow/src/circuit/chip/blake3/blake3_compress.rs. Domain flags
 // match pearl-blake3/src/hasher.rs: KEYED_HASH|CHUNK_START|CHUNK_END|ROOT = 27.

@@ -1,4 +1,4 @@
-"""Real GPU work and compact-share exchange with a local encoded PearlHash peer."""
+"""Real GPU work and compact-share exchange with a local encoded S7 peer."""
 
 import copy
 import itertools
@@ -12,8 +12,9 @@ from unittest.mock import patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
 from LRAEP_trainer import native_cuda, S3_training as worker
-from LRAEP_trainer.pearl_codec import decode_frame, encode_frame
+from LRAEP_trainer.S6_codec import decode_frame, encode_frame
 from LRAEP_trainer.protocol import load_official_helpers
+from LRAEP_trainer.wire_constants import S5_NONCE
 
 from test_wr_protocol import job_result
 
@@ -91,13 +92,13 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                             share = request["params"][0]
                             self.assertEqual(set(share), {
                                 "m", "n", "k", "rank", "tile_h", "tile_w", "sb", "sb_p", "tail_mode",
-                                "a_rows", "b_cols", "miner_nonce", "worker_nonce", "nonce",
+                                "a_rows", "b_cols", S5_NONCE, "worker_nonce", "nonce",
                             })
                             self.assertEqual((share["m"], share["n"], share["k"]), (129, 128, 2048))
                             self.assertEqual((share["rank"], share["tile_h"], share["tile_w"]), (128, 8, 8))
                             self.assertEqual(share["worker_nonce"], extranonce)
-                            self.assertEqual(len(bytes.fromhex(share["miner_nonce"])), 8)
-                            self.assertEqual(share["nonce"], share["miner_nonce"])
+                            self.assertEqual(len(bytes.fromhex(share[S5_NONCE])), 8)
+                            self.assertEqual(share["nonce"], share[S5_NONCE])
                             self.assertEqual((share["sb"], share["sb_p"], share["tail_mode"]), (1, [], 1))
                             self.assertEqual(len(share["a_rows"]), 8)
                             self.assertEqual(len(share["b_cols"]), 8)
@@ -133,7 +134,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                 server.join(5)
         if errors:
             raise errors[0]
-        self.assertFalse(server.is_alive(), "local PearlHash peer did not stop")
+        self.assertFalse(server.is_alive(), "local S7 peer did not stop")
         self.assertEqual(result, 0)
         self.assertIn("share", observed)
         self.assertEqual(len(observed["reports"]), 2)
@@ -147,10 +148,10 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
             self.assertEqual(value, batches * work / max(elapsed, 0.001))
         self.assertIn("batches=1 submitted=1 accepted=1 rejected=0", " ".join(messages.output))
 
-    def test_native_gpu_work_reaches_local_pearlhash_peer(self):
+    def test_native_gpu_work_reaches_local_S7_peer(self):
         self.check_gpu_exchange(native=True)
 
-    def test_reference_gpu_work_reaches_local_pearlhash_peer(self):
+    def test_reference_gpu_work_reaches_local_S7_peer(self):
         self.check_gpu_exchange(native=False)
 
 

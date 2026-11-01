@@ -24,7 +24,7 @@ class UnknownRequestRecorderTests(unittest.TestCase):
         frame = b"unknown-wire-frame\n"
         message = {"method": "future_request", "params": ["REMOTE_PRIVATE_VALUE"]}
         with self.assertLogs(LOG, level="CRITICAL") as logged:
-            artifact = recorder(frame, message, "Unknown PearlHash server method")
+            artifact = recorder(frame, message, "Unknown S7 server method")
         saved = json.loads(artifact.read_text())
         self.assertEqual(bytes.fromhex(saved["raw_frame_hex"]), frame)
         self.assertEqual(saved["decoded_message"], message)

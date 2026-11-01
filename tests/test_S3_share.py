@@ -55,7 +55,7 @@ class OfficialS3ShareTests(unittest.TestCase):
             str(Path(__file__).resolve().parents[1] / "src" / "LRAEP_helpers"),
         ))
         if not source.exists():
-            raise unittest.SkipTest("pinned official PEARL helper checkout unavailable")
+            raise unittest.SkipTest("pinned official S6 helper checkout unavailable")
         if not torch.cuda.is_available():
             raise unittest.SkipTest("CUDA device unavailable")
         try:

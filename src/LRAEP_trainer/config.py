@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
 from .effort import normalize_job_sequence
 from .paths import artifacts_dir
+from .wire_constants import S7_LEGACY_ALIAS
 
 
 class ConfigError(RuntimeError):
@@ -192,7 +193,7 @@ def _http_url(value, field, *, allow_fragment=False):
 
 
 def _side_job_config(raw, directory):
-    """Validate CNN settings without borrowing the miner's VPN configuration."""
+    """Validate CNN settings without borrowing the S5's VPN configuration."""
     raw = _section(raw, set(_SIDE_JOB_DEFAULTS), "side_job")
     settings = copy.deepcopy(_SIDE_JOB_DEFAULTS)
     settings.update(copy.deepcopy({field: value for field, value in raw.items() if field != "vpn"}))
@@ -274,9 +275,9 @@ def _documentation(value, directory, field="S3.protocol_documentation"):
 def _S3_protocol(value):
     if value == "auto":
         raise ConfigError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
-    if not isinstance(value, str) or value not in {"KEX", "WR", "pearlhash"}:
+    if not isinstance(value, str) or value not in {"KEX", "WR", "S7", S7_LEGACY_ALIAS}:
         raise ConfigError("S3.protocol must select KEX or WR")
-    return "WR" if value == "pearlhash" else value
+    return "WR" if value in {"S7", S7_LEGACY_ALIAS} else value
 
 
 def _validate_S3_connection(settings, section, directory):
@@ -297,7 +298,7 @@ def _validate_S3_connection(settings, section, directory):
     )
 
 
-def resolve_S3_settings(settings: dict, miner: str | None = None) -> dict:
+def resolve_S3_settings(settings: dict, S5: str | None = None) -> dict:
     """Copy common options and flatten only the selected connection profile.
 
     Legacy flat settings work when neither profile key is present. Once any
@@ -307,7 +308,7 @@ def resolve_S3_settings(settings: dict, miner: str | None = None) -> dict:
     """
     if not isinstance(settings, dict):
         raise ConfigError("S3 must be an object")
-    selected = _S3_protocol(settings.get("protocol", "KEX") if miner is None else miner)
+    selected = _S3_protocol(settings.get("protocol", "KEX") if S5 is None else S5)
     effective = copy.deepcopy(_S3_DEFAULTS)
     effective.update(copy.deepcopy(settings))
     if any(name in settings for name in _S3_PROFILES):
@@ -496,7 +497,7 @@ def _validate_config(config, config_path) -> dict:
     if training["m"] % training["tile_h"] or training["n"] % training["tile_w"]:
         raise ConfigError("training matrix dimensions must be divisible by their tile dimensions")
     if (training["tile_h"] + training["tile_w"]) * training["k"] > 1 << 22:
-        raise ConfigError("training proof inputs exceed PEARL's 4 MiB worker-input limit")
+        raise ConfigError("training proof inputs exceed S6's 4 MiB worker-input limit")
     _integer(training["max_batches"], "training.max_batches", 0)
     _number(training["max_seconds"], "training.max_seconds", zero=True)
     training["output_dir"] = _path(training["output_dir"], "training.output_dir", directory)

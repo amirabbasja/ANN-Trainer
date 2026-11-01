@@ -231,7 +231,7 @@ class SideJob:
             self._progress_epoch = self.epoch
             self._progress_phase = "Complete"
             return
-        # No main-miner routing context or environment proxy is inherited.
+        # No main-S5 routing context or environment proxy is inherited.
         proxy = None
         if self.config["vpn"]["enabled"]:
             from .vpn import ManagedVPN

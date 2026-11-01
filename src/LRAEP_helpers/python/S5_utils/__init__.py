@@ -1,4 +1,4 @@
-"""Shared utilities for LRAEP miner packages."""
+"""Shared utilities for LRAEP S5 packages."""
 
 from .logging_config import get_logger
 

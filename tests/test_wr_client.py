@@ -1,4 +1,4 @@
-"""Concurrent PearlHash exchange tests with an in-memory transport, no S3/GPU."""
+"""Concurrent S7 exchange tests with an in-memory transport, no S3/GPU."""
 
 import json
 import queue
@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.pearl_codec import decode_frame, encode_frame, encode_payload
+from LRAEP_trainer.S6_codec import decode_frame, encode_frame, encode_payload
 from LRAEP_trainer.S3_client import S3AuthenticationError, S3CompatibilityError, StaleS3Job
 from LRAEP_trainer.S3_transport import S3ConnectionError
 from LRAEP_trainer.S3_protocol import S3ProtocolError

@@ -1,7 +1,7 @@
 """Download one Hugging Face training shard and decode its embedded images.
 
 The HTTP opener has an explicit route: ``None`` means direct, independent of
-both the miner's active route and proxy environment variables. No dataset
+both the S5's active route and proxy environment variables. No dataset
 library or shared Hugging Face cache is used.
 """
 

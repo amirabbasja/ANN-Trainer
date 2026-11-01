@@ -3,7 +3,6 @@
 import unittest
 
 import numpy as np
-from blake3 import blake3
 
 from LRAEP_trainer.protocol import TrainingConfig, adjusted_target, matching_tiles
 
@@ -12,8 +11,8 @@ class TranscriptTargetTests(unittest.TestCase):
     def test_little_endian_target_is_inclusive(self):
         words = np.arange(16, dtype=np.uint32).reshape(1, 1, 16)
         key = bytes(range(32))
-        message = b"".join(int(x).to_bytes(4, "little") for x in range(16))
-        digest = blake3(message, key=key).digest()
+        # Fixed keyed digest captured from the independent upstream backend.
+        digest = bytes.fromhex("40770fb51e85ef4fdf271c7172bb9e4775a235e4f0e9d7e01d074b525301ca26")
         boundary = int.from_bytes(digest, "little")
         self.assertEqual(list(matching_tiles(words, key, boundary)), [(0, 0, digest)])
         self.assertEqual(list(matching_tiles(words, key, boundary - 1)), [])

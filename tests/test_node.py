@@ -1,4 +1,4 @@
-"""Node protocol tests; no node, GPU, or native PEARL library is required."""
+"""Node protocol tests; no node, GPU, or native S6 library is required."""
 
 import base64
 import io

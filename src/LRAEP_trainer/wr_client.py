@@ -1,4 +1,4 @@
-"""Concurrent, bounded PearlHash session using the independently recovered codec."""
+"""Concurrent, bounded S7 session using the independently recovered codec."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Callable
 
-from .pearl_codec import CodecError, decode_frame, encode_frame
+from .S6_codec import CodecError, decode_frame, encode_frame
 from .S3_client import (JobSnapshot, S3AuthenticationError, S3CompatibilityError,
                           S3Session, _seconds)
 from .S3_protocol import S3ProtocolError
@@ -20,7 +20,7 @@ LOG = logging.getLogger("LRAEP_trainer")
 
 
 class WRSession(S3Session):
-    """A PearlHash connection with fatal, recorded unknown-message handling.
+    """A S7 connection with fatal, recorded unknown-message handling.
 
     ``unknown_handler`` receives the exact wire frame, decoded object when
     available, and a fixed diagnostic reason. It runs once before closing the
@@ -33,7 +33,7 @@ class WRSession(S3Session):
     def __init__(self, settings: dict, stop_event: threading.Event | None = None,
                  unknown_handler: Callable[..., None] | None = None) -> None:
         if settings.get("compression", "none") != "none":
-            raise S3ProtocolError("PearlHash compression must be none")
+            raise S3ProtocolError("S7 compression must be none")
         super().__init__(settings, stop_event)
         self._worker_nonce: bytes | None = None
         self._unknown_handler = unknown_handler
@@ -69,7 +69,7 @@ class WRSession(S3Session):
         expired = [request_id for request_id, deadline in self._report_pending.items() if now >= deadline]
         for request_id in expired:
             del self._report_pending[request_id]
-            LOG.warning("PearlHash GPU report acknowledgement timed out")
+            LOG.warning("S7 GPU report acknowledgement timed out")
 
     @property
     def latest_report_id(self) -> int | None:
@@ -95,11 +95,11 @@ class WRSession(S3Session):
             with self._condition:
                 self._raise_failure()
                 if not self._authorized:
-                    raise S3ConnectionError("PearlHash session must authenticate before reporting GPU information")
+                    raise S3ConnectionError("S7 session must authenticate before reporting GPU information")
                 self._expire_reports_locked()
                 if len(self._report_pending) >= self.MAX_PENDING_REPORTS:
                     del self._report_pending[next(iter(self._report_pending))]
-                    LOG.warning("PearlHash discarded an unacknowledged GPU report")
+                    LOG.warning("S7 discarded an unacknowledged GPU report")
                 request_id = self._next_id
                 # Validate the same uint64 representation used by all WR
                 # requests before reserving an ID in this session.
@@ -111,7 +111,7 @@ class WRSession(S3Session):
             try:
                 self._send(request)
             except (S3ConnectionError, S3ProtocolError):
-                self._fail(S3ConnectionError("PearlHash GPU report send failed"))
+                self._fail(S3ConnectionError("S7 GPU report send failed"))
                 raise
         return request_id
 
@@ -127,9 +127,9 @@ class WRSession(S3Session):
         try:
             encoded = encode_frame(message)
         except CodecError as error:
-            raise S3ProtocolError("Could not encode PearlHash request") from error
+            raise S3ProtocolError("Could not encode S7 request") from error
         if len(encoded) > self.MAX_FRAME_BYTES:
-            raise S3ProtocolError("PearlHash request exceeds the frame size limit")
+            raise S3ProtocolError("S7 request exceeds the frame size limit")
         self.transport.send(encoded)
 
     def _unknown(self, frame: bytes, response: dict | None, reason: str) -> None:
@@ -144,7 +144,7 @@ class WRSession(S3Session):
             self._generation += 1
             self._recording_unknown = True
             self._compatibility_failure = S3CompatibilityError(
-                "Unknown PearlHash request; training stopped",
+                "Unknown S7 request; training stopped",
             )
         diagnostic_failed = False
         if self._unknown_handler is not None:
@@ -152,7 +152,7 @@ class WRSession(S3Session):
                 self._unknown_handler(frame, response, reason, fatal=True)
             except Exception:
                 diagnostic_failed = True
-        message = "Unknown PearlHash request; training stopped"
+        message = "Unknown S7 request; training stopped"
         if diagnostic_failed:
             message += "; diagnostic recording failed"
         error = S3CompatibilityError(message)
@@ -177,11 +177,11 @@ class WRSession(S3Session):
                     boundary = buffered.find(b"\n")
                     if boundary < 0:
                         if len(buffered) >= self.MAX_FRAME_BYTES:
-                            self._unknown(bytes(buffered), None, "PearlHash frame exceeds the size limit")
+                            self._unknown(bytes(buffered), None, "S7 frame exceeds the size limit")
                             return
                         break
                     if boundary + 1 > self.MAX_FRAME_BYTES:
-                        self._unknown(bytes(buffered[:boundary + 1]), None, "PearlHash frame exceeds the size limit")
+                        self._unknown(bytes(buffered[:boundary + 1]), None, "S7 frame exceeds the size limit")
                         return
                     frame = bytes(buffered[:boundary + 1])
                     del buffered[:boundary + 1]
@@ -197,7 +197,7 @@ class WRSession(S3Session):
                             if self._unknown_handler is not None:
                                 self._unknown_handler(frame, response, str(error), fatal=False)
                         except Exception:
-                            self._unknown(frame, response, "Could not record ignored PearlHash request")
+                            self._unknown(frame, response, "Could not record ignored S7 request")
                             return
                     except (CodecError, S3ProtocolError) as error:
                         self._unknown(frame, response, str(error))
@@ -206,11 +206,11 @@ class WRSession(S3Session):
                         return
         except S3ConnectionError as error:
             if buffered and not self._closed_event.is_set():
-                self._unknown(bytes(buffered), None, "PearlHash connection ended with an unterminated frame")
+                self._unknown(bytes(buffered), None, "S7 connection ended with an unterminated frame")
             else:
                 self._fail(error)
         except Exception:
-            self._fail(S3ConnectionError("PearlHash reader failed"))
+            self._fail(S3ConnectionError("S7 reader failed"))
 
     def _handle(self, response: dict) -> None:
         with self._condition:
@@ -246,7 +246,7 @@ class WRSession(S3Session):
             self._expire_reports_locked()
             if request_id == self._auth_id and not self._authorized:
                 if not self.dialect.accept(response):
-                    self._fail(S3AuthenticationError("PearlHash rejected authentication"))
+                    self._fail(S3AuthenticationError("S7 rejected authentication"))
                     return
                 self._authorized = True
                 self._condition.notify_all()
@@ -256,9 +256,9 @@ class WRSession(S3Session):
                 if request_id == self._latest_report_id:
                     self._latest_report_accepted = accepted
                 if accepted:
-                    LOG.debug("PearlHash acknowledged GPU information report")
+                    LOG.debug("S7 acknowledged GPU information report")
                 else:
-                    LOG.warning("PearlHash rejected GPU information report")
+                    LOG.warning("S7 rejected GPU information report")
                 self._condition.notify_all()
             elif request_id in self._pending:
                 pending = self._pending[request_id]

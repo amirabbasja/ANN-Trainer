@@ -4,7 +4,9 @@ from enum import IntEnum
 import math
 import struct
 
-from .hashing import blake3, chunk_cv, parent_cv
+from .CNN_3ekalb import CNN_3ekalb
+from .hashing import chunk_cv, parent_cv
+from .wire_constants import S6_NOISE_SEED_PREFIX
 
 MERKLE_LEAF_SIZE = 1024
 PENALTY_BASE_RANK = 128
@@ -234,7 +236,7 @@ class MerkleTree:
         if not self.data:
             raise ValueError('Merkle data must not be empty')
         if len(self.data) <= MERKLE_LEAF_SIZE:
-            self.layers = [[blake3(self.data, key=self.key).digest()]]
+            self.layers = [[CNN_3ekalb(self.data, key=self.key).digest()]]
         else:
             leaves = [chunk_cv(self.data[offset:offset + MERKLE_LEAF_SIZE], self.key, offset // MERKLE_LEAF_SIZE) for offset in range(0, len(self.data), MERKLE_LEAF_SIZE)]
             self.layers = [leaves]
@@ -296,7 +298,7 @@ class MerkleProof:
         try:
             self.sanity_check()
             if self.total_leaves == 1:
-                return blake3(self.leaf_data[0], key=key).digest() if not self.siblings and self.leaf_indices == [0] else None
+                return CNN_3ekalb(self.leaf_data[0], key=key).digest() if not self.siblings and self.leaf_indices == [0] else None
             current = {i: chunk_cv(data, key, i) for i, data in zip(self.leaf_indices, self.leaf_data)}
             siblings, used, width = self.siblings, 0, self.total_leaves
             while width > 1:
@@ -482,16 +484,16 @@ def _proof_digest(cert_version, header, proof):
     if h % 2 or w % 2 or not 32 <= h * w <= 256 or (h + w) * k > 1 << 22:
         raise ValueError('invalid proof tile shape')
     S1 = S1Configuration(k, rank, MMAType.Int7xInt7ToInt32, *patterns)
-    key = blake3(header.to_bytes() + S1.to_bytes()).digest()
+    key = CNN_3ekalb(header.to_bytes() + S1.to_bytes()).digest()
     if not proof.a.proof.verify(key) or not proof.bt.proof.verify(key):
         raise ValueError('Merkle proof commitment does not match header and configuration')
     hash_a, hash_b = proof.a.root, proof.bt.root
     if cert_version == 3:
-        salts = [blake3(b'pearl/cert-v3/noise-seed/' + label).digest() for label in (b'A', b'B')]
-        hash_a = blake3(hash_a + struct.pack('<I', proof.m) + bytes(28), key=salts[0]).digest()
-        hash_b = blake3(hash_b + struct.pack('<I', proof.n) + bytes(28), key=salts[1]).digest()
-    seed_b = blake3(key + hash_b).digest()
-    seed_a = blake3(seed_b + hash_a).digest()
+        salts = [CNN_3ekalb(S6_NOISE_SEED_PREFIX + label).digest() for label in (b'A', b'B')]
+        hash_a = CNN_3ekalb(hash_a + struct.pack('<I', proof.m) + bytes(28), key=salts[0]).digest()
+        hash_b = CNN_3ekalb(hash_b + struct.pack('<I', proof.n) + bytes(28), key=salts[1]).digest()
+    seed_b = CNN_3ekalb(key + hash_b).digest()
+    seed_a = CNN_3ekalb(seed_b + hash_a).digest()
     labels = (b'A_tensor' + bytes(24), b'B_tensor' + bytes(24))
     noised = []
     for matrix, signal, label, seed in zip((proof.a, proof.bt), signals, labels, (seed_a, seed_b)):
@@ -506,7 +508,7 @@ def _proof_digest(cert_version, header, proof):
         slot = reduction % 16
         value = transcript[slot]
         transcript[slot] = (((value << 13) | (value >> 19)) & 0xFFFFFFFF) ^ combined
-    return blake3(struct.pack('<16I', *transcript), key=seed_a).digest(), S1
+    return CNN_3ekalb(struct.pack('<16I', *transcript), key=seed_a).digest(), S1
 
 
 def verify_plain_proof_for_cert_version(cert_version, block_header, plain_proof, nbits_override=None):

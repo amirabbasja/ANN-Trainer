@@ -1,4 +1,4 @@
-"""Coinbase regression checks against the real pinned PEARL helper modules."""
+"""Coinbase regression checks against the real pinned S6 helper modules."""
 
 import hashlib
 import os
@@ -14,7 +14,7 @@ def double_sha(data):
 
 
 def height_prefix(height):
-    """The minimal script-number prefix checked by PEARL's Go full node."""
+    """The minimal script-number prefix checked by S6's Go full node."""
     if height == 0:
         return b"\x00"
     if height <= 16:
@@ -47,7 +47,7 @@ class TemplateIntegrationTests(unittest.TestCase):
             str(Path(__file__).resolve().parents[1] / "src" / "LRAEP_helpers"),
         ))
         if not source.exists():
-            raise unittest.SkipTest("pinned official PEARL helper checkout is unavailable")
+            raise unittest.SkipTest("pinned official S6 helper checkout is unavailable")
         try:
             from LRAEP_trainer.protocol import load_official_helpers
             load_official_helpers(source)

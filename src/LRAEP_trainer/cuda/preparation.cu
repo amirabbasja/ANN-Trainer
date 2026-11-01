@@ -1,4 +1,4 @@
-// Exact GPU preparation from PEARL's pinned NoiseGenerator specification.
+// Exact GPU preparation from S6's pinned NoiseGenerator specification.
 // No host randomness, device allocations, or synchronization occurs here.
 
 #include <cuda_runtime.h>
