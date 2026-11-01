@@ -1,4 +1,4 @@
-"""KEX session tests using local sockets and no GPU or remote pool."""
+"""KEX session tests using local sockets and no GPU or remote S3."""
 
 import base64
 import json
@@ -9,11 +9,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.pool_client import (
-    PoolAuthenticationError, PoolCompatibilityError, PoolSession, ShareResult, StalePoolJob,
+from LRAEP_trainer.S3_client import (
+    S3AuthenticationError, S3CompatibilityError, S3Session, ShareResult, StaleS3Job,
 )
-from LRAEP_trainer.pool_transport import PoolConnectionError
-from LRAEP_trainer.pool_protocol import PoolProtocolError
+from LRAEP_trainer.S3_transport import S3ConnectionError
+from LRAEP_trainer.S3_protocol import S3ProtocolError
 
 
 def job_message(job_id="job-1", *, cert=3, target="1234"):
@@ -23,7 +23,7 @@ def job_message(job_id="job-1", *, cert=3, target="1234"):
     return {"method": "mining.notify", "params": params}
 
 
-class MockPool:
+class MockS3:
     """One local socket peer whose script is supplied by each test."""
 
     def __init__(self, script):
@@ -60,9 +60,9 @@ class MockPool:
         self.listener.close()
         self.thread.join(3)
         if exc_type is None and self.failures:
-            raise AssertionError(f"mock pool failed: {self.failures}")
+            raise AssertionError(f"mock S3 failed: {self.failures}")
         if self.thread.is_alive():
-            raise AssertionError("mock pool thread leaked")
+            raise AssertionError("mock S3 thread leaked")
 
     def settings(self, **extra):
         return {
@@ -102,19 +102,19 @@ def authorize(peer, *, gzip_reply=False, notify=True):
     return reader, auth
 
 
-class PoolSessionTests(unittest.TestCase):
+class S3SessionTests(unittest.TestCase):
     def test_kex_session_uses_only_kex_identity(self):
         settings = {"host": "127.0.0.1", "port": 19000, "KEX_uname": "kex-user",
-                    "WR_wallet": "wr-address", "worker": "Rig01"}
-        session = PoolSession(settings)
+                    "WR_S2": "wr-address", "worker": "Rig01"}
+        session = S3Session(settings)
         self.addCleanup(session.close)
         self.assertEqual(session.dialect.auth_requests()[-1]["params"], ["kex-user.Rig01", "x"])
 
-    def test_kex_missing_identity_never_falls_back_to_wr_or_legacy_wallet(self):
-        for other_fields in ({"WR_wallet": "wr-address"}, {"wallet": "legacy-address"},
-                             {"KEX_uname": "", "WR_wallet": "wr-address"}):
-            with self.subTest(other_fields=other_fields), self.assertRaisesRegex(PoolProtocolError, "KEX_uname"):
-                PoolSession({"host": "127.0.0.1", "port": 19000, "worker": "Rig01", **other_fields})
+    def test_kex_missing_identity_never_falls_back_to_wr_or_legacy_S2(self):
+        for other_fields in ({"WR_S2": "wr-address"}, {"wallet": "legacy-address"},
+                             {"KEX_uname": "", "WR_S2": "wr-address"}):
+            with self.subTest(other_fields=other_fields), self.assertRaisesRegex(S3ProtocolError, "KEX_uname"):
+                S3Session({"host": "127.0.0.1", "port": 19000, "worker": "Rig01", **other_fields})
 
     def test_silent_subscribe_auth_and_strict_share_replies(self):
         captured = queue.Queue()
@@ -129,7 +129,7 @@ class PoolSessionTests(unittest.TestCase):
             # EOF immediately after the final ack must not erase that ack.
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
             self.assertIsNotNone(snapshot)
             proof = base64.b64encode(b"official-proof-bytes").decode()
@@ -164,8 +164,8 @@ class PoolSessionTests(unittest.TestCase):
             finish.wait(2)
             reader.close()
 
-        with MockPool(script) as pool:
-            session = PoolSession(pool.settings())
+        with MockS3(script) as S3:
+            session = S3Session(S3.settings())
 
             def open_session():
                 try:
@@ -205,7 +205,7 @@ class PoolSessionTests(unittest.TestCase):
                 sent.set()
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             old = session.wait_job(1)
             commands.put(job_message())
             self.assertTrue(sent.wait(1))
@@ -221,7 +221,7 @@ class PoolSessionTests(unittest.TestCase):
             self.assertFalse(session.is_current(old))
             self.assertEqual(new.job.job_id, "job-2")
             self.assertEqual(new.generation, old.generation + 1)
-            with self.assertRaises(StalePoolJob):
+            with self.assertRaises(StaleS3Job):
                 session.submit(old, "cHJvb2Y=")
             commands.put("finish")
 
@@ -234,7 +234,7 @@ class PoolSessionTests(unittest.TestCase):
             finish.wait(2)
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings(certificate_version=3)) as session:
+        with MockS3(script) as S3, S3Session(S3.settings(certificate_version=3)) as session:
             self.assertEqual(session.wait_job(1).job.cert_version, 2)
             finish.set()
 
@@ -247,7 +247,7 @@ class PoolSessionTests(unittest.TestCase):
             finish.wait(2)
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings(certificate_version=3)) as session:
+        with MockS3(script) as S3, S3Session(S3.settings(certificate_version=3)) as session:
             self.assertEqual(session.wait_job(1).job.cert_version, 3)
             finish.set()
 
@@ -258,10 +258,10 @@ class PoolSessionTests(unittest.TestCase):
             self.assertEqual(peer.recv(1), b"")
             reader.close()
 
-        with MockPool(script) as pool:
-            session = PoolSession(pool.settings())
+        with MockS3(script) as S3:
+            session = S3Session(S3.settings())
             try:
-                with self.assertRaisesRegex(PoolCompatibilityError, "certificate version 4"):
+                with self.assertRaisesRegex(S3CompatibilityError, "certificate version 4"):
                     session.open()
                     session.wait_job(1)
                 self.assertIsNone(session._job)
@@ -278,9 +278,9 @@ class PoolSessionTests(unittest.TestCase):
                     auth = read_json(reader)
                     send_json(peer, {"id": auth["id"], **response})
                     reader.close()
-                with MockPool(script) as pool:
-                    with self.assertRaises(PoolAuthenticationError) as caught:
-                        PoolSession(pool.settings()).open()
+                with MockS3(script) as S3:
+                    with self.assertRaises(S3AuthenticationError) as caught:
+                        S3Session(S3.settings()).open()
                     self.assertNotIn("secret", str(caught.exception))
 
     def test_malformed_json_and_nonobjects_close_session(self):
@@ -292,9 +292,9 @@ class PoolSessionTests(unittest.TestCase):
                     read_json(reader)
                     peer.sendall(frame)
                     reader.close()
-                with MockPool(script) as pool:
-                    with self.assertRaises(PoolConnectionError):
-                        PoolSession(pool.settings()).open()
+                with MockS3(script) as S3:
+                    with self.assertRaises(S3ConnectionError):
+                        S3Session(S3.settings()).open()
 
     def test_oversized_inbound_frame_closes_session(self):
         def script(peer):
@@ -303,10 +303,10 @@ class PoolSessionTests(unittest.TestCase):
             read_json(reader)
             peer.sendall(b"x" * 100)
             reader.close()
-        with MockPool(script) as pool, patch.object(PoolSession, "MAX_FRAME_BYTES", 99):
+        with MockS3(script) as S3, patch.object(S3Session, "MAX_FRAME_BYTES", 99):
             # The outgoing subscribe/auth still fit the selected cap.
-            with self.assertRaises(PoolConnectionError):
-                PoolSession(pool.settings(KEX_uname="w", worker="")).open()
+            with self.assertRaises(S3ConnectionError):
+                S3Session(S3.settings(KEX_uname="w", worker="")).open()
 
     def test_gzip_requires_matching_auth_ack(self):
         for acknowledge in [False, True]:
@@ -317,7 +317,7 @@ class PoolSessionTests(unittest.TestCase):
                     self.assertEqual(auth["params"]["type"], "v2")
                     finish.wait(2)
                     reader.close()
-                with MockPool(script) as pool, PoolSession(pool.settings(compression="gzip")) as session:
+                with MockS3(script) as S3, S3Session(S3.settings(compression="gzip")) as session:
                     # Wait until the mock's complete initial job was sent
                     # before closing; the auth reply can wake open() first.
                     self.assertIsNotNone(session.wait_job(1))
@@ -338,7 +338,7 @@ class PoolSessionTests(unittest.TestCase):
             finish.wait(2)
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
 
             def submit(proof):
@@ -365,9 +365,9 @@ class PoolSessionTests(unittest.TestCase):
             self.assertEqual(peer.recv(1), b"")
             reader.close()
 
-        with MockPool(script) as pool:
-            session = PoolSession(pool.settings(connect_timeout=0.05))
-            with self.assertRaisesRegex(PoolConnectionError, "authentication timed out"):
+        with MockS3(script) as S3:
+            session = S3Session(S3.settings(connect_timeout=0.05))
+            with self.assertRaisesRegex(S3ConnectionError, "authentication timed out"):
                 session.open()
             self.assertFalse(session._reader.is_alive())
 
@@ -379,7 +379,7 @@ class PoolSessionTests(unittest.TestCase):
             finish.wait(2)
             reader.close()
 
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
             session._handle({"method": "mining.set_difficulty", "params": [999999]})
             self.assertEqual(session.wait_job(0), snapshot)
@@ -392,15 +392,15 @@ class PoolSessionTests(unittest.TestCase):
             reader, _ = authorize(peer)
             disconnect.wait(2)
             reader.close()
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
             disconnect.set()
-            self.assertTrue(pool.finished.wait(1))
+            self.assertTrue(S3.finished.wait(1))
             deadline = time.monotonic() + 1
             while session.is_current(snapshot) and time.monotonic() < deadline:
                 threading.Event().wait(0.005)
             self.assertFalse(session.is_current(snapshot))
-            with self.assertRaises(PoolConnectionError):
+            with self.assertRaises(S3ConnectionError):
                 session.wait_job(1)
 
     def test_stop_event_wakes_reader_and_pending_submission(self):
@@ -414,13 +414,13 @@ class PoolSessionTests(unittest.TestCase):
             request_received.set()
             finish.wait(2)
             reader.close()
-        with MockPool(script) as pool:
-            session = PoolSession(pool.settings(), stop).open()
+        with MockS3(script) as S3:
+            session = S3Session(S3.settings(), stop).open()
             snapshot = session.wait_job(1)
             def submit():
                 try:
                     results.append(session.submit(snapshot, "cHJvb2Y="))
-                except PoolConnectionError as error:
+                except S3ConnectionError as error:
                     results.append(error)
             worker = threading.Thread(target=submit)
             worker.start()
@@ -429,7 +429,7 @@ class PoolSessionTests(unittest.TestCase):
                 stop.set()
                 worker.join(1)
                 self.assertFalse(worker.is_alive())
-                self.assertIsInstance(results[0], PoolConnectionError)
+                self.assertIsInstance(results[0], S3ConnectionError)
                 self.assertFalse(session.is_current(snapshot))
             finally:
                 finish.set()
@@ -444,9 +444,9 @@ class PoolSessionTests(unittest.TestCase):
             read_json(reader)
             finish.wait(2)
             reader.close()
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
-            with self.assertRaisesRegex(PoolConnectionError, "acknowledgement timed out"):
+            with self.assertRaisesRegex(S3ConnectionError, "acknowledgement timed out"):
                 session.submit(snapshot, "cHJvb2Y=", timeout=0.03)
             session._handle({"id": 3, "result": True})
             self.assertEqual(session._pending, {})
@@ -465,7 +465,7 @@ class PoolSessionTests(unittest.TestCase):
             peer.sendall(data)
             finish.wait(2)
             reader.close()
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             self.assertIsNotNone(session.wait_job(1))
             finish.set()
 
@@ -475,9 +475,9 @@ class PoolSessionTests(unittest.TestCase):
             reader, _ = authorize(peer)
             finish.wait(2)
             reader.close()
-        with MockPool(script) as pool, PoolSession(pool.settings()) as session:
+        with MockS3(script) as S3, S3Session(S3.settings()) as session:
             snapshot = session.wait_job(1)
-            with patch("LRAEP_trainer.pool_client.PoolTransport") as transport:
+            with patch("LRAEP_trainer.S3_client.S3Transport") as transport:
                 session._handle({"method": "client.reconnect", "params": ["untrusted.example", 9999]})
                 transport.assert_not_called()
             self.assertFalse(session.is_current(snapshot))

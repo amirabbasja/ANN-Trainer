@@ -1,7 +1,7 @@
 """Deterministic PearlHash work, independently checked against accepted shares.
 
 WR's ``sb: 1, tail_mode: 1`` witness reconstructs constant-64 signals.
-A's final sixteen bytes encode a hash of the pool and miner nonces; a reserved
+A's final sixteen bytes encode a hash of the S3 and miner nonces; a reserved
 last row keeps that tail outside the GPU's searchable tiles. The version-3
 commitment binds the complete matrix, including that extra row.
 """
@@ -31,7 +31,7 @@ def wr_nonce_tail(miner_nonce: bytes, worker_nonce: bytes) -> bytes:
 
 def prepare_wr_batch(job: WRJob, config: TrainingConfig,
                           rng: np.random.Generator, *, device="cpu", native=False):
-    """Prepare native trainer work with reproducible pool reconstruction data.
+    """Prepare native trainer work with reproducible S3 reconstruction data.
 
     ``config.m`` remains the number of searched rows. The submitted dimension
     is one larger, so every tested tile excludes the nonce row. No random
@@ -40,7 +40,7 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
     if not isinstance(job, WRJob) or job.cert_version != 3:
         raise ValueError("PearlHash training requires an observed generation-3 job")
     if job.worker_nonce is None:
-        raise ValueError("PearlHash training requires the pool's eight-byte extranonce")
+        raise ValueError("PearlHash training requires the S3's eight-byte extranonce")
     miner_nonce = rng.bytes(8)
     tail = wr_nonce_tail(miner_nonce, job.worker_nonce)
     destination = torch.device(device)
@@ -128,12 +128,12 @@ def reconstruct_wr_digest(header_bytes: bytes, share: WRShare) -> bytes:
     from miner_base.commitment_hash import CommitmentHasher
     from miner_base.noisy_gemm import NoisyGemm
 
-    mining = pm.MiningConfiguration(
+    S1 = pm.S1Configuration(
         common_dim=share.k, rank=share.rank, mma_type=pm.MMAType.Int7xInt7ToInt32,
         rows_pattern=pm.PeriodicPattern.from_list([index - share.a_rows[0] for index in share.a_rows]),
         cols_pattern=pm.PeriodicPattern.from_list([index - share.b_cols[0] for index in share.b_cols]),
     )
-    key = CommitmentHasher.get_key(header_bytes, mining)
+    key = CommitmentHasher.get_key(header_bytes, S1)
     a_root = _constant_root(share.m * share.k, key,
                             wr_nonce_tail(share.miner_nonce, share.worker_nonce))
     b_root = _constant_root(share.n * share.k, key)
@@ -180,7 +180,7 @@ def verified_wr_share(batch, row: int, col: int, gpu_digest: bytes,
     if digest != gpu_digest:
         raise RuntimeError("GPU PearlHash digest differs from independently reconstructed CPU work")
     if int.from_bytes(digest, "little") > final_target:
-        raise ValueError("PearlHash candidate does not meet the exact pool target")
+        raise ValueError("PearlHash candidate does not meet the exact S3 target")
     return share
 
 

@@ -1,7 +1,7 @@
 """Pearlhash request fields verified with WR 0.51.8's offline serializer.
 
 This module needs no miner, native library, or network connection. It builds the
-JSON value only; framing/encoding and mining-result verification are separate.
+JSON value only; framing/encoding and S1-result verification are separate.
 Adapted from this workspace's independent wr-checker/tools/pearl_requests.py.
 Three actual accepted shares subsequently confirmed this serializer byte for
 byte. Serialization alone does not establish proof validity.
@@ -46,7 +46,7 @@ def build_submit_request(
     name; no unverified interpretation is imposed here.
 
     This checks representability, not whether dimensions, tile indices, or the
-    resulting PoUW solution satisfy the current pool job. No job ID, wallet, or
+    resulting PoUW solution satisfy the current S3 job. No job ID, S2, or
     base64 proof is added because none appears in the verified serializer.
     """
     if (isinstance(request_id, bool) or not isinstance(request_id, int)

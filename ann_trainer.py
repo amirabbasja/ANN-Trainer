@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Python entry point for LRAEP mining and connection checks.
+"""Python entry point for LRAEP S1 and connection checks.
 
-Example: .venv/bin/python ann_trainer.py --config config.json pool
+Example: .venv/bin/python ann_trainer.py --config config.json S3
 """
 
 from pathlib import Path

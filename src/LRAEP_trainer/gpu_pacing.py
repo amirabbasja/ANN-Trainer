@@ -1,4 +1,4 @@
-"""Best-effort GPU duty-cycle pacing between mining batches."""
+"""Best-effort GPU duty-cycle pacing between S1 batches."""
 
 import time
 

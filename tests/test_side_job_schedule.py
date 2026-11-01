@@ -1,4 +1,4 @@
-"""Side-job intervals select CNN batches without initializing or submitting mining work."""
+"""Side-job intervals select CNN batches without initializing or submitting S1 work."""
 
 import sys
 from types import ModuleType

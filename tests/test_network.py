@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from LRAEP_trainer import network
 from LRAEP_trainer.node import NodeClient
-from LRAEP_trainer.pool_transport import PoolTransport
+from LRAEP_trainer.S3_transport import S3Transport
 
 
 def read_exact(peer, count):
@@ -206,23 +206,23 @@ class SocksNetworkTests(unittest.TestCase):
                     network.create_connection(("host", 443), timeout, proxy=proxy)
         connect.assert_not_called()
 
-    def test_pool_transport_captures_route_before_worker_thread(self):
+    def test_S3_transport_captures_route_before_worker_thread(self):
         targets = []
 
         def server(peer):
             handshake(peer, targets)
-            self.assertEqual(read_exact(peer, 4), b"pool")
+            self.assertEqual(read_exact(peer, len(b"S3")), b"S3")
             peer.sendall(b"done")
 
         with socks_server(server) as port:
             with network.routed(network.SocksProxy("127.0.0.1", port)):
-                transport = PoolTransport("pool-target.invalid", 8048)
+                transport = S3Transport("S3-target.invalid", 8048)
             failures = []
 
             def worker():
                 try:
                     with transport:
-                        transport.send(b"pool")
+                        transport.send(b"S3")
                         self.assertEqual(transport.receive(), b"done")
                 except BaseException as exc:
                     failures.append(exc)
@@ -232,7 +232,7 @@ class SocksNetworkTests(unittest.TestCase):
             thread.join(4)
             self.assertFalse(thread.is_alive())
             self.assertEqual(failures, [])
-        self.assertEqual(targets, [(3, "pool-target.invalid", 8048)])
+        self.assertEqual(targets, [(3, "S3-target.invalid", 8048)])
 
     def test_node_rpc_uses_captured_route_and_ignores_environment_proxies(self):
         targets = []

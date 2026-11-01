@@ -64,9 +64,9 @@ class WRWorkTests(unittest.TestCase):
             fields[name] = tuple(fields[name])
         return WRShare(**fields)
 
-    def test_all_three_pool_accepted_shares_reconstruct_below_exact_target(self):
+    def test_all_three_S3_accepted_shares_reconstruct_below_exact_target(self):
         # These requests and matching true replies were observed on the real
-        # pool. Reconstructing arbitrary incorrect signals would fail by ~2^35.
+        # S3. Reconstructing arbitrary incorrect signals would fail by ~2^35.
         self.assertEqual(len(self.captures), 3)
         for fixture in self.captures:
             with self.subTest(request_id=fixture["request_id"]):
@@ -75,13 +75,13 @@ class WRWorkTests(unittest.TestCase):
                 self.assertEqual(digest.hex(), fixture["digest_hex"])
                 self.assertLessEqual(int.from_bytes(digest, "little"),
                                      int(fixture["final_target_hex"], 16))
-                mining = self.pm.MiningConfiguration(
+                S1 = self.pm.S1Configuration(
                     common_dim=share.k, rank=128, mma_type=self.pm.MMAType.Int7xInt7ToInt32,
                     rows_pattern=self.pm.PeriodicPattern.from_list([v-share.a_rows[0] for v in share.a_rows]),
                     cols_pattern=self.pm.PeriodicPattern.from_list([v-share.b_cols[0] for v in share.b_cols]),
                 )
                 target = self.pm.penalized_target_bound(
-                    int.from_bytes(bytes.fromhex(fixture["wire_target"]), "little"), mining,
+                    int.from_bytes(bytes.fromhex(fixture["wire_target"]), "little"), S1,
                 )
                 self.assertEqual(target, int(fixture["final_target_hex"], 16))
 

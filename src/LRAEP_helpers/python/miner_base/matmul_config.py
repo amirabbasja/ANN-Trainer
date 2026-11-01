@@ -1,20 +1,20 @@
 from dataclasses import dataclass
 
-from LRAEP_gateway.comm.mining_configuration import MiningConfiguration
+from LRAEP_gateway.comm.S1_configuration import S1Configuration
 
 
 @dataclass
 class MatmulConfig:
-    """Unified configuration for matrix multiplication and mining.
+    """Unified configuration for matrix multiplication and S1.
 
-    This class combines matmul tile parameters with MiningConfiguration,
-    providing delegated access to mining-related properties.
+    This class combines matmul tile parameters with S1Configuration,
+    providing delegated access to S1-related properties.
     """
 
     matmul_tile_h: int
     matmul_tile_w: int
     matmul_tile_k: int
-    mining_config: MiningConfiguration
+    S1_config: S1Configuration
 
     def __post_init__(self) -> None:
         """Validate configuration constraints."""
@@ -27,8 +27,8 @@ class MatmulConfig:
         )
 
         # Max thread offsets from pattern must fit within matmul tile
-        max_thread_row = max(self.mining_config.rows_pattern.to_list())
-        max_thread_col = max(self.mining_config.cols_pattern.to_list())
+        max_thread_row = max(self.S1_config.rows_pattern.to_list())
+        max_thread_col = max(self.S1_config.cols_pattern.to_list())
         assert max_thread_row <= self.matmul_tile_h, (
             f"max_thread_row ({max_thread_row}) must be <= matmul_tile_h ({self.matmul_tile_h})"
         )
@@ -38,12 +38,12 @@ class MatmulConfig:
 
     @property
     def hash_tile_h(self) -> int:
-        return self.mining_config.hash_tile_h
+        return self.S1_config.hash_tile_h
 
     @property
     def hash_tile_w(self) -> int:
-        return self.mining_config.hash_tile_w
+        return self.S1_config.hash_tile_w
 
     @property
     def noise_rank(self) -> int:
-        return self.mining_config.rank
+        return self.S1_config.rank

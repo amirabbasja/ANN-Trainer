@@ -28,7 +28,7 @@ class NotebookDisplayTests(unittest.TestCase):
             (directory / 'src').symlink_to(ROOT / 'src', target_is_directory=True)
             go = directory / 'go'
             config = copy.deepcopy(DEFAULT_CONFIG)
-            config['pool'].update(protocol='WR', host='fixture.example', WR_wallet='fixture-wallet')
+            config['S3'].update(protocol='WR', host='fixture.example', WR_S2='fixture-S2')
             config['vpn'].update(enabled=True, link='vless://fixture@example.invalid:443')
             config['side_job']['repo_url'] = 'https://huggingface.co/datasets/fixture/thesis'
             config['training']['job_sequence'] = [['side-job', 2, 100], ['main', 1, 100]]
@@ -46,7 +46,7 @@ class NotebookDisplayTests(unittest.TestCase):
                     'from pathlib import Path\n'
                     'from unittest.mock import patch\n'
                     f"exec({''.join(notebook['cells'][0]['source'])!r}, globals())\n"
-                    'from LRAEP_trainer.pool_training import _signal_stop\n'
+                    'from LRAEP_trainer.S3_training import _signal_stop\n'
                     'def exercise(configuration):\n'
                     "    assert configuration['training']['job_sequence'] == [('side-job', 2, 100), ('main', 1, 100)]\n"
                     '    stopped = threading.Event()\n'
@@ -59,7 +59,7 @@ class NotebookDisplayTests(unittest.TestCase):
                     "            print('Side-job | Epoch 1 | Step 2/3 (66.7%) | GPU 80%', flush=True)\n"
                     "            print('Fixture epoch complete', flush=True)\n"
                     '    return 0\n'
-                    "with patch('LRAEP_trainer.vpn.ManagedVPN') as vpn, patch('LRAEP_trainer.network.routed') as route, patch('LRAEP_trainer.pool_training.run_pool_training', side_effect=exercise):\n"
+                    "with patch('LRAEP_trainer.vpn.ManagedVPN') as vpn, patch('LRAEP_trainer.network.routed') as route, patch('LRAEP_trainer.S3_training.run_S3_training', side_effect=exercise):\n"
                     f"    exec({''.join(notebook['cells'][-1]['source'])!r}, globals())\n"
                     '    assert vpn.return_value.__exit__.called\n'
                     '    assert route.return_value.__exit__.called\n'

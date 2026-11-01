@@ -9,7 +9,7 @@ import unittest
 
 from LRAEP_trainer import pearl_codec
 from LRAEP_trainer.pearl_requests import build_submit_request
-from LRAEP_trainer.pool_protocol import PoolProtocolError
+from LRAEP_trainer.S3_protocol import S3ProtocolError
 from LRAEP_trainer.wr_protocol import (
     UnknownWRRequest, WRDialect, WRShare,
 )
@@ -66,7 +66,7 @@ class WRCodecTests(unittest.TestCase):
                 pearl_codec.decode_frame(frame)
 
     def test_three_accepted_share_requests_reproduce_exact_wire(self):
-        for fixture in fixtures("accepted_pool_shares"):
+        for fixture in fixtures("accepted_S3_shares"):
             request = fixture["request"]
             fields = {key: value for key, value in request["params"][0].items()
                       if key not in {"nonce", "tail_mode", "sb_p"}}
@@ -81,17 +81,17 @@ class WRCodecTests(unittest.TestCase):
 
 class WRProtocolTests(unittest.TestCase):
     def setUp(self):
-        self.dialect = WRDialect(WR_wallet="test-wallet", worker="test-worker", agent="our-client/1")
+        self.dialect = WRDialect(WR_S2="test-S2", worker="test-worker", agent="our-client/1")
 
-    def test_login_keeps_wr_wallet_worker_agent_separate(self):
+    def test_login_keeps_wr_S2_worker_agent_separate(self):
         self.assertEqual(self.dialect.auth_requests(0), [{
-            "id": 0, "method": "login", "params": ["test-wallet", "test-worker", "our-client/1"],
+            "id": 0, "method": "login", "params": ["test-S2", "test-worker", "our-client/1"],
         }])
 
-    def test_wr_wallet_validation_names_only_the_selected_field(self):
+    def test_wr_S2_validation_names_only_the_selected_field(self):
         for value in ("", None, "has whitespace"):
-            with self.subTest(value=value), self.assertRaisesRegex(PoolProtocolError, "WR_wallet"):
-                WRDialect(WR_wallet=value, worker="test-worker")
+            with self.subTest(value=value), self.assertRaisesRegex(S3ProtocolError, "WR_S2"):
+                WRDialect(WR_S2=value, worker="test-worker")
 
     def test_gpu_reports_match_recorded_raw_rates_and_device_names(self):
         reports = [frame for frame in fixtures("pearl_codec_frames")
@@ -107,7 +107,7 @@ class WRProtocolTests(unittest.TestCase):
                 self.assertEqual(list(report["params"][0]), ["hashrate", "name"])
                 self.assertIsInstance(report["params"][0]["hashrate"], float)
                 self.assertEqual(report["params"][0]["name"], "NVIDIA GeForce GTX 1660 SUPER ")
-                self.assertNotIn("WR_wallet", report)
+                self.assertNotIn("WR_S2", report)
 
     def test_gpu_reports_preserve_raw_h_per_second_and_printable_name(self):
         for value in (0, 0.0, 1, 4_000_000_000_000.0, sys.float_info.max):
@@ -122,15 +122,15 @@ class WRProtocolTests(unittest.TestCase):
     def test_gpu_report_rejects_invalid_rates_names_and_ids_without_echoing_them(self):
         for value in (True, False, None, "PRIVATE_RATE", -1, float("nan"), float("inf"),
                       -float("inf"), 10 ** 400):
-            with self.subTest(rate=value), self.assertRaisesRegex(PoolProtocolError, "hashrate") as caught:
+            with self.subTest(rate=value), self.assertRaisesRegex(S3ProtocolError, "hashrate") as caught:
                 self.dialect.report_request("GPU", value, 1)
             self.assertNotIn("PRIVATE_RATE", str(caught.exception))
         for name in ("", "   ", "PRIVATE_GPU\n", "PRIVATE_GPU\x7f", "PRIVATE_GPU\u202e", "G" * 257, None, 17):
-            with self.subTest(name=name), self.assertRaisesRegex(PoolProtocolError, "gpu_name") as caught:
+            with self.subTest(name=name), self.assertRaisesRegex(S3ProtocolError, "gpu_name") as caught:
                 self.dialect.report_request(name, 1.0, 1)
             self.assertNotIn("PRIVATE_GPU", str(caught.exception))
         for request_id in (-1, 1 << 64, True, 1.0, None):
-            with self.subTest(request_id=request_id), self.assertRaisesRegex(PoolProtocolError, "request ID"):
+            with self.subTest(request_id=request_id), self.assertRaisesRegex(S3ProtocolError, "request ID"):
                 self.dialect.report_request("GPU", 1.0, request_id)
 
     def test_three_recorded_jobs_recover_native_verified_headers(self):
@@ -156,7 +156,7 @@ class WRProtocolTests(unittest.TestCase):
                         {"id": True, "status": 1, "result": True},
                         {"id": 1 << 64, "status": 1, "result": True},
                         {"id": 2, "status": True, "result": True}]:
-            with self.assertRaises(PoolProtocolError) as caught:
+            with self.assertRaises(S3ProtocolError) as caught:
                 self.dialect.classify(message)
             self.assertNotIsInstance(caught.exception, UnknownWRRequest)
 
@@ -166,10 +166,10 @@ class WRProtocolTests(unittest.TestCase):
                              (4, "2"), (4, "03")]:
             result = list(job_result())
             result[field] = value
-            with self.subTest(field=field, value=value[:10]), self.assertRaises(PoolProtocolError):
+            with self.subTest(field=field, value=value[:10]), self.assertRaises(S3ProtocolError):
                 self.dialect.parse_job(result)
         for certificate in [True, 1, 2, 4]:
-            with self.assertRaises(PoolProtocolError):
+            with self.assertRaises(S3ProtocolError):
                 self.dialect.parse_job(job_result(), certificate)
 
     def test_share_nonce_must_match_job_and_gzip_is_never_used(self):
@@ -181,9 +181,9 @@ class WRProtocolTests(unittest.TestCase):
         self.assertEqual(request["params"][0]["miner_nonce"], "00" * 8)
         self.assertNotIn("plain_proof", request["params"][0])
         for incompatible in [replace(share, worker_nonce=b"x" * 8), "base64-proof"]:
-            with self.assertRaises(PoolProtocolError):
+            with self.assertRaises(S3ProtocolError):
                 self.dialect.submit_request(job, incompatible, 7)
-        with self.assertRaises(PoolProtocolError):
+        with self.assertRaises(S3ProtocolError):
             self.dialect.submit_request(job, share, 7, True)
 
 

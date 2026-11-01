@@ -73,7 +73,7 @@ class VPNCheckTests(unittest.TestCase):
         self.proxy = SocksProxy("127.0.0.1", 19080, "SECRET_USER", "SECRET_PASSWORD")
         self.configuration = {
             "vpn": {"core_path": "/bin/unused", "check_url": "https://check.example/ip"},
-            "pool": {"host": "pool.example", "port": 8048, "tls": True, "ca_file": None},
+            "S3": {"host": "S3.example", "port": 8048, "tls": True, "ca_file": None},
         }
 
     def run_check(self, **kwargs):
@@ -83,11 +83,11 @@ class VPNCheckTests(unittest.TestCase):
                                              output=self.output, **kwargs)
         return result, stdout.getvalue(), stderr.getvalue()
 
-    def test_mixed_links_report_pool_loss_and_https_separately_without_secrets(self):
+    def test_mixed_links_report_S3_loss_and_https_separately_without_secrets(self):
         managed = [_Managed(self.proxy), _Managed(self.proxy)]
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", side_effect=managed) as core, \
-             patch.object(vpn_check, "_probe_pool", side_effect=[10, TimeoutError("SECRET"), 30,
+             patch.object(vpn_check, "_probe_S3", side_effect=[10, TimeoutError("SECRET"), 30,
                                                                OSError("SECRET"), OSError(), OSError()]), \
              patch.object(vpn_check, "_probe_https", side_effect=[TimeoutError("SECRET"), (15, "203.0.113.7")]):
             result, stdout, stderr = self.run_check()
@@ -99,29 +99,29 @@ class VPNCheckTests(unittest.TestCase):
         self.assertEqual(report["working"], 1)
         self.assertEqual([item["line"] for item in report["results"]], [3, 4])
         first, second = report["results"]
-        self.assertEqual(first["pool_latency_ms"], 20)
-        self.assertEqual(first["pool_loss_percent"], 33.3)
+        self.assertEqual(first["S3_latency_ms"], 20)
+        self.assertEqual(first["S3_loss_percent"], 33.3)
         self.assertEqual(first["https_status"], "failed")
         self.assertTrue(first["usable"])
-        self.assertEqual(first["pool_proof_level"], "tls_verified")
-        self.assertEqual(second["status"], "POOL_FAIL")
+        self.assertEqual(first["S3_proof_level"], "tls_verified")
+        self.assertEqual(second["status"], "S3_FAIL")
         self.assertEqual(second["https_status"], "ok")
-        self.assertIn("POOL_OK", stdout)
-        self.assertIn("POOL_FAIL", stdout)
+        self.assertIn("S3_OK", stdout)
+        self.assertIn("S3_FAIL", stdout)
         self.assertIn("FAIL", stdout)
         self.assertNotIn("SECRET", stdout + stderr + self.output.read_text())
 
     def test_selected_wr_profile_uses_its_endpoint_and_preserves_shared_settings(self):
         self.links.write_text("valid-link\n")
-        self.configuration["pool"].update(
-            protocol="WR", KEX_uname="kex-only-name", WR_wallet="wr-only-wallet",
+        self.configuration["S3"].update(
+            protocol="WR", KEX_uname="kex-only-name", WR_S2="wr-only-S2",
             KEX={"host": "kex.example", "port": 8048, "tls": True, "ca_file": None},
             WR={"host": "wr.example", "port": 9000, "tls": False, "ca_file": None},
         )
         before = copy.deepcopy(self.configuration)
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)) as core, \
-             patch.object(vpn_check, "_probe_pool", return_value=0.1) as probe, \
+             patch.object(vpn_check, "_probe_S3", return_value=0.1) as probe, \
              patch.object(vpn_check, "_probe_https", return_value=(15, "203.0.113.8")):
             result, _, stderr = self.run_check(attempts=1)
         self.assertEqual(result, 0)
@@ -129,21 +129,21 @@ class VPNCheckTests(unittest.TestCase):
         selected = probe.call_args.args[0]
         self.assertEqual((selected["protocol"], selected["host"], selected["port"], selected["tls"]),
                          ("WR", "wr.example", 9000, False))
-        self.assertEqual((selected["WR_wallet"], selected["KEX_uname"]),
-                         ("wr-only-wallet", "kex-only-name"))
+        self.assertEqual((selected["WR_S2"], selected["KEX_uname"]),
+                         ("wr-only-S2", "kex-only-name"))
         self.assertNotIn("WR", selected)
         self.assertNotIn("KEX", selected)
         core.assert_called_once_with(self.configuration["vpn"], link="valid-link")
         self.assertEqual(self.configuration, before)
 
     def test_missing_selected_wr_host_does_not_probe_other_profile_or_start_core(self):
-        self.configuration["pool"].update(
+        self.configuration["S3"].update(
             protocol="WR", KEX={"host": "kex.example", "port": 8048},
             WR={"host": "", "port": 9000},
         )
         before = copy.deepcopy(self.configuration)
         with patch.object(vpn_check, "ManagedVPN") as core, \
-             patch.object(vpn_check, "_probe_pool") as probe, \
+             patch.object(vpn_check, "_probe_S3") as probe, \
              patch.object(vpn_check, "_probe_https") as https, \
              self.assertRaisesRegex(ValueError, "host"):
             self.run_check(attempts=1)
@@ -155,25 +155,25 @@ class VPNCheckTests(unittest.TestCase):
     def test_optimistic_socks_ack_with_broken_tunnel_is_unverified(self):
         # Some SOCKS cores acknowledge CONNECT before contacting their remote
         # outbound. A successful acknowledgement alone must never pass a link.
-        self.configuration["pool"]["tls"] = False
+        self.configuration["S3"]["tls"] = False
         self.links.write_text("valid-link\n")
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)), \
-             patch.object(vpn_check, "_probe_pool", return_value=0.1), \
+             patch.object(vpn_check, "_probe_S3", return_value=0.1), \
              patch.object(vpn_check, "_probe_https", side_effect=OSError("SECRET")):
             result, stdout, _ = self.run_check(attempts=1)
         self.assertEqual(result, 1)
         self.assertIn("UNVERIFIED", stdout)
         report = json.loads(self.output.read_text())["results"][0]
         self.assertFalse(report["usable"])
-        self.assertEqual(report["pool_proof_level"], "connect_only")
+        self.assertEqual(report["S3_proof_level"], "connect_only")
         self.assertNotIn("SECRET", self.output.read_text() + stdout)
 
-    def test_real_socks_ack_without_outbound_cannot_pass_plain_pool_probe(self):
+    def test_real_socks_ack_without_outbound_cannot_pass_plain_S3_probe(self):
         class Server(socketserver.ThreadingTCPServer):
             daemon_threads = True
 
-        self.configuration["pool"]["tls"] = False
+        self.configuration["S3"]["tls"] = False
         self.links.write_text("valid-link\n")
         with Server(("127.0.0.1", 0), _OptimisticSOCKS) as server:
             thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -187,17 +187,17 @@ class VPNCheckTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("UNVERIFIED", stdout)
         report = json.loads(self.output.read_text())["results"][0]
-        self.assertEqual(report["pool_successes"], 1)
+        self.assertEqual(report["S3_successes"], 1)
         self.assertEqual(report["https_status"], "failed")
         self.assertFalse(report["usable"])
 
     def test_plain_tcp_without_https_cannot_count_as_working(self):
-        self.configuration["pool"]["tls"] = False
+        self.configuration["S3"]["tls"] = False
         self.configuration["vpn"]["check_url"] = None
         self.links.write_text("valid-link\n")
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)), \
-             patch.object(vpn_check, "_probe_pool", return_value=0.1), \
+             patch.object(vpn_check, "_probe_S3", return_value=0.1), \
              patch.object(vpn_check, "_probe_https") as https:
             result, stdout, _ = self.run_check(attempts=1)
         self.assertEqual(result, 1)
@@ -205,33 +205,33 @@ class VPNCheckTests(unittest.TestCase):
         self.assertFalse(json.loads(self.output.read_text())["results"][0]["usable"])
         https.assert_not_called()
 
-    def test_plain_tcp_plus_https_is_usable_but_pool_stays_connect_only(self):
-        self.configuration["pool"]["tls"] = False
+    def test_plain_tcp_plus_https_is_usable_but_S3_stays_connect_only(self):
+        self.configuration["S3"]["tls"] = False
         self.links.write_text("valid-link\n")
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)), \
-             patch.object(vpn_check, "_probe_pool", return_value=0.1), \
+             patch.object(vpn_check, "_probe_S3", return_value=0.1), \
              patch.object(vpn_check, "_probe_https", return_value=(15, "203.0.113.8")):
             result, stdout, _ = self.run_check(attempts=1)
         self.assertEqual(result, 0)
         self.assertIn("CONNECT_OK", stdout)
         report = json.loads(self.output.read_text())["results"][0]
         self.assertTrue(report["usable"])
-        self.assertEqual(report["pool_proof_level"], "connect_only")
+        self.assertEqual(report["S3_proof_level"], "connect_only")
 
     def test_invalid_link_does_not_start_core_and_following_link_still_runs(self):
         instance = _Managed(self.proxy)
         with patch.object(vpn_check, "parse_link", side_effect=[VPNError("SECRET"), {}]), \
              patch.object(vpn_check, "ManagedVPN", return_value=instance) as core, \
-             patch.object(vpn_check, "_probe_pool", return_value=12) as pool, \
+             patch.object(vpn_check, "_probe_S3", return_value=12) as S3, \
              patch.object(vpn_check, "_probe_https", return_value=(15, "203.0.113.8")):
             result, stdout, stderr = self.run_check(attempts=1)
         self.assertEqual(result, 0)
         core.assert_called_once_with(self.configuration["vpn"], link="second-SECRET-URL")
-        pool.assert_called_once()
-        selected, proxy, timeout = pool.call_args.args
+        S3.assert_called_once()
+        selected, proxy, timeout = S3.call_args.args
         self.assertEqual({key: selected[key] for key in ("host", "port", "tls", "ca_file")},
-                         self.configuration["pool"])
+                         self.configuration["S3"])
         self.assertIs(proxy, self.proxy)
         self.assertEqual(timeout, 5.0)
         self.assertNotIn("SECRET", stdout + stderr + self.output.read_text())
@@ -241,12 +241,12 @@ class VPNCheckTests(unittest.TestCase):
         instance = _Managed(self.proxy)
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", side_effect=[VPNError("SECRET"), instance]), \
-             patch.object(vpn_check, "_probe_pool", side_effect=TimeoutError("SECRET")), \
+             patch.object(vpn_check, "_probe_S3", side_effect=TimeoutError("SECRET")), \
              patch.object(vpn_check, "_probe_https", side_effect=OSError("SECRET")):
             result, stdout, stderr = self.run_check(attempts=1)
         self.assertEqual(result, 1)
         self.assertIn("CORE_FAIL", stdout)
-        self.assertIn("POOL_FAIL", stdout)
+        self.assertIn("S3_FAIL", stdout)
         self.assertNotIn("SECRET", stdout + stderr + self.output.read_text())
         self.assertTrue(instance.closed)
 
@@ -255,7 +255,7 @@ class VPNCheckTests(unittest.TestCase):
         self.links.write_text("valid-link\n")
         with patch.object(vpn_check, "parse_link"), \
              patch.object(vpn_check, "ManagedVPN", return_value=_Managed(self.proxy)), \
-             patch.object(vpn_check, "_probe_pool", return_value=12), \
+             patch.object(vpn_check, "_probe_S3", return_value=12), \
              patch.object(vpn_check, "_probe_https") as http:
             result, stdout, _ = self.run_check(attempts=1)
         self.assertEqual(result, 0)
@@ -285,26 +285,26 @@ class VPNCheckTests(unittest.TestCase):
             with self.subTest(timeout=value), self.assertRaises(ValueError):
                 self.run_check(timeout=value)
 
-    def test_pool_probe_sends_hostname_to_proxy_and_verifies_target_tls(self):
+    def test_S3_probe_sends_hostname_to_proxy_and_verifies_target_tls(self):
         raw, secured = Mock(), Mock()
         context = Mock(wrap_socket=Mock(return_value=secured))
         with patch.object(vpn_check.network, "create_connection", return_value=raw) as connect, \
              patch.object(vpn_check.ssl, "create_default_context", return_value=context) as tls:
-            latency = vpn_check._probe_pool(self.configuration["pool"], self.proxy, 5)
-        connect.assert_called_once_with(("pool.example", 8048), 5, proxy=self.proxy)
+            latency = vpn_check._probe_S3(self.configuration["S3"], self.proxy, 5)
+        connect.assert_called_once_with(("S3.example", 8048), 5, proxy=self.proxy)
         tls.assert_called_once_with(cafile=None)
-        context.wrap_socket.assert_called_once_with(raw, server_hostname="pool.example")
+        context.wrap_socket.assert_called_once_with(raw, server_hostname="S3.example")
         secured.close.assert_called_once()
         self.assertGreaterEqual(latency, 0)
 
-    def test_tls_failure_closes_pool_socket_and_never_retries_directly(self):
+    def test_tls_failure_closes_S3_socket_and_never_retries_directly(self):
         raw = Mock()
         context = Mock()
         context.wrap_socket.side_effect = ssl.SSLCertVerificationError("SECRET")
         with patch.object(vpn_check.network, "create_connection", return_value=raw) as connect, \
              patch.object(vpn_check.ssl, "create_default_context", return_value=context):
             with self.assertRaises(ssl.SSLError):
-                vpn_check._probe_pool(self.configuration["pool"], self.proxy, 5)
+                vpn_check._probe_S3(self.configuration["S3"], self.proxy, 5)
         raw.close.assert_called_once()
         connect.assert_called_once()
 

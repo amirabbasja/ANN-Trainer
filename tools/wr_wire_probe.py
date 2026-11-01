@@ -1,7 +1,7 @@
-"""Local, transparent WR-to-pool TCP relay for observing pool messages.
+"""Local, transparent WR-to-S3 TCP relay for observing S3 messages.
 
 Only point a miner you control at this listener. The relay does not generate
-mining requests or submit shares; it forwards exactly what the miner sends.
+S1 requests or submit shares; it forwards exactly what the miner sends.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ from datetime import datetime, timezone
 
 MAX_LINE = 8 * 1024 * 1024
 BUFFER_SIZE = 64 * 1024
-SENSITIVE_KEYS = {
+SENSITIVE_KEYS = {key.lower() for key in {
     "address", "api_key", "authorization", "login", "pass", "password",
-    "secret", "token", "user", "username", "wallet", "worker", "wr_wallet", "kex_uname",
-}
+    "secret", "token", "user", "username", "wallet", "worker", "WR_S2", "S2", "kex_uname",
+}}
 
 
 class Events:
@@ -122,9 +122,9 @@ class Inspector:
             # JSON IDs are usually strings/numbers; do not fail on unusual arrays/objects.
             if isinstance(request_id, (str, int, float, bool, type(None))):
                 with self.pending_lock:
-                    if self.direction == "miner -> pool" and operation is not None:
+                    if self.direction == "miner -> S3" and operation is not None:
                         self.pending[request_id] = operation
-                    elif self.direction == "pool -> miner" and operation is None:
+                    elif self.direction == "S3 -> miner" and operation is None:
                         operation = self.pending.pop(request_id, None)
 
         if self.raw:
@@ -134,12 +134,12 @@ class Inspector:
             if isinstance(displayed, dict) and isinstance(operation, str):
                 method = operation.lower()
                 if "auth" in method or "login" in method:
-                    # Positional or keyed Stratum credentials may have unknown names.
+                    # Positional or keyed S4 credentials may have unknown names.
                     if isinstance(displayed.get("params"), (list, dict)):
                         displayed["params"] = redact(displayed["params"],
                                                       field_limit=self.field_limit,
                                                       hide_values=True)
-                elif "submit" in method and self.direction == "miner -> pool":
+                elif "submit" in method and self.direction == "miner -> S3":
                     params = displayed.get("params")
                     if isinstance(params, list) and params:
                         params[0] = redact(params[0], field_limit=self.field_limit,
@@ -174,7 +174,7 @@ class Relay(socketserver.ThreadingTCPServer):
         try:
             if self.context is not None:
                 sock = self.context.wrap_socket(sock, server_hostname=self.upstream_host)
-            sock.settimeout(None)  # A pool can remain idle longer than the connect timeout.
+            sock.settimeout(None)  # A S3 can remain idle longer than the connect timeout.
             return sock
         except BaseException:
             sock.close()
@@ -197,13 +197,13 @@ class RelayHandler(socketserver.BaseRequestHandler):
                           isinstance(upstream, ssl.SSLSocket) else None)
         pending: dict = {}
         pending_lock = threading.Lock()
-        to_pool = Inspector(relay.events, number, "miner -> pool", pending, pending_lock,
+        to_S3 = Inspector(relay.events, number, "miner -> S3", pending, pending_lock,
                             raw=relay.raw, field_limit=relay.field_limit)
-        to_miner = Inspector(relay.events, number, "pool -> miner", pending, pending_lock,
+        to_miner = Inspector(relay.events, number, "S3 -> miner", pending, pending_lock,
                              raw=relay.raw, field_limit=relay.field_limit)
         with upstream:
             sender = threading.Thread(target=self._forward,
-                                      args=(self.request, upstream, to_pool), daemon=True)
+                                      args=(self.request, upstream, to_S3), daemon=True)
             sender.start()
             self._forward(upstream, self.request, to_miner)
             sender.join()
@@ -233,10 +233,10 @@ class RelayHandler(socketserver.BaseRequestHandler):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upstream-host", required=True, help="Real pool hostname")
-    parser.add_argument("--upstream-port", type=int, required=True, help="Real pool port")
+    parser.add_argument("--upstream-host", required=True, help="Real S3 hostname")
+    parser.add_argument("--upstream-port", type=int, required=True, help="Real S3 port")
     parser.add_argument("--upstream-tls", action="store_true",
-                        help="Verify TLS to the real pool (local WR side stays plain TCP)")
+                        help="Verify TLS to the real S3 (local WR side stays plain TCP)")
     parser.add_argument("--ca-file", help="Custom CA file for upstream TLS")
     parser.add_argument("--listen-port", type=int, default=19000,
                         help="Local plain TCP listener port (default: 19000)")

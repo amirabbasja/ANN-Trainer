@@ -1,4 +1,4 @@
-"""Unknown pool requests preserve replayable evidence without logging payloads."""
+"""Unknown S3 requests preserve replayable evidence without logging payloads."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.pool_diagnostics import LOG, UnknownRequestRecorder
+from LRAEP_trainer.S3_diagnostics import LOG, UnknownRequestRecorder
 
 
 class UnknownRequestRecorderTests(unittest.TestCase):
@@ -15,8 +15,8 @@ class UnknownRequestRecorderTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "unknown"
-        self.settings = {"host": "pool.example", "port": 9000,
-                         "WR_wallet": "PRIVATE_WALLET", "KEX_uname": "PRIVATE_UNAME",
+        self.settings = {"host": "S3.example", "port": 9000,
+                         "WR_S2": "PRIVATE_S2", "KEX_uname": "PRIVATE_UNAME",
                          "password": "PRIVATE_PASSWORD"}
 
     def test_exact_incoming_message_is_saved_with_private_permissions_and_user_notice(self):
@@ -31,7 +31,7 @@ class UnknownRequestRecorderTests(unittest.TestCase):
         self.assertTrue(saved["training_stopped"])
         self.assertEqual(os.stat(artifact).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o700)
-        self.assertNotIn("PRIVATE_WALLET", artifact.read_text())
+        self.assertNotIn("PRIVATE_S2", artifact.read_text())
         self.assertNotIn("PRIVATE_UNAME", artifact.read_text())
         self.assertNotIn("PRIVATE_PASSWORD", artifact.read_text())
         output = " ".join(logged.output)
@@ -49,7 +49,7 @@ class UnknownRequestRecorderTests(unittest.TestCase):
 
     def test_recording_failure_notifies_user_and_is_not_silently_ignored(self):
         recorder = UnknownRequestRecorder(self.path, self.settings)
-        with patch("LRAEP_trainer.pool_diagnostics.os.open", side_effect=OSError), \
+        with patch("LRAEP_trainer.S3_diagnostics.os.open", side_effect=OSError), \
                 self.assertLogs(LOG, level="CRITICAL"), \
                 self.assertRaisesRegex(RuntimeError, "training stopped"):
             recorder(b"frame", None, "unknown")

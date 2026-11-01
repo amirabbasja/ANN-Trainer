@@ -10,7 +10,7 @@ from LRAEP_trainer.protocol import TrainingConfig, load_official_helpers, prepar
 
 
 class FullRangeSignals:
-    """Arithmetic stress inputs; ordinary mining signals remain int7."""
+    """Arithmetic stress inputs; ordinary S1 signals remain int7."""
 
     def __init__(self):
         self.calls = 0

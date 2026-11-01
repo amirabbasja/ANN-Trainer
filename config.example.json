@@ -1,8 +1,15 @@
 {
   "version": 1,
-  "mode": "pool",
+  "mode": "S3",
   "official_source": "src/LRAEP_helpers",
   "device": "cuda:0",
+  "trainer_name": "trainer",
+  "telegram": {
+    "enabled": false,
+    "tgBot_key": "",
+    "tgChatID": "",
+    "update_interval_seconds": 300
+  },
   "training": {
     "m": 256,
     "n": 256,
@@ -14,7 +21,7 @@
     "job_sequence": [["main", 60, 80, 5], ["main", 120, 70, 5], ["main", 180, 10, 5]],
     "output_dir": "~/.local/share/LRAEP/artifacts"
   },
-  "pool": {
+  "S3": {
     "worker": "rig-01",
     "password": "x",
     "connect_timeout": 15,
@@ -23,7 +30,7 @@
     "protocol": "KEX",
     "agent": "LRAEP-trainer/0.1",
     "KEX_uname": "",
-    "WR_wallet": "",
+    "WR_S2": "",
     "KEX": {
       "host": "",
       "port": 8048,

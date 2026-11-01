@@ -54,9 +54,9 @@ socket.socket.connect = deny_connection
 socket.socket.connect_ex = deny_connection
 from LRAEP_trainer.protocol import load_official_helpers
 load_official_helpers(root / 'src/LRAEP_helpers')
-from LRAEP_trainer import pool_training, wr_work, wr_client, primitives
+from LRAEP_trainer import S3_training, wr_work, wr_client, primitives
 from LRAEP_gateway.blockchain_utils import blockchain_utils, LRAEP_header, LRAEP_block, zk_certificate
-from LRAEP_gateway.comm import dataclasses, mining_configuration
+from LRAEP_gateway.comm import dataclasses, S1_configuration
 from LRAEP_gateway import proof_generator
 assert not blocked.intersection(sys.modules)
 assert Path(primitives.__file__).resolve().is_relative_to(root)
@@ -80,9 +80,9 @@ class LocalWirePrimitiveTests(unittest.TestCase):
         parsed = local.IncompleteBlockHeader.from_bytes(header_bytes)
         self.assertEqual(parsed, header)
         configuration_bytes = bytes.fromhex('0008000080000000000700000000000700000000' + '00' * 32)
-        configuration = local.MiningConfiguration(2048, 128, local.MMAType.Int7xInt7ToInt32, local.PeriodicPattern.from_list(range(8)), local.PeriodicPattern.from_list(range(8)))
+        configuration = local.S1Configuration(2048, 128, local.MMAType.Int7xInt7ToInt32, local.PeriodicPattern.from_list(range(8)), local.PeriodicPattern.from_list(range(8)))
         self.assertEqual(configuration.to_bytes(), configuration_bytes)
-        self.assertEqual(local.MiningConfiguration.from_bytes(configuration_bytes), configuration)
+        self.assertEqual(local.S1Configuration.from_bytes(configuration_bytes), configuration)
 
     def test_local_merkle_paths_match_independent_keyed_hash_and_reject_tampering(self):
         key = bytes(range(32))

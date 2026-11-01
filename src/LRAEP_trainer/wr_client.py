@@ -9,17 +9,17 @@ import time
 from typing import Callable
 
 from .pearl_codec import CodecError, decode_frame, encode_frame
-from .pool_client import (JobSnapshot, PoolAuthenticationError, PoolCompatibilityError,
-                          PoolSession, _seconds)
-from .pool_protocol import PoolProtocolError
-from .pool_transport import PoolConnectionError
+from .S3_client import (JobSnapshot, S3AuthenticationError, S3CompatibilityError,
+                          S3Session, _seconds)
+from .S3_protocol import S3ProtocolError
+from .S3_transport import S3ConnectionError
 from .wr_protocol import UnknownWRRequest, WRDialect
 
 
 LOG = logging.getLogger("LRAEP_trainer")
 
 
-class WRSession(PoolSession):
+class WRSession(S3Session):
     """A PearlHash connection with fatal, recorded unknown-message handling.
 
     ``unknown_handler`` receives the exact wire frame, decoded object when
@@ -33,12 +33,12 @@ class WRSession(PoolSession):
     def __init__(self, settings: dict, stop_event: threading.Event | None = None,
                  unknown_handler: Callable[..., None] | None = None) -> None:
         if settings.get("compression", "none") != "none":
-            raise PoolProtocolError("PearlHash compression must be none")
+            raise S3ProtocolError("PearlHash compression must be none")
         super().__init__(settings, stop_event)
         self._worker_nonce: bytes | None = None
         self._unknown_handler = unknown_handler
         self._recording_unknown = False
-        self._compatibility_failure: PoolCompatibilityError | None = None
+        self._compatibility_failure: S3CompatibilityError | None = None
         self._report_pending: dict[int, float] = {}
         self._latest_report_id: int | None = None
         self._latest_report_accepted: bool | None = None
@@ -46,7 +46,7 @@ class WRSession(PoolSession):
     def _create_dialect(self) -> WRDialect:
         """Initialize only WR's selected identity during shared session setup."""
         return WRDialect(
-            WR_wallet=self.settings.get("WR_wallet", ""),
+            WR_S2=self.settings.get("WR_S2", ""),
             worker=self.settings.get("worker", ""),
             agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
         )
@@ -56,7 +56,7 @@ class WRSession(PoolSession):
             raise self._compatibility_failure
         super()._raise_failure()
 
-    def _fail(self, error: PoolConnectionError) -> None:
+    def _fail(self, error: S3ConnectionError) -> None:
         with self._condition:
             self._report_pending.clear()
             if self._compatibility_failure is not None:
@@ -95,7 +95,7 @@ class WRSession(PoolSession):
             with self._condition:
                 self._raise_failure()
                 if not self._authorized:
-                    raise PoolConnectionError("PearlHash session must authenticate before reporting GPU information")
+                    raise S3ConnectionError("PearlHash session must authenticate before reporting GPU information")
                 self._expire_reports_locked()
                 if len(self._report_pending) >= self.MAX_PENDING_REPORTS:
                     del self._report_pending[next(iter(self._report_pending))]
@@ -110,8 +110,8 @@ class WRSession(PoolSession):
                 self._latest_report_accepted = None
             try:
                 self._send(request)
-            except (PoolConnectionError, PoolProtocolError):
-                self._fail(PoolConnectionError("PearlHash GPU report send failed"))
+            except (S3ConnectionError, S3ProtocolError):
+                self._fail(S3ConnectionError("PearlHash GPU report send failed"))
                 raise
         return request_id
 
@@ -120,16 +120,16 @@ class WRSession(PoolSession):
             with self._condition:
                 self._expire_reports_locked()
             if self.stop_event.is_set():
-                self._fail(PoolConnectionError("Pool session stopped"))
+                self._fail(S3ConnectionError("S3 session stopped"))
                 return
 
     def _send(self, message: dict) -> None:
         try:
             encoded = encode_frame(message)
         except CodecError as error:
-            raise PoolProtocolError("Could not encode PearlHash request") from error
+            raise S3ProtocolError("Could not encode PearlHash request") from error
         if len(encoded) > self.MAX_FRAME_BYTES:
-            raise PoolProtocolError("PearlHash request exceeds the frame size limit")
+            raise S3ProtocolError("PearlHash request exceeds the frame size limit")
         self.transport.send(encoded)
 
     def _unknown(self, frame: bytes, response: dict | None, reason: str) -> None:
@@ -143,7 +143,7 @@ class WRSession(PoolSession):
             self._job = None
             self._generation += 1
             self._recording_unknown = True
-            self._compatibility_failure = PoolCompatibilityError(
+            self._compatibility_failure = S3CompatibilityError(
                 "Unknown PearlHash request; training stopped",
             )
         diagnostic_failed = False
@@ -155,7 +155,7 @@ class WRSession(PoolSession):
         message = "Unknown PearlHash request; training stopped"
         if diagnostic_failed:
             message += "; diagnostic recording failed"
-        error = PoolCompatibilityError(message)
+        error = S3CompatibilityError(message)
         with self._condition:
             # A timer, signal or explicit close may have arrived while fsync
             # ran. The recorded compatibility failure remains the reason this
@@ -199,18 +199,18 @@ class WRSession(PoolSession):
                         except Exception:
                             self._unknown(frame, response, "Could not record ignored PearlHash request")
                             return
-                    except (CodecError, PoolProtocolError) as error:
+                    except (CodecError, S3ProtocolError) as error:
                         self._unknown(frame, response, str(error))
                         return
                     if self._closed_event.is_set():
                         return
-        except PoolConnectionError as error:
+        except S3ConnectionError as error:
             if buffered and not self._closed_event.is_set():
                 self._unknown(bytes(buffered), None, "PearlHash connection ended with an unterminated frame")
             else:
                 self._fail(error)
         except Exception:
-            self._fail(PoolConnectionError("PearlHash reader failed"))
+            self._fail(S3ConnectionError("PearlHash reader failed"))
 
     def _handle(self, response: dict) -> None:
         with self._condition:
@@ -246,7 +246,7 @@ class WRSession(PoolSession):
             self._expire_reports_locked()
             if request_id == self._auth_id and not self._authorized:
                 if not self.dialect.accept(response):
-                    self._fail(PoolAuthenticationError("PearlHash rejected authentication"))
+                    self._fail(S3AuthenticationError("PearlHash rejected authentication"))
                     return
                 self._authorized = True
                 self._condition.notify_all()
@@ -270,7 +270,7 @@ class WRSession(PoolSession):
         deadline = time.monotonic() + _seconds(timeout, allow_zero=True)
         with self._condition:
             if not self._opened:
-                raise PoolConnectionError("Pool session is not open")
+                raise S3ConnectionError("S3 session is not open")
             while True:
                 self._raise_failure()
                 if self._authorized and self._job is not None and self._job.worker_nonce is not None:

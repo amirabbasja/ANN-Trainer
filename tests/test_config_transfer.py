@@ -34,12 +34,12 @@ class ConfigTransferTests(unittest.TestCase):
                 'output_dir': 'results',
                 'max_batches': 2,
             },
-            'pool': {
+            'S3': {
                 'protocol': 'KEX',
                 'KEX_uname': 'PRIVATE-KEX-IDENTITY',
-                'WR_wallet': 'PRIVATE-WR-IDENTITY',
+                'WR_S2': 'PRIVATE-WR-IDENTITY',
                 'worker': 'test-rig',
-                'password': 'PRIVATE-POOL-PASSWORD',
+                'password': 'PRIVATE-S3-PASSWORD',
                 'KEX': {'host': 'kex.example', 'port': 8048, 'tls': True},
                 'WR': {'host': 'wr.example', 'port': 9000, 'tls': False,
                        'certificate_version': 3},
@@ -55,8 +55,8 @@ class ConfigTransferTests(unittest.TestCase):
 
     def exported_values(self):
         expected = copy.deepcopy(self.values)
-        expected['mode'] = 'pool'
-        expected['pool']['protocol'] = 'WR'
+        expected['mode'] = 'S3'
+        expected['S3']['protocol'] = 'WR'
         expected.setdefault('side_job', {}).setdefault('repo_url', DEFAULT_CONFIG['side_job']['repo_url'])
         return expected
 
@@ -73,11 +73,11 @@ assert Path(config.__file__).resolve().parent.parent == Path(sys.argv[2]).resolv
 try:
     raw = config.read_config(sys.argv[1])
     runtime = config.load_config(sys.argv[1])
-    pool = config.resolve_pool_settings(runtime['pool'])
+    S3 = config.resolve_S3_settings(runtime['S3'])
 except config.ConfigError as error:
     print(str(error))
     raise SystemExit(1)
-print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=False))
+print(json.dumps({'raw': raw, 'runtime': runtime, 'S3': S3}, ensure_ascii=False))
 '''
         environment = dict(os.environ)
         environment['PYTHONPATH'] = str(wr_source)
@@ -108,22 +108,35 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
         for path in (self.destination, self.env_path):
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(set(self.destination.parent.iterdir()), {self.destination, self.env_path})
-        for secret in ('PRIVATE-WR-IDENTITY', 'PRIVATE-POOL-PASSWORD', 'PRIVATE-VPN-ID',
-                       'PRIVATE-NODE-PASSWORD', self.text, 'job_sequence', 'WR_wallet'):
+        for secret in ('PRIVATE-WR-IDENTITY', 'PRIVATE-S3-PASSWORD', 'PRIVATE-VPN-ID',
+                       'PRIVATE-NODE-PASSWORD', self.text, 'job_sequence', 'WR_S2'):
             self.assertNotIn(secret, self.destination.read_text())
         loaded = self.isolated_wr_load()
         self.assertEqual(loaded['raw'], expected)
-        self.assertEqual(loaded['runtime']['mode'], 'pool')
+        self.assertEqual(loaded['runtime']['mode'], 'S3')
         self.assertEqual(loaded['runtime']['training']['job_sequence'], self.values['training']['job_sequence'])
         self.assertNotIn('side_job_effort', loaded['runtime']['training'])
-        self.assertEqual(loaded['pool']['protocol'], 'WR')
-        self.assertEqual(loaded['pool']['host'], 'wr.example')
-        self.assertEqual(loaded['pool']['port'], 9000)
-        self.assertEqual(loaded['pool']['WR_wallet'], 'PRIVATE-WR-IDENTITY')
+        self.assertEqual(loaded['S3']['protocol'], 'WR')
+        self.assertEqual(loaded['S3']['host'], 'wr.example')
+        self.assertEqual(loaded['S3']['port'], 9000)
+        self.assertEqual(loaded['S3']['WR_S2'], 'PRIVATE-WR-IDENTITY')
         self.assertEqual(loaded['runtime']['official_source'], str(self.destination.parent / 'src/LRAEP_helpers'))
         self.assertEqual(loaded['runtime']['training']['output_dir'], str(self.destination.parent / 'results'))
         self.assertEqual(loaded['raw']['official_source'], 'src/LRAEP_helpers')
         self.assertEqual(loaded['raw']['training']['output_dir'], 'results')
+
+    def test_export_retains_name_interval_and_encrypts_telegram_credentials(self):
+        self.values["trainer_name"] = "WR test trainer"
+        self.values["telegram"] = {
+            "enabled": True, "tgBot_key": "123:PRIVATE_TELEGRAM_TOKEN", "tgChatID": -123,
+            "update_interval_seconds": 42,
+        }
+        self.save_source()
+        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
+        self.assertNotIn("PRIVATE_TELEGRAM_TOKEN", self.destination.read_text())
+        loaded = self.isolated_wr_load()
+        self.assertEqual(loaded["runtime"]["telegram"], self.values["telegram"])
+        self.assertEqual(loaded["runtime"]["trainer_name"], "WR test trainer")
 
     def test_export_preserves_unrelated_env_assignments_and_comments(self):
         self.destination.parent.mkdir()
@@ -206,8 +219,8 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
 
     def test_preflight_requires_wr_endpoint_identity_and_enabled_vpn_without_creating_output(self):
         cases = [
-            ('WR host', lambda values: values['pool']['WR'].update(host='')),
-            ('WR identity', lambda values: values['pool'].update(WR_wallet='')),
+            ('WR host', lambda values: values['S3']['WR'].update(host='')),
+            ('WR identity', lambda values: values['S3'].update(WR_S2='')),
             ('VPN enabled', lambda values: values['vpn'].update(enabled=False)),
             ('VPN link', lambda values: values['vpn'].update(link='')),
         ]
@@ -279,7 +292,7 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'pool': pool}, ensure_ascii=Fa
         transfer.export_wr_config(self.source, self.destination, open_text=self.text)
         self.env_path.write_text('open_text="incorrect file value"\n')
         result = self.isolated_wr_load(expected_success=False)
-        for secret in (self.text, 'incorrect file value', 'PRIVATE-POOL-PASSWORD'):
+        for secret in (self.text, 'incorrect file value', 'PRIVATE-S3-PASSWORD'):
             self.assertNotIn(secret, result.stdout + result.stderr)
 
 

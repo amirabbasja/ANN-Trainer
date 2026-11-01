@@ -122,7 +122,7 @@ class NativeProtocolTests(unittest.TestCase):
                     self.assertIsNone(batch.a_tree._tree)
                     self.assertIsNone(batch.b_tree._tree)
                     row, col, digest = matches[0]
-                    proof, verified_digest = protocol.verified_pool_share(
+                    proof, verified_digest = protocol.verified_S3_share(
                         batch, self.header, version, row, col, digest, maximum_target,
                     )
                     self.assertEqual(verified_digest, digest)
@@ -145,7 +145,7 @@ class NativeProtocolTests(unittest.TestCase):
         root = batch.a_tree.root
         batch.a_tree.root = bytes([root[0] ^ 1]) + root[1:]
         with self.assertRaisesRegex(RuntimeError, "GPU Merkle root differs"):
-            protocol.verified_pool_share(batch, self.header, 3, row, col, digest, maximum_target)
+            protocol.verified_S3_share(batch, self.header, 3, row, col, digest, maximum_target)
         self.assertIsNone(batch.a_tree._tree)
         self.assertIsNone(batch.b_tree._tree)
 

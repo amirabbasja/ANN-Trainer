@@ -1,7 +1,7 @@
 # VPN routing and connection tests
 
-LRAEP uses a managed Xray process for application routing. Pool TCP/TLS,
-pool transport and login checks, node RPC HTTP/HTTPS, and connection-test
+LRAEP uses a managed Xray process for application routing. S3 TCP/TLS,
+S3 transport and login checks, node RPC HTTP/HTTPS, and connection-test
 requests use its authenticated local SOCKS5 endpoint. This does not change
 the machine's global VPN, routes, or other applications.
 
@@ -58,13 +58,13 @@ Paste a complete configuration link into `link`, set `enabled` to `true`, and
 start the miner with the usual command:
 
 ```bash
-.venv/bin/python ann_trainer.py --config config.json pool
+.venv/bin/python ann_trainer.py --config config.json S3
 ```
 
-The same setting applies to `pool-check`, `pool-login-check`, and solo `train`
+The same setting applies to `S3-check`, `S3-login-check`, and solo `train`
 commands. The offline `self-test` needs no proxy or network connection.
 
-For solo mining, select an RPC endpoint reachable from your VPN server. A
+For solo S1, select an RPC endpoint reachable from your VPN server. A
 loopback RPC address such as `127.0.0.1` refers to the VPN server's own loopback
 when tunneled, and the server may block private addresses. There is no automatic
 local-node bypass.
@@ -107,14 +107,14 @@ To save the results:
 
 If `--links` is omitted, the checker uses `vpn.links_file`. Every entry gets
 its own temporary core and local authenticated SOCKS listener. Tests use the
-pool endpoint in the same configuration file; no wallet authentication, GPU
-work, or mining shares are sent. The checker works even when `vpn.enabled` is
+S3 endpoint in the same configuration file; no S2 authentication, GPU
+work, or S1 shares are sent. The checker works even when `vpn.enabled` is
 false, since it selects each supplied link explicitly.
 
 The reported “ping” is the average tunneled TCP connection time, including
-the verified pool TLS handshake when enabled. Loss is the percentage of failed
+the verified S3 TLS handshake when enabled. Loss is the percentage of failed
 connection attempts. This is a connection test, not ICMP packet loss or a
-measurement of mining share acceptance. Each pool attempt uses the selected
+measurement of S1 share acceptance. Each S3 attempt uses the selected
 timeout; HTTPS is measured separately.
 
 The HTTPS probe requests `vpn.check_url` through the same proxy. Its default
@@ -124,22 +124,22 @@ IP address. Set `check_url` to `null` to skip that probe.
 
 | Status | Meaning |
 |---|---|
-| `POOL_OK` | The pool's TLS handshake succeeded with certificate and hostname verification. |
-| `CONNECT_OK` | A plain TCP pool connection and the independent HTTPS probe succeeded. TCP alone does not verify the pool destination. |
+| `S3_OK` | The S3's TLS handshake succeeded with certificate and hostname verification. |
+| `CONNECT_OK` | A plain TCP S3 connection and the independent HTTPS probe succeeded. TCP alone does not verify the S3 destination. |
 | `UNVERIFIED` | Plain TCP connected, but HTTPS failed or was disabled; proxy usability remains unverified. |
-| `POOL_FAIL` | All pool connection attempts failed, even if the HTTPS probe worked. |
+| `S3_FAIL` | All S3 connection attempts failed, even if the HTTPS probe worked. |
 | `CORE_FAIL` | The proxy core could not start or stopped during testing. |
 | `INVALID` | The link was malformed or used unsupported options. |
 
 HTTPS status is shown separately, so a blocked test website does not hide a
-successful verified pool TLS connection. The command exits with status zero
-when at least one link is usable (`POOL_OK` or `CONNECT_OK`), and status one
+successful verified S3 TLS connection. The command exits with status zero
+when at least one link is usable (`S3_OK` or `CONNECT_OK`), and status one
 otherwise. JSON reports include the input line number, connection statistics,
-HTTPS result, optional exit IP, `usable`, and `pool_proof_level`.
+HTTPS result, optional exit IP, `usable`, and `S3_proof_level`.
 
 ## Routing and privacy behavior
 
-Pool and node target hostnames are sent to SOCKS for remote DNS resolution;
+S3 and node target hostnames are sent to SOCKS for remote DNS resolution;
 they are not resolved locally by the Python client. Xray still makes its
 underlying connection to the configured VPN server, including any bootstrap
 resolution of that server's hostname. The selected server can observe the
@@ -147,7 +147,7 @@ destinations of traffic it carries.
 
 When VPN mode is enabled, proxy startup, authentication, or connection failures
 stop or fail the affected network operation. There is no direct-connection
-fallback. Existing pool and RPC TLS certificate and hostname checks remain
+fallback. Existing S3 and RPC TLS certificate and hostname checks remain
 enabled, and environment proxy variables cannot override the selected route.
 
 Console output and JSON reports identify configurations by line number and

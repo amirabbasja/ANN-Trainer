@@ -1,7 +1,7 @@
 import torch
 from blake3 import blake3
 from LRAEP_gateway.comm.dataclasses import CommitmentHash
-from LRAEP_trainer.primitives import MiningConfiguration
+from LRAEP_trainer.primitives import S1Configuration
 
 from .matrix_merkle_tree import MatrixMerkleTree
 
@@ -33,8 +33,8 @@ class CommitmentHasher:
     """
 
     @staticmethod
-    def get_key(incomplete_header_bytes: bytes, mining_config: MiningConfiguration) -> bytes:
-        return blake3(incomplete_header_bytes + mining_config.to_bytes()).digest()
+    def get_key(incomplete_header_bytes: bytes, S1_config: S1Configuration) -> bytes:
+        return blake3(incomplete_header_bytes + S1_config.to_bytes()).digest()
 
     @classmethod
     def commitment_hash(
@@ -42,11 +42,11 @@ class CommitmentHasher:
         A: torch.Tensor,
         B: torch.Tensor,
         incomplete_header_bytes: bytes,
-        mining_config: MiningConfiguration,
+        S1_config: S1Configuration,
         *,
         salted_dims: tuple[int, int] | None,
     ) -> CommitmentHash:
-        key = cls.get_key(incomplete_header_bytes, mining_config)
+        key = cls.get_key(incomplete_header_bytes, S1_config)
         merkle_tree_A = MatrixMerkleTree(A, key)
 
         # We hash B.T because we would like to expose a column strip of B

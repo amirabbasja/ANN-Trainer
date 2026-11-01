@@ -76,9 +76,9 @@ class ConfigPersistenceTests(unittest.TestCase):
             "version": 1,
             "official_source": "helpers",
             "training": {"output_dir": "results"},
-            "pool": {
+            "S3": {
                 "protocol": "KEX", "KEX_uname": "PRIVATE-KEX-IDENTITY",
-                "WR_wallet": "PRIVATE-WR-IDENTITY", "password": "PRIVATE-POOL-PASSWORD",
+                "WR_S2": "PRIVATE-WR-IDENTITY", "password": "PRIVATE-S3-PASSWORD",
                 "KEX": {"host": "kex.example", "port": 8048, "tls": True},
                 "WR": {"host": "wr.example", "port": 9000, "tls": False},
             },
@@ -94,7 +94,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         }))
 
     def test_save_writes_pretty_plain_json_without_generating_keys(self):
-        self.settings["pool"]["password"] = "رمز عبور"
+        self.settings["S3"]["password"] = "رمز عبور"
         original = copy.deepcopy(self.settings)
         save_config(self.path, self.settings)
         stored = self.path.read_text()
@@ -117,7 +117,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(loaded["official_source"], str(self.directory / "helpers"))
         self.assertEqual(loaded["training"]["output_dir"], str(self.directory / "results"))
         self.assertEqual(loaded["device"], "cuda:0")
-        self.assertEqual(loaded["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
+        self.assertEqual(loaded["S3"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(set(self.directory.iterdir()), {self.path})
 
@@ -142,7 +142,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.write_legacy()
         before = self.path.read_bytes()
         self.assertEqual(read_config(self.path, key=self.key), self.settings)
-        self.assertEqual(load_config(self.path, key=self.key)["pool"]["KEX_uname"],
+        self.assertEqual(load_config(self.path, key=self.key)["S3"]["KEX_uname"],
                          "PRIVATE-KEX-IDENTITY")
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(set(self.directory.iterdir()), {self.path})
@@ -161,7 +161,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         original_key = self.key_path.read_bytes()
         update_config(self.path, {"training": {"max_batches": 4}})
         self.assertEqual(json.loads(self.path.read_text())["training"]["max_batches"], 4)
-        self.assertEqual(read_config(self.path)["pool"], self.settings["pool"])
+        self.assertEqual(read_config(self.path)["S3"], self.settings["S3"])
         self.assertEqual(self.key_path.read_bytes(), original_key)
         self.assertEqual(set(self.directory.iterdir()), {self.path, self.key_path})
 
@@ -197,16 +197,16 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.path.write_text(json.dumps(envelope))
         with self.assertRaises(ConfigError) as caught:
             load_config(self.path, key=self.key)
-        for secret in (self.key, token, "PRIVATE-POOL-PASSWORD"):
+        for secret in (self.key, token, "PRIVATE-S3-PASSWORD"):
             self.assertNotIn(secret, str(caught.exception))
 
     def test_nested_plain_update_preserves_siblings_and_does_not_mutate_input(self):
         save_config(self.path, self.settings)
-        changes = {"pool": {"KEX": {"port": 12345}}, "training": {"max_batches": 3}}
+        changes = {"S3": {"KEX": {"port": 12345}}, "training": {"max_batches": 3}}
         original = copy.deepcopy(changes)
         update_config(self.path, changes)
         expected = copy.deepcopy(self.settings)
-        expected["pool"]["KEX"]["port"] = 12345
+        expected["S3"]["KEX"]["port"] = 12345
         expected["training"]["max_batches"] = 3
         self.assertEqual(json.loads(self.path.read_text()), expected)
         self.assertEqual(read_config(self.path), expected)
@@ -217,8 +217,8 @@ class ConfigPersistenceTests(unittest.TestCase):
         save_config(self.path, self.settings)
         before = self.path.read_bytes()
         for operation in (
-            lambda: save_config(self.path, {"version": 1, "pool": {"port": 0}}),
-            lambda: update_config(self.path, {"pool": {"port": 0}}),
+            lambda: save_config(self.path, {"version": 1, "S3": {"port": 0}}),
+            lambda: update_config(self.path, {"S3": {"port": 0}}),
             lambda: save_config(self.path, {"version": 1, "SECRET-UNKNOWN-FIELD": "PRIVATE"}),
         ):
             with self.subTest(operation=operation), self.assertRaises(ConfigError) as caught:
@@ -248,13 +248,13 @@ class ConfigPersistenceTests(unittest.TestCase):
     def test_plain_cli_dispatch_receives_settings_without_writing_source(self):
         save_config(self.path, self.settings)
         before = self.path.read_bytes()
-        with patch.object(cli, "pool_train", return_value=0) as train, \
+        with patch.object(cli, "S3_train", return_value=0) as train, \
                 patch.object(cli, "load_official_helpers") as helpers:
-            self.assertEqual(cli.main(["--config", str(self.path), "pool", "--miner", "KEX"]), 0)
+            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--miner", "KEX"]), 0)
         effective = train.call_args.args[0]
-        self.assertEqual(effective["pool"]["host"], "kex.example")
-        self.assertEqual(effective["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
-        self.assertEqual(effective["pool"]["password"], "PRIVATE-POOL-PASSWORD")
+        self.assertEqual(effective["S3"]["host"], "kex.example")
+        self.assertEqual(effective["S3"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
+        self.assertEqual(effective["S3"]["password"], "PRIVATE-S3-PASSWORD")
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse(self.key_path.exists())
         helpers.assert_not_called()
@@ -263,9 +263,9 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.write_legacy()
         self.key_path.write_text(self.key + "\n")
         before = self.path.read_bytes()
-        with patch.object(cli, "pool_train", return_value=0) as train:
-            self.assertEqual(cli.main(["--config", str(self.path), "pool", "--miner", "KEX"]), 0)
-        self.assertEqual(train.call_args.args[0]["pool"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
+        with patch.object(cli, "S3_train", return_value=0) as train:
+            self.assertEqual(cli.main(["--config", str(self.path), "S3", "--miner", "KEX"]), 0)
+        self.assertEqual(train.call_args.args[0]["S3"]["KEX_uname"], "PRIVATE-KEX-IDENTITY")
         self.assertEqual(self.path.read_bytes(), before)
 
 

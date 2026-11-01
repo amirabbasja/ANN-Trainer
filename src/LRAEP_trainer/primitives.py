@@ -173,7 +173,7 @@ class MoEConfig:
 
 
 @dataclass
-class MiningConfiguration:
+class S1Configuration:
     common_dim: int
     rank: int
     mma_type: MMAType
@@ -191,11 +191,11 @@ class MiningConfiguration:
 
     @classmethod
     def from_bytes(cls, data):
-        data = _bytes(data, cls.SERIALIZED_SIZE, 'mining configuration')
+        data = _bytes(data, cls.SERIALIZED_SIZE, 'S1 configuration')
         k, rank, mma = struct.unpack('<IHH', data[:8])
         e, top_k = struct.unpack('<HH', data[20:24])
         if any(data[24:]) or (e == 0 and top_k):
-            raise ValueError('noncanonical mining configuration trailer')
+            raise ValueError('noncanonical S1 configuration trailer')
         return cls(k, rank, MMAType(mma), PeriodicPattern.from_bytes(data[8:14]), PeriodicPattern.from_bytes(data[14:20]), MoEConfig(e, top_k) if e else None)
 
     @property
@@ -213,11 +213,11 @@ class MiningConfiguration:
         return self.common_dim - self.common_dim % self.rank
 
 
-def penalized_target_bound(target, mining_config):
+def penalized_target_bound(target, S1_config):
     _unsigned(target, 256, 'target')
-    if mining_config.rank <= 0:
+    if S1_config.rank <= 0:
         return None
-    factor = mining_config.hash_tile_h * mining_config.hash_tile_w * (mining_config.common_dim // mining_config.rank) * PENALTY_BASE_RANK
+    factor = S1_config.hash_tile_h * S1_config.hash_tile_w * (S1_config.common_dim // S1_config.rank) * PENALTY_BASE_RANK
     result = target * factor
     return result if factor and result < 1 << 256 else None
 
@@ -481,8 +481,8 @@ def _proof_digest(cert_version, header, proof):
     h, w = (pattern.size for pattern in patterns)
     if h % 2 or w % 2 or not 32 <= h * w <= 256 or (h + w) * k > 1 << 22:
         raise ValueError('invalid proof tile shape')
-    mining = MiningConfiguration(k, rank, MMAType.Int7xInt7ToInt32, *patterns)
-    key = blake3(header.to_bytes() + mining.to_bytes()).digest()
+    S1 = S1Configuration(k, rank, MMAType.Int7xInt7ToInt32, *patterns)
+    key = blake3(header.to_bytes() + S1.to_bytes()).digest()
     if not proof.a.proof.verify(key) or not proof.bt.proof.verify(key):
         raise ValueError('Merkle proof commitment does not match header and configuration')
     hash_a, hash_b = proof.a.root, proof.bt.root
@@ -506,7 +506,7 @@ def _proof_digest(cert_version, header, proof):
         slot = reduction % 16
         value = transcript[slot]
         transcript[slot] = (((value << 13) | (value >> 19)) & 0xFFFFFFFF) ^ combined
-    return blake3(struct.pack('<16I', *transcript), key=seed_a).digest(), mining
+    return blake3(struct.pack('<16I', *transcript), key=seed_a).digest(), S1
 
 
 def verify_plain_proof_for_cert_version(cert_version, block_header, plain_proof, nbits_override=None):
@@ -518,7 +518,7 @@ def verify_plain_proof_for_cert_version(cert_version, block_header, plain_proof,
         penalty = min((1 << 256) - 1, base * config.hash_tile_h * config.hash_tile_w * (config.common_dim // config.rank) * PENALTY_BASE_RANK)
         if int.from_bytes(digest, 'little') > min(target, penalty):
             return False, 'proof digest does not meet difficulty target'
-        return True, 'Mining solution verified successfully'
+        return True, 'S1 solution verified successfully'
     except (ValueError, TypeError, AttributeError, OverflowError, struct.error) as error:
         return False, str(error)
 
@@ -537,7 +537,7 @@ def verify_plain_proof_v3(block_header, plain_proof, nbits_override=None):
 
 def generate_proof_for_cert_version(cert_version, block_header, plain_proof):
     check_cert_version_eligible(cert_version, plain_proof)
-    raise RuntimeError('Local ZK certificate generation is unavailable; WR and plain pool shares do not require it')
+    raise RuntimeError('Local ZK certificate generation is unavailable; WR and plain S3 shares do not require it')
 
 
 def verify_proof_for_cert_version(cert_version, block_header, proof):

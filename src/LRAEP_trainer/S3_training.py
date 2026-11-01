@@ -1,4 +1,4 @@
-"""Our GPU training loop connected directly to a supported PEARL pool."""
+"""Our GPU training loop connected directly to a supported PEARL S3."""
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -15,9 +15,10 @@ from .gpu import TrainingCancelled
 from .gpu_pacing import GpuPacer
 from .effort import JobSequence, ScheduledSideJob
 from .progress import LiveProgress, format_elapsed, main_status
-from .protocol import (TrainingConfig, load_official_helpers, pool_share_target,
-                       prepare_batch, search_batch, verified_pool_share)
+from .protocol import (TrainingConfig, load_official_helpers, S3_share_target,
+                       prepare_batch, search_batch, verified_S3_share)
 from .telemetry import GpuUtilization
+from .telegram import TelegramUpdates
 from . import native_cuda
 
 LOG = logging.getLogger("LRAEP_trainer")
@@ -27,7 +28,7 @@ WR_STARTUP_REPORT_WINDOW = 120.0
 
 
 @dataclass
-class PoolTrainingStats:
+class S3TrainingStats:
     batches: int = 0
     attempts: int = 0
     submitted: int = 0
@@ -36,8 +37,8 @@ class PoolTrainingStats:
     stale: int = 0
 
 
-def pool_hashrate(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float) -> float:
-    """Return completed PEARL matrix work per second in raw pool H/s units.
+def S3_hashrate(stats: S3TrainingStats, cfg: TrainingConfig, elapsed: float) -> float:
+    """Return completed PEARL matrix work per second in raw S3 H/s units.
 
     At rank 128 each hash tile contributes tile_h * tile_w * k units to
     the target scaling. For our fully tiled matrices this is m * n * k
@@ -56,58 +57,58 @@ def format_hashrate(rate: float) -> str:
     return f"{rate:.2f} {units[unit]}"
 
 
-def pool_status(stats: PoolTrainingStats, cfg: TrainingConfig, elapsed: float,
+def S3_status(stats: S3TrainingStats, cfg: TrainingConfig, elapsed: float,
                 gpu_utilization: int | None, *, max_batches: int = 0) -> str:
     """Show completed compute steps using the CNN job's progress layout."""
     return main_status(stats.batches, elapsed, gpu_utilization, max_steps=max_batches)
 
 
-def select_pool_protocol(settings: dict) -> str:
+def select_S3_protocol(settings: dict) -> str:
     """Select only an explicitly supported dialect; never guess a custom one."""
     selected = settings.get("protocol", "KEX")
     if selected == "auto":
-        raise ValueError("pool.protocol must explicitly select KEX or WR; automatic detection is unavailable")
+        raise ValueError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
     if selected == "pearlhash":
         selected = "WR"
     if selected not in ("KEX", "WR"):
-        raise ValueError("pool.protocol must select KEX or WR")
+        raise ValueError("S3.protocol must select KEX or WR")
     return selected
 
 
-def validate_pool_endpoint(settings: dict) -> None:
+def validate_S3_endpoint(settings: dict) -> None:
     """Require the user's endpoint before helper setup or any network activity."""
     host = settings.get("host", "")
     if not isinstance(host, str) or not host.strip():
         profile = "WR" if settings.get("protocol") in ("WR", "pearlhash") else "KEX"
         raise ValueError(
-            f"fill pool.host for a flat configuration, or pool.{profile}.host in the shared configuration, "
-            "with your pool hostname or IP address"
+            f"fill S3.host for a flat configuration, or S3.{profile}.host in the shared configuration, "
+            "with your S3 hostname or IP address"
         )
 
 
-def validate_pool_identity(settings: dict, selected_protocol: str | None = None, *,
+def validate_S3_identity(settings: dict, selected_protocol: str | None = None, *,
                            validate_address: bool = True) -> None:
     """Check configuration before loading helpers or opening a connection."""
-    selected = select_pool_protocol(settings if selected_protocol is None else {"protocol": selected_protocol})
-    identity_field = "WR_wallet" if selected == "WR" else "KEX_uname"
+    selected = select_S3_protocol(settings if selected_protocol is None else {"protocol": selected_protocol})
+    identity_field = "WR_S2" if selected == "WR" else "KEX_uname"
     identity = settings.get(identity_field, "")
     worker = settings.get("worker", "")
     if not isinstance(identity, str) or not identity.strip():
         description = "WR payout address" if selected == "WR" else "KEX username or payout address"
-        raise ValueError(f"fill pool.{identity_field} in your configuration with your {description}")
+        raise ValueError(f"fill S3.{identity_field} in your configuration with your {description}")
     if not isinstance(worker, str):
-        raise ValueError("pool.worker must be a string")
+        raise ValueError("S3.worker must be a string")
     if any(character.isspace() for character in identity + worker):
-        raise ValueError(f"pool.{identity_field} and pool.worker must not contain whitespace")
+        raise ValueError(f"S3.{identity_field} and S3.worker must not contain whitespace")
     if identity.startswith("solo:"):
-        raise ValueError("remove the solo: prefix to use the requested pool training mode")
+        raise ValueError("remove the solo: prefix to use the requested S3 training mode")
     if validate_address and identity.startswith("prl1"):
         from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
 
         try:
             get_script_pubkey_from_p2tr_address(identity)
         except ValueError:
-            raise ValueError(f"pool.{identity_field} must contain a valid PEARL Taproot address") from None
+            raise ValueError(f"S3.{identity_field} must contain a valid PEARL Taproot address") from None
 
 
 @contextmanager
@@ -131,7 +132,7 @@ def _signal_stop(stopped, time_limit=0):
             signal.signal(sig, handler)
 
 
-def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
+def run_S3_training(configuration: dict, *, login_only: bool = False) -> int:
     """Run a repeating job sequence, closing every resource on stop or exit."""
     settings = configuration["training"]
     stopped = threading.Event()
@@ -143,40 +144,40 @@ def run_pool_training(configuration: dict, *, login_only: bool = False) -> int:
             resources.enter_context(effort.stopping(stopped))
             if not effort.wait(stopped, deadline=deadline):
                 return 0
-        return _run_pool_training(configuration, login_only=login_only, stopped=stopped,
+        return _run_S3_training(configuration, login_only=login_only, stopped=stopped,
                                   effort=effort, started=started)
 
 
-def _run_pool_training(configuration, *, login_only, stopped, effort, started):
-    """Authenticate, process live jobs, and submit verified pool-specific work.
+def _run_S3_training(configuration, *, login_only, stopped, effort, started):
+    """Authenticate, process live jobs, and submit verified S3-specific work.
 
     ``login_only`` stops after the first authenticated job and does no GPU work.
     Continuous sessions reconnect after transport failures, invalidating every
     job and pending submission from the disconnected session.
     """
-    from .config import resolve_pool_settings
-    from .pool_client import (PoolAuthenticationError, PoolCompatibilityError,
-                              PoolSession, StalePoolJob)
-    from .pool_transport import PoolConnectionError
+    from .config import resolve_S3_settings
+    from .S3_client import (S3AuthenticationError, S3CompatibilityError,
+                              S3Session, StaleS3Job)
+    from .S3_transport import S3ConnectionError
 
-    pool = resolve_pool_settings(configuration["pool"])
-    selected_protocol = select_pool_protocol(pool)
-    validate_pool_endpoint(pool)
-    validate_pool_identity(pool, selected_protocol, validate_address=False)
-    session_class = PoolSession
+    S3 = resolve_S3_settings(configuration["S3"])
+    selected_protocol = select_S3_protocol(S3)
+    validate_S3_endpoint(S3)
+    validate_S3_identity(S3, selected_protocol, validate_address=False)
+    session_class = S3Session
     session_options = {}
     if selected_protocol == "WR":
-        from .pool_diagnostics import UnknownRequestRecorder
+        from .S3_diagnostics import UnknownRequestRecorder
         from .wr_client import WRSession
         from .wr_work import prepare_wr_batch, verified_wr_share
 
         session_class = WRSession
-        diagnostic_dir = pool.get("unknown_request_dir") or (
-            Path(configuration["training"]["output_dir"]) / "unknown-pool-requests"
+        diagnostic_dir = S3.get("unknown_request_dir") or (
+            Path(configuration["training"]["output_dir"]) / "unknown-S3-requests"
         )
-        session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, pool)
+        session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, S3)
     load_official_helpers(configuration["official_source"])
-    validate_pool_identity(pool, selected_protocol)
+    validate_S3_identity(S3, selected_protocol)
     from LRAEP_trainer import primitives as pm
 
     settings = configuration["training"]
@@ -186,7 +187,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
     if not login_only:
         device = torch.device(configuration["device"])
         if device.type != "cuda" or not torch.cuda.is_available():
-            raise ValueError("an available CUDA GPU is required for pool training")
+            raise ValueError("an available CUDA GPU is required for S3 training")
         # Capture the caller's current device before the telemetry thread
         # starts; CUDA's implicit current-device selection is thread-local.
         if device.index is None:
@@ -198,7 +199,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
     if not login_only:
         LOG.info("Compute backend: %s", "native CUDA DP4A" if use_native else "PyTorch reference")
     torch.set_num_threads(min(4, torch.get_num_threads()))
-    stats = PoolTrainingStats()
+    stats = S3TrainingStats()
     rng = np.random.default_rng()
     limit = settings["max_seconds"]
     max_batches = settings["max_batches"]
@@ -232,12 +233,24 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
         if side_job is not None:
             resources.callback(side_job.close)
 
+        def telegram_snapshot():
+            elapsed = time.monotonic() - started
+            return "\n".join([
+                main_status(stats.batches, elapsed, monitor.read(), max_steps=max_batches),
+                f"Hashrate (avg): {format_hashrate(S3_hashrate(stats, cfg, elapsed))}",
+                f"Shares: submitted={stats.submitted} accepted={stats.accepted} "
+                f"rejected={stats.rejected} stale={stats.stale}",
+            ])
+
+        if not login_only:
+            resources.enter_context(TelegramUpdates(configuration, telegram_snapshot))
+
         def update_progress(force=False):
             nonlocal active_job
             if monitor is not None:
                 force = force or active_job != "main"
                 active_job = "main"
-                progress.update(pool_status(stats, cfg, time.monotonic() - started,
+                progress.update(S3_status(stats, cfg, time.monotonic() - started,
                                             monitor.read(), max_batches=max_batches), force=force)
 
         def log(level, message, *args):
@@ -246,7 +259,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                 LOG.log(level, message, *args)
 
         def report_gpu(session, sample_time):
-            rate = pool_hashrate(stats, cfg, sample_time - started)
+            rate = S3_hashrate(stats, cfg, sample_time - started)
             request_id = session.report_info(gpu_name, rate)
             log(logging.DEBUG, "PearlHash GPU report sent: %s (request=%d)",
                 format_hashrate(rate), request_id)
@@ -259,18 +272,18 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                 continue
             session = None
             try:
-                session_settings = dict(pool)
+                session_settings = dict(S3)
                 connect_deadline = deadline
                 if effort is not None and effort.exit_deadline is not None:
                     connect_deadline = (effort.exit_deadline if connect_deadline is None else
                                         min(connect_deadline, effort.exit_deadline))
                 if connect_deadline is not None:
                     remaining = max(0.001, connect_deadline - time.monotonic())
-                    session_settings["connect_timeout"] = min(pool["connect_timeout"], remaining)
+                    session_settings["connect_timeout"] = min(S3["connect_timeout"], remaining)
                 session = session_class(session_settings, stop_event=stopped, **session_options)
                 with session:
-                    log(logging.INFO, "Pool authenticated at %s:%d; proof compression=%s",
-                        pool["host"], pool["port"],
+                    log(logging.INFO, "S3 authenticated at %s:%d; proof compression=%s",
+                        S3["host"], S3["port"],
                         "gzip" if session.negotiated_gzip else "none")
                     report_connection_started = time.monotonic()
                     report_started = report_connection_started
@@ -279,34 +292,34 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                         report_gpu(session, report_started)
                     previous_generation = None
                     previous_effort = None
-                    job_deadline = time.monotonic() + pool["read_timeout"]
+                    job_deadline = time.monotonic() + S3["read_timeout"]
                     while not finished():
                         if effort is not None:
                             paused = effort.current()[0] == 0
                             if not effort.wait(stopped, deadline=deadline):
                                 break
                             if paused:
-                                job_deadline = time.monotonic() + pool["read_timeout"]
+                                job_deadline = time.monotonic() + S3["read_timeout"]
                         if side_job is not None and side_job.run_if_active(effort, stopped, pacer, deadline=deadline):
-                            job_deadline = time.monotonic() + pool["read_timeout"]
+                            job_deadline = time.monotonic() + S3["read_timeout"]
                             continue
                         update_progress()
                         snapshot = session.wait_job(timeout=0.25)
                         if snapshot is None:
                             if time.monotonic() >= job_deadline:
-                                raise PoolConnectionError("pool sent no usable training job before the job timeout")
+                                raise S3ConnectionError("S3 sent no usable training job before the job timeout")
                             continue
                         job = snapshot.job
                         if snapshot.generation != previous_generation:
                             if selected_protocol == "WR":
                                 log(logging.INFO, "PearlHash job=%s generation=%d", job.job_id, job.cert_version)
                             else:
-                                log(logging.INFO, "Pool job=%s height=%d certificate=V%d",
+                                log(logging.INFO, "S3 job=%s height=%d certificate=V%d",
                                     job.job_id, job.height, job.cert_version)
                             previous_generation = snapshot.generation
-                            job_deadline = time.monotonic() + pool["read_timeout"]
+                            job_deadline = time.monotonic() + S3["read_timeout"]
                         header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
-                        target = pool_share_target(job.target, cfg, "base")
+                        target = S3_share_target(job.target, cfg, "base")
                         if login_only:
                             log(logging.INFO, "Authenticated job verified: header=%d bytes, target=%d bits; no GPU work performed",
                                 len(job.header_bytes), target.bit_length())
@@ -362,7 +375,7 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                             if selected_protocol == "WR":
                                 submission = verified_wr_share(batch, row, col, digest, target)
                             else:
-                                proof, _ = verified_pool_share(
+                                proof, _ = verified_S3_share(
                                     batch, header, job.cert_version, row, col, digest, target,
                                 )
                                 submission = proof.to_base64()
@@ -371,16 +384,16 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                                 break
                             try:
                                 result = session.submit(snapshot, submission)
-                            except StalePoolJob:
+                            except StaleS3Job:
                                 stats.stale += 1
                                 break
                             stats.submitted += 1
                             if result.accepted:
                                 stats.accepted += 1
-                                log(logging.DEBUG, "Pool accepted training share job=%s", job.job_id)
+                                log(logging.DEBUG, "S3 accepted training share job=%s", job.job_id)
                             else:
                                 stats.rejected += 1
-                                log(logging.WARNING, "Pool rejected training share job=%s: %s", job.job_id, result.error)
+                                log(logging.WARNING, "S3 rejected training share job=%s: %s", job.job_id, result.error)
                         update_progress()
                         if not finished():
                             pacer.wait(stopped, deadline=rest_deadline)
@@ -388,17 +401,17 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                         # Unknown messages cancel GPU work via the stop event.
                         # Raise before close() or a normal exit can hide them.
                         session.raise_if_failed()
-            except (PoolAuthenticationError, PoolCompatibilityError):
+            except (S3AuthenticationError, S3CompatibilityError):
                 raise
-            except PoolConnectionError as exc:
+            except S3ConnectionError as exc:
                 if selected_protocol == "WR" and session is not None:
                     # A timer may close the transport while an unknown request
                     # is being recorded. Preserve its permanent failure.
                     try:
                         session.raise_if_failed()
-                    except PoolCompatibilityError:
+                    except S3CompatibilityError:
                         raise
-                    except PoolConnectionError:
+                    except S3ConnectionError:
                         pass
                 if stopped.is_set():
                     break
@@ -406,8 +419,8 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
                     raise
                 if finished():
                     break
-                log(logging.WARNING, "%s; reconnecting in %.1f seconds", exc, pool["reconnect_delay"])
-                delay = pool["reconnect_delay"]
+                log(logging.WARNING, "%s; reconnecting in %.1f seconds", exc, S3["reconnect_delay"])
+                delay = S3["reconnect_delay"]
                 if limit > 0:
                     delay = min(delay, max(0, limit - (time.monotonic() - started)))
                 stopped.wait(delay)
@@ -417,8 +430,8 @@ def _run_pool_training(configuration, *, login_only, stopped, effort, started):
             update_progress(force=True)
     LOG.info("Main job stopped: steps=%d elapsed=%s", stats.batches,
              format_elapsed(time.monotonic() - started))
-    LOG.debug("Pool training stopped: batches=%d submitted=%d accepted=%d rejected=%d stale=%d",
+    LOG.debug("S3 training stopped: batches=%d submitted=%d accepted=%d rejected=%d stale=%d",
              stats.batches, stats.submitted, stats.accepted, stats.rejected, stats.stale)
     if login_only:
-        raise RuntimeError("no authenticated pool job was received before stopping")
+        raise RuntimeError("no authenticated S3 job was received before stopping")
     return 0

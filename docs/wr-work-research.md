@@ -58,7 +58,7 @@ including its version-3 dimension salt.
 ## Commitments, noise and target
 
 The commitment key is the standard unkeyed BLAKE3 hash of the 76-byte header
-followed by the 52-byte mining configuration. Both matrices use row-major
+followed by the 52-byte S1 configuration. Both matrices use row-major
 signal bytes, padded with zeros to a 1024-byte chunk boundary before keyed
 BLAKE3 hashing. A includes the nonce tail before padding; B is constant 64.
 
@@ -70,7 +70,7 @@ salt constants match the bundled helpers exactly: file `0x577080` contains
 transcript hashing.
 
 The notification's target is a 32-byte **little-endian** integer. The trainer
-applies the official mining-configuration target adjustment and compares the
+applies the official S1-configuration target adjustment and compares the
 final digest as little endian. Reading the wire string as a display-order
 hexadecimal integer produces a different, unusable target.
 
@@ -85,7 +85,7 @@ indices.
 
 The source capture is
 `captures/shares-20261026T203339Z-27408/` within that WR workspace.
-Its three `submit` requests have matching pool replies with `status: 1` and
+Its three `submit` requests have matching S3 replies with `status: 1` and
 literal `result: true`. Portable headers, targets, compact witnesses and
 reconstructed digests are retained in
 [`tests/fixtures/wr_accepted_work.json`](../tests/fixtures/wr_accepted_work.json).
@@ -108,5 +108,5 @@ witnesses, full dimension binding, independent candidate verification, invalid
 tiles, and CUDA/CPU agreement with reserved rows and chunk padding. Local TCP
 integration tests exercise actual custom GPU search and submission. These are
 offline and loopback checks; this change did not submit new shares to the real
-pool. The evidence supports the captured generation-3 format and does not
-establish other generations or unknown future pool messages.
+S3. The evidence supports the captured generation-3 format and does not
+establish other generations or unknown future S3 messages.

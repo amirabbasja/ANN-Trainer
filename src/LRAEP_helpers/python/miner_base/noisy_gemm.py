@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from miner_utils import get_logger
 from LRAEP_gateway.comm.dataclasses import CommitmentHash, OpenedBlockInfo
-from LRAEP_gateway.comm.mining_configuration import PeriodicPattern
+from LRAEP_gateway.comm.S1_configuration import PeriodicPattern
 
 from miner_base.matmul_config import MatmulConfig
 
@@ -86,10 +86,10 @@ def inner_hash_per_matmul(matmul_config: MatmulConfig, m: int, n: int, k: int) -
     remaining_w = n % matmul_config.matmul_tile_w
 
     num_partial_hash_tiles_h = _num_hash_tiles_in_partial_tile(
-        matmul_config.mining_config.rows_pattern, remaining_h
+        matmul_config.S1_config.rows_pattern, remaining_h
     )
     num_partial_hash_tiles_w = _num_hash_tiles_in_partial_tile(
-        matmul_config.mining_config.cols_pattern, remaining_w
+        matmul_config.S1_config.cols_pattern, remaining_w
     )
 
     total_partial_hash_tiles = (

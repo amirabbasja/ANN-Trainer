@@ -39,7 +39,7 @@ A percentage of `100` disables intentional GPU pacing; actual utilization still
 depends on workload and data loading. An optional fourth entry value sets the
 percentage-point tolerance. Intervals switch between batches; an in-flight CUDA
 operation or network request can finish after its scheduled boundary. Temporary
-pool transport failures follow the existing reconnect behavior.
+S3 transport failures follow the existing reconnect behavior.
 
 For percentages below `100`, CNN execution is paced between CUDA operations,
 including forward, backward, and optimizer work. It rests after roughly 10 ms
@@ -58,7 +58,7 @@ cannot be paused. This is not a driver-enforced instantaneous utilization cap.
 ## Stopping and kernel memory
 
 Use the notebook's **Interrupt** button to stop manually. The training loop
-closes its CNN inputs, pool connection, telemetry, and VPN during cleanup.
+closes its CNN inputs, S3 connection, telemetry, and VPN during cleanup.
 Other cells wait until the training cell finishes. The old notebook
 `trainer.stop_training()` worker controller is no longer used for direct runs.
 
@@ -105,4 +105,4 @@ That separate API retains `trainer.stop_training(timeout=10)`, `trainer.status()
 and `trainer.run(root=None, login_only=False)`. Worker process controls and GPU
 memory release apply to that optional API; they are independent of the notebook's
 direct execution. Its process-control tests use local fixture workers without
-reading private config or contacting a live pool.
+reading private config or contacting a live S3.

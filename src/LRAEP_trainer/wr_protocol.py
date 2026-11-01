@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from .pearl_requests import build_submit_request
-from .pool_protocol import DEFAULT_AGENT, PoolJob, PoolProtocolError, _text
+from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 
 
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
@@ -28,14 +28,14 @@ WORK_PREFIX_MASK = bytes.fromhex(
 )
 
 
-class UnknownWRRequest(PoolProtocolError):
+class UnknownWRRequest(S3ProtocolError):
     """An otherwise framed server command has no implemented meaning."""
 
 
 def _hex_bytes(value: Any, length: int, label: str) -> bytes:
     if (not isinstance(value, str) or len(value) != length * 2
             or _HEX.fullmatch(value) is None):
-        raise PoolProtocolError(f"PearlHash {label} must contain exactly {length} hexadecimal bytes")
+        raise S3ProtocolError(f"PearlHash {label} must contain exactly {length} hexadecimal bytes")
     return bytes.fromhex(value)
 
 
@@ -50,13 +50,13 @@ def decode_notify_payload(value: str) -> bytes:
     target = (mantissa >> (8 * (3 - exponent)) if exponent <= 3
               else mantissa << (8 * (exponent - 3)))
     if nbits & 0x00800000 or not 0 < target < 1 << 256:
-        raise PoolProtocolError("PearlHash decoded header has an invalid compact target")
+        raise S3ProtocolError("PearlHash decoded header has an invalid compact target")
     return header
 
 
 @dataclass(frozen=True)
-class WRJob(PoolJob):
-    """Version-3 work, with pool extranonce bound to this job snapshot.
+class WRJob(S3Job):
+    """Version-3 work, with S3 extranonce bound to this job snapshot.
 
     The wire has no height. ``height=0`` is a compatibility placeholder for
     the common training interface, never a height inferred from generation.
@@ -68,13 +68,13 @@ class WRJob(PoolJob):
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.cert_version != 3 or self.height != 0:
-            raise PoolProtocolError("Only observed PearlHash generation 3 is supported")
+            raise S3ProtocolError("Only observed PearlHash generation 3 is supported")
         if not isinstance(self.notify_payload, bytes) or len(self.notify_payload) != 200:
-            raise PoolProtocolError("PearlHash notify payload must contain 200 bytes")
+            raise S3ProtocolError("PearlHash notify payload must contain 200 bytes")
         if self.worker_nonce is not None and (
             not isinstance(self.worker_nonce, bytes) or len(self.worker_nonce) != 8
         ):
-            raise PoolProtocolError("PearlHash worker nonce must contain eight bytes")
+            raise S3ProtocolError("PearlHash worker nonce must contain eight bytes")
 
 
 @dataclass(frozen=True)
@@ -101,40 +101,40 @@ class WRShare:
                 tile_w=self.tile_w, sb=self.sb, a_rows=self.a_rows, b_cols=self.b_cols,
             )
         except (ValueError, TypeError) as error:
-            raise PoolProtocolError("Invalid PearlHash share fields") from error
+            raise S3ProtocolError("Invalid PearlHash share fields") from error
 
 
 class WRDialect:
     """Build client requests and strictly classify the observed server schema."""
 
-    def __init__(self, WR_wallet: str, worker: str, agent: str = DEFAULT_AGENT) -> None:
-        self.WR_wallet = _text(WR_wallet, "WR_wallet", 256)
+    def __init__(self, WR_S2: str, worker: str, agent: str = DEFAULT_AGENT) -> None:
+        self.WR_S2 = _text(WR_S2, "WR_S2", 256)
         self.worker = _text(worker, "worker", 128, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
-        if any(character.isspace() for character in WR_wallet + worker):
-            raise PoolProtocolError("WR_wallet and worker must contain no whitespace")
+        if any(character.isspace() for character in WR_S2 + worker):
+            raise S3ProtocolError("WR_S2 and worker must contain no whitespace")
 
     def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
         if type(start_id) is not int or not 0 <= start_id < 1 << 64:
-            raise PoolProtocolError("PearlHash request ID must be an unsigned 64-bit integer")
-        return [{"id": start_id, "method": "login", "params": [self.WR_wallet, self.worker, self.agent]}]
+            raise S3ProtocolError("PearlHash request ID must be an unsigned 64-bit integer")
+        return [{"id": start_id, "method": "login", "params": [self.WR_S2, self.worker, self.agent]}]
 
     @staticmethod
     def report_request(gpu_name: str, hashrate: float, request_id: int) -> dict[str, Any]:
         """Report one GPU's measured work rate in raw hash units per second."""
         if type(request_id) is not int or not 0 <= request_id < 1 << 64:
-            raise PoolProtocolError("PearlHash request ID must be an unsigned 64-bit integer")
+            raise S3ProtocolError("PearlHash request ID must be an unsigned 64-bit integer")
         name = _text(gpu_name, "gpu_name", 256)
         if not name.strip() or not name.isprintable():
-            raise PoolProtocolError("gpu_name must contain printable GPU identification")
+            raise S3ProtocolError("gpu_name must contain printable GPU identification")
         if isinstance(hashrate, bool) or not isinstance(hashrate, (int, float)):
-            raise PoolProtocolError("hashrate must be a nonnegative finite number in H/s")
+            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s")
         try:
             rate = float(hashrate)
         except OverflowError:
-            raise PoolProtocolError("hashrate must be a nonnegative finite number in H/s") from None
+            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s") from None
         if not math.isfinite(rate) or rate < 0:
-            raise PoolProtocolError("hashrate must be a nonnegative finite number in H/s")
+            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s")
         return {"id": request_id, "method": "report_info", "params": [{"hashrate": rate, "name": name}]}
 
     @staticmethod
@@ -157,35 +157,35 @@ class WRDialect:
         if isinstance(response, Mapping) and isinstance(response.get("method"), str):
             raise UnknownWRRequest("Unknown PearlHash server method")
         if not isinstance(response, Mapping) or set(response) - {"id", "status", "result", "error"}:
-            raise PoolProtocolError("Unknown PearlHash server message fields or method")
+            raise S3ProtocolError("Unknown PearlHash server message fields or method")
         request_id, status = response.get("id"), response.get("status")
         if (type(request_id) is not int or not -1 <= request_id < 1 << 64
                 or type(status) is not int or status not in (0, 1)):
-            raise PoolProtocolError("Unknown PearlHash response envelope")
+            raise S3ProtocolError("Unknown PearlHash response envelope")
         result = response.get("result")
         if request_id >= 0 and type(result) is bool:
             return "reply"
         if (request_id != -1 or status != 1 or response.get("error") is not None
                 or not isinstance(result, list) or not result):
-            raise PoolProtocolError("Unknown PearlHash server request or response shape")
+            raise S3ProtocolError("Unknown PearlHash server request or response shape")
         if result[0] == "extranonce":
             if len(result) != 2:
-                raise PoolProtocolError("Unsupported PearlHash extranonce schema")
+                raise S3ProtocolError("Unsupported PearlHash extranonce schema")
             _hex_bytes(result[1], 8, "extranonce")
             return "extranonce"
         if result[0] == "notify":
             # Full job validation is performed by parse_job, including version.
             if len(result) != 5 or not all(isinstance(field, str) for field in result):
-                raise PoolProtocolError("Unsupported PearlHash notify schema")
+                raise S3ProtocolError("Unsupported PearlHash notify schema")
             return "notify"
         if isinstance(result[0], str):
             raise UnknownWRRequest("Unknown PearlHash server notification")
-        raise PoolProtocolError("Malformed PearlHash notification name")
+        raise S3ProtocolError("Malformed PearlHash notification name")
 
     @staticmethod
     def parse_extranonce(result: list) -> bytes:
         if not isinstance(result, list) or len(result) != 2 or result[0] != "extranonce":
-            raise PoolProtocolError("Unsupported PearlHash extranonce schema")
+            raise S3ProtocolError("Unsupported PearlHash extranonce schema")
         return _hex_bytes(result[1], 8, "extranonce")
 
     @staticmethod
@@ -193,13 +193,13 @@ class WRDialect:
                   worker_nonce: bytes | None = None) -> WRJob:
         if (not isinstance(result, list) or len(result) != 5 or result[0] != "notify"
                 or not all(isinstance(field, str) for field in result)):
-            raise PoolProtocolError("Unsupported PearlHash notify schema")
+            raise S3ProtocolError("Unsupported PearlHash notify schema")
         if result[4] != "3":
-            raise PoolProtocolError("Only observed PearlHash generation 3 is supported")
+            raise S3ProtocolError("Only observed PearlHash generation 3 is supported")
         if configured_certificate_version is not None and (
             type(configured_certificate_version) is not int or configured_certificate_version != 3
         ):
-            raise PoolProtocolError("PearlHash generation 3 requires certificate version 3")
+            raise S3ProtocolError("PearlHash generation 3 requires certificate version 3")
         payload = _hex_bytes(result[1], 200, "notify payload")
         target_bytes = _hex_bytes(result[2], 32, "share target")
         return WRJob(
@@ -214,9 +214,9 @@ class WRDialect:
     def submit_request(job: WRJob, share: WRShare, request_id: int,
                        negotiated_gzip: bool = False) -> dict[str, Any]:
         if not isinstance(job, WRJob) or not isinstance(share, WRShare):
-            raise PoolProtocolError("PearlHash submission requires its job and compact share")
+            raise S3ProtocolError("PearlHash submission requires its job and compact share")
         if negotiated_gzip:
-            raise PoolProtocolError("PearlHash does not support KEX gzip proof submissions")
+            raise S3ProtocolError("PearlHash does not support KEX gzip proof submissions")
         if job.worker_nonce is None or share.worker_nonce != job.worker_nonce:
-            raise PoolProtocolError("PearlHash share worker nonce does not match its job")
+            raise S3ProtocolError("PearlHash share worker nonce does not match its job")
         return share.request(request_id)

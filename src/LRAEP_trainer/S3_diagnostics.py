@@ -1,4 +1,4 @@
-"""Private evidence and terminal notifications for unfamiliar pool messages."""
+"""Private evidence and terminal notifications for unfamiliar S3 messages."""
 
 from datetime import datetime, timezone
 import json
@@ -34,8 +34,8 @@ class UnknownRequestRecorder:
         now = datetime.now(timezone.utc)
         record = {
             "time_utc": now.isoformat(timespec="milliseconds"),
-            "event": "unknown-pool-request", "direction": "pool-to-miner",
-            "pool": {"host": self.host, "port": self.port, "tls": self.tls},
+            "event": "unknown-S3-request", "direction": "S3-to-miner",
+            "S3": {"host": self.host, "port": self.port, "tls": self.tls},
             "reason": reason, "raw_frame_hex": bytes(frame).hex(),
             "decoded_message": message, "training_stopped": fatal,
         }

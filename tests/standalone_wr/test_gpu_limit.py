@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 import LRAEP_trainer
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config, save_config
 from LRAEP_trainer.config_export import write_open_text
-from LRAEP_trainer import gpu_pacing, pool_training as worker
+from LRAEP_trainer import gpu_pacing, S3_training as worker
 
 
 class GpuLimitTests(unittest.TestCase):
@@ -125,12 +125,12 @@ class GpuLimitTests(unittest.TestCase):
         stopped.wait.assert_not_called()
 
 
-class WRPoolEffortTests(unittest.TestCase):
+class WRS3EffortTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.config = copy.deepcopy(DEFAULT_CONFIG)
-        self.config["pool"].update(host="pool.example", WR_wallet="test-wallet", reconnect_delay=0)
+        self.config["S3"].update(host="S3.example", WR_S2="test-S2", reconnect_delay=0)
         self.config["training"].update(m=128, n=128, max_batches=1)
         self.session = MagicMock()
         self.session.__enter__.return_value = self.session
@@ -152,7 +152,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.monitor = self.stack.enter_context(patch.object(worker, "GpuUtilization"))
         self.monitor.return_value.start.return_value.read.return_value = 42
         self.progress = self.stack.enter_context(patch.object(worker, "LiveProgress"))
-        self.stack.enter_context(patch.object(worker, "pool_share_target", return_value=1))
+        self.stack.enter_context(patch.object(worker, "S3_share_target", return_value=1))
         self.prepare = self.stack.enter_context(patch("LRAEP_trainer.wr_work.prepare_wr_batch"))
         self.verify = self.stack.enter_context(
             patch("LRAEP_trainer.wr_work.verified_wr_share", return_value="verified-share"))
@@ -163,7 +163,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(sys.modules, {"LRAEP_trainer.primitives": primitives}))
         self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", primitives, create=True))
 
-    def test_wr_pool_paces_after_submitting_and_before_the_next_batch(self):
+    def test_wr_S3_paces_after_submitting_and_before_the_next_batch(self):
         self.config["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
         order = []
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
@@ -174,7 +174,7 @@ class WRPoolEffortTests(unittest.TestCase):
             pacer.max_utilization = 100
             pacer.set_utilization.side_effect = lambda value: setattr(pacer, "max_utilization", value)
             pacer.wait.side_effect = lambda *_a, **_kw: order.append("wait")
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(order, ["search", "submit", "wait", "search", "submit"])
         factory.assert_called_once_with(worker.torch.device("cuda:0"), 100)
         pacer.set_utilization.assert_called_once_with(60)
@@ -187,7 +187,7 @@ class WRPoolEffortTests(unittest.TestCase):
         with patch.object(worker, "GpuPacer") as factory:
             pacer = factory.return_value
             pacer.max_utilization = 80
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(pacer.finish.call_count, 2)
         pacer.wait.assert_called_once()
         self.assertIn("deadline", pacer.wait.call_args.kwargs)
@@ -243,7 +243,7 @@ class WRPoolEffortTests(unittest.TestCase):
             self.prepare.side_effect = prepare
             worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
             with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
-                self.assertEqual(worker.run_pool_training(self.config), 0)
+                self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(order, ["prepare", "synchronize", "pause", "prepare"])
         worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
         self.search.assert_called_once()
@@ -263,29 +263,29 @@ class WRPoolEffortTests(unittest.TestCase):
             worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
             self.monitor.return_value.start.return_value.close.side_effect = lambda: order.append("close")
             with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
-                self.assertEqual(worker.run_pool_training(self.config), 0)
+                self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(order, ["search", "synchronize", "close"])
         worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
         self.session.__exit__.assert_called_once()
         self.verify.assert_not_called()
         self.session.submit.assert_not_called()
 
-    def test_initial_pause_delays_mining_until_the_positive_interval(self):
+    def test_initial_pause_delays_S1_until_the_positive_interval(self):
         with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(prepared_at, [30])
         self.assertEqual(clock.pauses, [(0, 30, 0, 0, 0)])
         pacer.set_utilization.assert_called_once_with(70)
         self.session.submit.assert_called_once()
 
-    def test_pause_between_positive_intervals_performs_no_mining(self):
+    def test_pause_between_positive_intervals_performs_no_S1(self):
         with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(prepared_at, [0, 30])
         self.assertEqual(clock.pauses, [(10, 20, 1, 1, 1)])
         self.assertEqual(pacer.set_utilization.call_args_list, [call(80), call(30)])
@@ -300,7 +300,7 @@ class WRPoolEffortTests(unittest.TestCase):
             cnn.return_value.step.side_effect = lambda **_kw: (trained_at.append(clock.now), True)[1]
             cnn.return_value.status.return_value = "Side-job | Epoch 1 | Step 1/20"
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(prepared_at, [0, 30, 60, 90, 120])
         self.assertEqual(trained_at, [10, 40, 70, 100])
         self.assertEqual(pacer.set_utilization.call_args_list,
@@ -314,7 +314,7 @@ class WRPoolEffortTests(unittest.TestCase):
         self.assertTrue(any(args[0] == "Side-job | Epoch 1 | Step 1/20"
                             for args, _ in display.update.call_args_list))
 
-    def test_initial_side_job_trains_before_pool_connection_or_job_wait(self):
+    def test_initial_side_job_trains_before_S3_connection_or_job_wait(self):
         with self.clocked_schedule([("side-job", 10, 100), ("main", 20, 100)]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def train_batch(**kwargs):
@@ -328,7 +328,7 @@ class WRPoolEffortTests(unittest.TestCase):
                 return True
             cnn.return_value.step.side_effect = train_batch
             cnn.return_value.status.return_value = "Side-job | Epoch 1 | Preparing"
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         cnn.return_value.step.assert_called_once()
         cnn.return_value.close.assert_called_once()
         self.prepare.assert_called_once()
@@ -349,7 +349,7 @@ class WRPoolEffortTests(unittest.TestCase):
                     self.factory.call_args.kwargs['stop_event'].set()
 
             pacer.wait.side_effect = advance
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(trained_at, [0, 6, 12])
         self.assertEqual(prepared_at, [2, 5, 8, 11, 14, 17])
         self.assertEqual(self.session.submit.call_count, 6)
@@ -357,12 +357,12 @@ class WRPoolEffortTests(unittest.TestCase):
         cnn.return_value.close.assert_called_once()
         self.assertEqual(clock.now, 18)
 
-    def test_side_job_only_schedule_never_connects_or_submits_mining_work(self):
+    def test_side_job_only_schedule_never_connects_or_submits_S1_work(self):
         with self.clocked_schedule([("side-job", 10, 100), ("main", 0, -1)], batches=0) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value.step.return_value = True
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         cnn.return_value.step.assert_called_once()
         cnn.return_value.close.assert_called_once()
         self.factory.assert_not_called()
@@ -373,7 +373,7 @@ class WRPoolEffortTests(unittest.TestCase):
     def test_paused_side_job_does_not_construct_a_cnn(self):
         with self.clocked_schedule([("side-job", 10, 0), ("main", 20, 100)]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(clock.now, 10)
         cnn.assert_not_called()
         self.prepare.assert_called_once()
@@ -383,7 +383,7 @@ class WRPoolEffortTests(unittest.TestCase):
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value.step.side_effect = RuntimeError("fixture training failure")
             with self.assertRaisesRegex(RuntimeError, "fixture training failure"):
-                worker.run_pool_training(self.config)
+                worker.run_S3_training(self.config)
         cnn.return_value.close.assert_called_once()
         pacer.finish.assert_called_once_with(cancelled=True)
         self.monitor.return_value.start.return_value.close.assert_called_once()
@@ -391,7 +391,7 @@ class WRPoolEffortTests(unittest.TestCase):
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
         with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
         self.factory.assert_not_called()
@@ -405,7 +405,7 @@ class WRPoolEffortTests(unittest.TestCase):
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
         self.config["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         cuda.assert_not_called()
         worker.load_official_helpers.assert_not_called()
         self.factory.assert_not_called()
@@ -423,7 +423,7 @@ class WRPoolEffortTests(unittest.TestCase):
             return self.session
 
         self.session.__enter__.side_effect = wait_for_exit
-        self.assertEqual(worker.run_pool_training(self.config), 0)
+        self.assertEqual(worker.run_S3_training(self.config), 0)
         self.factory.assert_called_once()
         self.assertLessEqual(self.factory.call_args.args[0]["connect_timeout"], 0.3)
         self.session.__exit__.assert_called_once()
@@ -434,17 +434,17 @@ class WRPoolEffortTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
-        from LRAEP_trainer.pool_transport import PoolConnectionError
+        from LRAEP_trainer.S3_transport import S3ConnectionError
 
         self.config["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
             self.assertTrue(stopped.wait(2), "schedule did not stop share submission")
-            raise PoolConnectionError("scheduled exit")
+            raise S3ConnectionError("scheduled exit")
 
         self.session.submit.side_effect = wait_for_exit
-        self.assertEqual(worker.run_pool_training(self.config), 0)
+        self.assertEqual(worker.run_S3_training(self.config), 0)
         self.factory.assert_called_once()
         self.session.submit.assert_called_once()
         self.session.__exit__.assert_called_once()
@@ -454,7 +454,7 @@ class WRPoolEffortTests(unittest.TestCase):
     def test_main_jobs_use_one_shared_sequence(self):
         self.config["training"].update(job_sequence=[("main", 60, 70)])
         with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
-            self.assertEqual(worker.run_pool_training(self.config), 0)
+            self.assertEqual(worker.run_S3_training(self.config), 0)
         schedules.assert_called_once()
         self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
         self.prepare.assert_called_once()

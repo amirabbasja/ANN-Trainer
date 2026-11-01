@@ -165,7 +165,7 @@ class NodeClient:
             # The official helper stores an already serialized coinbase script
             # in Script.script[0]; TxInput serializes that raw field specially.
             return BlockTemplate.from_get_block_template(
-                GetBlockTemplateResponse.model_validate(raw), mining_address=address
+                GetBlockTemplateResponse.model_validate(raw), S1_address=address
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise NodeError(f"Invalid block template: {self._safe_message(exc)}") from None

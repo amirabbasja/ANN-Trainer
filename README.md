@@ -33,6 +33,43 @@ and checkpoints live under `data/side-job/`.
 
 ## Plain source configuration and WR export
 
+### Periodic Telegram updates
+
+Set `trainer_name` to the name that should appear at the start of each update.
+Telegram settings come from the selected configuration file:
+
+```json
+{
+  "trainer_name": "my-trainer",
+  "telegram": {
+    "enabled": true,
+    "tgBot_key": "YOUR_BOT_TOKEN",
+    "tgChatID": "YOUR_CHAT_ID",
+    "update_interval_seconds": 300
+  }
+}
+```
+
+The interval is a positive number of seconds; the first update arrives after
+one interval. Reports contain elapsed time, completed batches, GPU utilization,
+average hashrate and share counters. Solo reports contain batches, attempts and
+accepted blocks. Updates continue during pool reconnects and schedule pauses.
+`telegram.enabled: false` disables reporting, as does omitting the section.
+Connection and login checks do not send updates.
+
+Delivery uses the [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
+on a background thread and follows the trainer's configured VPN route. A delivery
+failure logs a warning and retries at the next interval without stopping training.
+Bot tokens are omitted from delivery warnings. Keep credentials in the private
+config; the public example contains blank credentials. Start the bot in Telegram
+before expecting it to message your private chat.
+
+WR exports retain `trainer_name` and `telegram` inside the encoded configuration.
+Set the name in the source config before exporting if you want the WR copy to
+use a different name.
+
+### Source and exported files
+
 Maintain the app settings in `config.json`. The trainer finds this file beside
 `ann_trainer.py`, even when launched from another directory. `--config` remains
 available if you store the shared file elsewhere. `config.example.json` is the
@@ -677,3 +714,20 @@ a full name. These links are references, not runtime endpoint defaults.
 WR research source labels refer to the sibling `/workspace/wildrig-checker`
 workspace. For example, `wr-checker/captures/...` in fixture provenance means
 that workspace's `captures/...` directory. It is not a runtime dependency.
+
+
+## Abbreviations
+
+| Original | Abbreviation |
+| --- | --- |
+| mining | S1 |
+| wallet | S2 |
+| pool | S3 |
+| stratum | S4 |
+
+These substitutions apply case-insensitively to local names, filenames, imports,
+configuration keys, and CLI commands (for example, `pool` becomes `S3` and
+`WR_wallet` becomes `WR_S2`). Existing README examples retain their original
+spelling; substitute the abbreviations when using them. External protocol
+literals, upstream URLs, package APIs, and license text retain their required
+spellings.

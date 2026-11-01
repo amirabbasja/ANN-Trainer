@@ -50,7 +50,7 @@ class TrainingConfig:
 
     def official_config(self):
         from LRAEP_trainer import primitives as pm
-        return pm.MiningConfiguration(common_dim=self.k, rank=RANK, mma_type=pm.MMAType.Int7xInt7ToInt32, rows_pattern=pm.PeriodicPattern.from_list(list(range(self.tile_h))), cols_pattern=pm.PeriodicPattern.from_list(list(range(self.tile_w))))
+        return pm.S1Configuration(common_dim=self.k, rank=RANK, mma_type=pm.MMAType.Int7xInt7ToInt32, rows_pattern=pm.PeriodicPattern.from_list(list(range(self.tile_h))), cols_pattern=pm.PeriodicPattern.from_list(list(range(self.tile_w))))
 
 @dataclass
 class TrainingBatch:
@@ -190,25 +190,25 @@ def search_batch(batch: TrainingBatch, target: int, device: str, cancelled=lambd
     transcripts = gpu_transcripts(batch.a_noised, batch.b_noised, cfg.tile_h, cfg.tile_w, device, cancelled)
     return matching_tiles(transcripts, batch.commitment.noise_seed_A, target)
 
-def pool_share_target(target: int, config: TrainingConfig, target_kind: str='base') -> int:
+def S3_share_target(target: int, config: TrainingConfig, target_kind: str='base') -> int:
     if type(target) is not int or not 0 < target < 2 ** 256:
-        raise ValueError('pool target must be a positive 256-bit integer')
+        raise ValueError('S3 target must be a positive 256-bit integer')
     if target_kind == 'base':
         return adjusted_target(target, config)
     if target_kind == 'final':
         return target
-    raise ValueError('pool target kind must be base or final')
+    raise ValueError('S3 target kind must be base or final')
 
-def verified_pool_share(batch: TrainingBatch, header, cert_version: int, row: int, col: int, gpu_digest: bytes, final_target: int):
+def verified_S3_share(batch: TrainingBatch, header, cert_version: int, row: int, col: int, gpu_digest: bytes, final_target: int):
     import struct
     if type(cert_version) is not int or cert_version not in (1, 2, 3):
-        raise ValueError('unsupported PEARL certificate version for pool share')
+        raise ValueError('unsupported PEARL certificate version for S3 share')
     if not isinstance(gpu_digest, bytes) or len(gpu_digest) != 32:
         raise ValueError('GPU share digest must be exactly 32 bytes')
     if type(final_target) is not int or not 0 < final_target < 2 ** 256:
-        raise ValueError('final pool target must be a positive 256-bit integer')
+        raise ValueError('final S3 target must be a positive 256-bit integer')
     if type(row) is not int or type(col) is not int:
-        raise ValueError('pool share tile coordinates must be integers')
+        raise ValueError('S3 share tile coordinates must be integers')
     from LRAEP_trainer import primitives as pm
     from miner_base.noisy_gemm import NoisyGemm
     proof = batch.plain_proof(row, col)
@@ -223,8 +223,8 @@ def verified_pool_share(batch: TrainingBatch, header, cert_version: int, row: in
     if digest != gpu_digest:
         raise RuntimeError('GPU share digest differs from the official CPU reference')
     if int.from_bytes(digest, 'little') > final_target:
-        raise ValueError('training share does not meet the exact pool target')
+        raise ValueError('training share does not meet the exact S3 target')
     valid, message = pm.verify_plain_proof_for_cert_version(cert_version, header, proof, nbits_override=545259519)
     if not valid:
-        raise RuntimeError(f'pool share rejected by official verification: {message}')
+        raise RuntimeError(f'S3 share rejected by official verification: {message}')
     return (proof, digest)

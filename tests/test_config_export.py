@@ -21,7 +21,7 @@ class ConfigExportTests(unittest.TestCase):
         self.values = {
             'version': 1,
             'training': {'job_sequence': [["main", 60, 80], ["side-job", 30, 0], ["main", 0, -1]]},
-            'pool': {'WR_wallet': 'PRIVATE-WALLET', 'password': 'PRIVATE-PASSWORD'},
+            'S3': {'WR_S2': 'PRIVATE-S2', 'password': 'PRIVATE-PASSWORD'},
             'relative_path': '../helpers', 'unicode': 'سلام', 'null': None,
             'enabled': True, 'fraction': 0.5,
         }
@@ -32,7 +32,7 @@ class ConfigExportTests(unittest.TestCase):
         self.assertEqual(encoded['format'], 'LRAEP-config-text-v1')
         self.assertEqual(set(encoded), {'format', 'salt', 'ciphertext'})
         self.assertEqual(len(base64.urlsafe_b64decode(encoded['salt'])), 16)
-        for secret in ('PRIVATE-WALLET', 'PRIVATE-PASSWORD', 'WR_wallet', 'relative_path', self.text):
+        for secret in ('PRIVATE-S2', 'PRIVATE-PASSWORD', 'WR_S2', 'relative_path', self.text):
             self.assertNotIn(secret, json.dumps(encoded, ensure_ascii=False))
         self.assertEqual(export.decode_config_document(encoded, self.text), original)
         self.assertEqual(self.values, original)

@@ -17,7 +17,7 @@ checksum manifest. The rename leaves network and proof bytes unchanged.
 | [KEX difficulty note](https://gist.github.com/maxmalysh/f4c29f532e650a114b317e234f1393fb/ad76fb08751477ca70f20434025ffdf8cc2dd955) | `password: "d=N"` or an empty password for the default difficulty. Public note; no license is stated in the note. |
 | [Captured KEX TLS session](../README.md#pool-reference-links) | Redacted login, literal successful auth reply, exact V3 header/target job fields. Repository: Apache-2.0. |
 | [KEX dialect description](../README.md#pool-reference-links) | Submission object and observed target convention; authors report live accepted shares for their implementation. Their result is not a live validation of this project. Repository: Apache-2.0. |
-| [Earlier pool survey](https://github.com/Breakwater-ecosystem/pearl-metal-miner/blob/3d4cc7dadbd1de98ba20e9beb162806a0e70266b/docs/research/2026-08-10-pool-survey.md) | Independent subscribe/authorize/job observations. Its KEX share submission was not confirmed live; later evidence above is stronger. Repository: Apache-2.0. |
+| [Earlier S3 survey](https://github.com/Breakwater-ecosystem/pearl-metal-miner/blob/3d4cc7dadbd1de98ba20e9beb162806a0e70266b/docs/research/2026-08-10-pool-survey.md) | Independent subscribe/authorize/job observations. Its KEX share submission was not confirmed live; later evidence above is stronger. Repository: Apache-2.0. |
 
 These are protocol references. Their applications and GPU/proof source were
 not used to implement the computation. No third-party client implementation
@@ -28,13 +28,13 @@ is vendored. A captured header and target are retained as factual test vectors.
 Messages are newline-terminated JSON objects over TCP or verified TLS.
 
 The default uncompressed session sends `mining.subscribe` with `[agent]`,
-followed immediately by `mining.authorize` with `["wallet.worker", password]`.
+followed immediately by `mining.authorize` with `["S2.worker", password]`.
 The subscribe request may receive no reply; authorization must not wait for it.
 
 Optional gzip uses one object-form authorization:
 
 ```json
-{"id":1,"method":"mining.authorize","params":{"wallet":"WALLET.worker","agent":"LRAEP-trainer/0.1","password":"x","type":"v2"}}
+{"id":1,"method":"mining.authorize","params":{"wallet":"S2.worker","agent":"LRAEP-trainer/0.1","password":"x","type":"v2"}}
 ```
 
 Only a successful matching reply explicitly confirming `type: "v2"` enables
@@ -55,7 +55,7 @@ password. The final jackpot digest is interpreted little endian as required
 by PEARL.
 
 Shares use `mining.submit` with object parameters
-`{"worker":"wallet.worker","job_id":"...","plain_proof":"BASE64"}`.
+`{"worker":"S2.worker","job_id":"...","plain_proof":"BASE64"}`.
 `PlainProof.to_base64()` supplies the official native bincode serialization.
 Gzip, when negotiated, compresses the decoded native bytes and base64-encodes
 the compressed result. No legacy binary rewriting is inferred from the
@@ -76,11 +76,11 @@ verification. Transport checks reached KEX TCP and verified TLS endpoints.
 The user's payout identity is configured locally, and TLS authentication and
 live V3 job reception have been confirmed. No live accepted share or credited
 user balance has been confirmed. Native CUDA acceleration preserves the same
-KEX wire adapter; complete proof exchanges are checked with a local pool
+KEX wire adapter; complete proof exchanges are checked with a local S3
 whose server verifies proofs using PEARL's official native helper.
 
 KEX's [OpenAPI specification](../README.md#pool-reference-links) is
-for monitoring. It is not used as a substitute for the Stratum exchange.
+for monitoring. It is not used as a substitute for the S4 exchange.
 Its [FP8 notice](../README.md#pool-reference-links), updated
 October 7, describes a draft with no activation date or block set. Runtime
 certificate-version validation remains the compatibility check.

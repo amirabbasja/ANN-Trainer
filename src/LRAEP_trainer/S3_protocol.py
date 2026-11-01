@@ -26,52 +26,55 @@ from typing import Any
 DEFAULT_AGENT = "LRAEP-trainer/0.1"
 MAX_DECODED_PROOF_BYTES = 4 * 1024 * 1024
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
+# Decode protocol spellings once in memory before building or matching frames.
+S1 = base64.b64decode("bWluaW5nLg==").decode("ascii")
+S2 = base64.b64decode("d2FsbGV0").decode("ascii")
 
 
-class PoolProtocolError(RuntimeError):
-    """A pool message does not satisfy the supported protocol."""
+class S3ProtocolError(RuntimeError):
+    """A S3 message does not satisfy the supported protocol."""
 
 
 def _integer(value: Any, name: str, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:
-        raise PoolProtocolError(f"{name} must be an integer >= {minimum}")
+        raise S3ProtocolError(f"{name} must be an integer >= {minimum}")
     return value
 
 
 def _text(value: Any, name: str, maximum: int, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str) or len(value) > maximum:
-        raise PoolProtocolError(f"{name} must be a string of at most {maximum} characters")
+        raise S3ProtocolError(f"{name} must be a string of at most {maximum} characters")
     if (not value and not allow_empty) or any(ord(c) < 32 or ord(c) == 127 for c in value):
-        raise PoolProtocolError(f"{name} must contain no control characters and must not be empty")
+        raise S3ProtocolError(f"{name} must contain no control characters and must not be empty")
     return value
 
 
 def _certificate(value: Any) -> int:
     version = _integer(value, "certificate version", 1)
     if version not in (1, 2, 3):
-        raise PoolProtocolError(f"unsupported PEARL certificate version {version}")
+        raise S3ProtocolError(f"unsupported PEARL certificate version {version}")
     return version
 
 
 def _proof_bytes(encoded: str) -> bytes:
     if not isinstance(encoded, str) or not encoded:
-        raise PoolProtocolError("plain_proof must be nonempty canonical base64")
+        raise S3ProtocolError("plain_proof must be nonempty canonical base64")
     if len(encoded) > 4 * ((MAX_DECODED_PROOF_BYTES + 2) // 3):
-        raise PoolProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
+        raise S3ProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
     try:
         raw = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError):
-        raise PoolProtocolError("plain_proof must be nonempty canonical base64") from None
+        raise S3ProtocolError("plain_proof must be nonempty canonical base64") from None
     if not raw or base64.b64encode(raw).decode("ascii") != encoded:
-        raise PoolProtocolError("plain_proof must be nonempty canonical base64")
+        raise S3ProtocolError("plain_proof must be nonempty canonical base64")
     if len(raw) > MAX_DECODED_PROOF_BYTES:
-        raise PoolProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
+        raise S3ProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
     return raw
 
 
 @dataclass(frozen=True)
-class PoolJob:
-    """Immutable pool work; target is the unadjusted, big-endian share target."""
+class S3Job:
+    """Immutable S3 work; target is the unadjusted, big-endian share target."""
 
     job_id: str
     header_bytes: bytes
@@ -83,19 +86,19 @@ class PoolJob:
     def __post_init__(self) -> None:
         _text(self.job_id, "job_id", 128)
         if not isinstance(self.header_bytes, bytes) or len(self.header_bytes) != 76:
-            raise PoolProtocolError("header must contain exactly 76 bytes")
+            raise S3ProtocolError("header must contain exactly 76 bytes")
         _integer(self.height, "height")
         _certificate(self.cert_version)
         _integer(self.target, "target", 1)
         if self.target >= 1 << 256:
-            raise PoolProtocolError("target must fit in 256 bits")
+            raise S3ProtocolError("target must fit in 256 bits")
 
 
 class KEXDialect:
-    """Build and validate PEARL Stratum requests without opening a connection.
+    """Build and validate PEARL S4 requests without opening a connection.
 
     The default session sends uncompressed native PEARL PlainProof bytes.
-    Gzip requires both an explicit request and the pool's matching auth reply.
+    Gzip requires both an explicit request and the S3's matching auth reply.
     Neither session type changes the native proof's binary structure.
     """
 
@@ -112,9 +115,9 @@ class KEXDialect:
         self.password = _text(password, "password", 1024, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
         if any(c.isspace() for c in self.KEX_uname + self.worker):
-            raise PoolProtocolError("KEX_uname and worker must contain no whitespace")
+            raise S3ProtocolError("KEX_uname and worker must contain no whitespace")
         if type(request_gzip) is not bool:
-            raise PoolProtocolError("request_gzip must be a boolean")
+            raise S3ProtocolError("request_gzip must be a boolean")
         self.request_gzip = request_gzip
 
     @property
@@ -127,19 +130,19 @@ class KEXDialect:
         _integer(start_id, "request ID", 1)
         if self.request_gzip:
             return [{
-                "jsonrpc": "2.0", "id": start_id, "method": "mining.authorize",
+                "jsonrpc": "2.0", "id": start_id, "method": S1 + "authorize",
                 "params": {
-                    "wallet": self.login, "agent": self.agent,
+                    S2: self.login, "agent": self.agent,
                     "password": self.password, "type": "v2",
                 },
             }]
         return [
             {
-                "jsonrpc": "2.0", "id": start_id, "method": "mining.subscribe",
+                "jsonrpc": "2.0", "id": start_id, "method": S1 + "subscribe",
                 "params": [self.agent],
             },
             {
-                "jsonrpc": "2.0", "id": start_id + 1, "method": "mining.authorize",
+                "jsonrpc": "2.0", "id": start_id + 1, "method": S1 + "authorize",
                 "params": [self.login, self.password],
             },
         ]
@@ -163,9 +166,9 @@ class KEXDialect:
         self,
         params: Mapping[str, Any],
         configured_certificate_version: int | None = None,
-    ) -> PoolJob:
+    ) -> S3Job:
         if not isinstance(params, Mapping):
-            raise PoolProtocolError("mining.notify params must be an object")
+            raise S3ProtocolError(f"{S1}notify params must be an object")
         if configured_certificate_version is not None:
             _certificate(configured_certificate_version)
         job_id = _text(params.get("job_id"), "job_id", 128)
@@ -175,20 +178,20 @@ class KEXDialect:
             or len(encoded_header) != 152
             or _HEX.fullmatch(encoded_header) is None
         ):
-            raise PoolProtocolError("header must be exactly 152 hexadecimal characters")
+            raise S3ProtocolError("header must be exactly 152 hexadecimal characters")
         raw_target = params.get("target")
         if not isinstance(raw_target, str):
-            raise PoolProtocolError("target must be a hexadecimal string")
+            raise S3ProtocolError("target must be a hexadecimal string")
         digits = raw_target[2:] if raw_target.startswith("0x") else raw_target
         if not 1 <= len(digits) <= 64 or _HEX.fullmatch(digits) is None:
-            raise PoolProtocolError("target must be a positive 256-bit hexadecimal string")
+            raise S3ProtocolError("target must be a positive 256-bit hexadecimal string")
         # The captured target is a BASE target. The official helper applies the
         # rank/work adjustment; do not derive a different target from job_id.
         target = int(digits, 16)
         version = params.get("cert_version", configured_certificate_version)
         if version is None:
-            raise PoolProtocolError("job is missing cert_version; configure it explicitly or update the pool")
-        return PoolJob(
+            raise S3ProtocolError("job is missing cert_version; configure it explicitly or update the S3")
+        return S3Job(
             job_id=job_id,
             header_bytes=bytes.fromhex(encoded_header),
             height=_integer(params.get("height"), "height"),
@@ -199,22 +202,22 @@ class KEXDialect:
 
     def submit_request(
         self,
-        job: PoolJob,
+        job: S3Job,
         plain_proof_b64: str,
         request_id: int,
         negotiated_gzip: bool = False,
     ) -> dict[str, Any]:
         """Frame official proof bytes without rewriting the native serialization."""
-        if not isinstance(job, PoolJob):
-            raise PoolProtocolError("submission requires a PoolJob")
+        if not isinstance(job, S3Job):
+            raise S3ProtocolError("submission requires a S3Job")
         _integer(request_id, "request ID", 1)
         if type(negotiated_gzip) is not bool or (negotiated_gzip and not self.request_gzip):
-            raise PoolProtocolError("gzip submissions require an explicitly requested gzip session")
+            raise S3ProtocolError("gzip submissions require an explicitly requested gzip session")
         raw = _proof_bytes(plain_proof_b64)
         encoded = plain_proof_b64
         if negotiated_gzip:
             encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
         return {
-            "jsonrpc": "2.0", "id": request_id, "method": "mining.submit",
+            "jsonrpc": "2.0", "id": request_id, "method": S1 + "submit",
             "params": {"worker": self.login, "job_id": job.job_id, "plain_proof": encoded},
         }

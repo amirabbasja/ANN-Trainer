@@ -1,6 +1,6 @@
 """Small ctypes interface to this project's native integer CUDA kernels.
 
-No trainer executable or third-party mining implementation is used. NVCC
+No trainer executable or third-party S1 implementation is used. NVCC
 builds the checked-in CUDA files for the selected GPU into the app's cache.
 """
 

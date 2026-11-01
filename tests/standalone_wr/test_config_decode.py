@@ -21,7 +21,7 @@ class ConfigDecodeTests(unittest.TestCase):
         self.path = self.directory / 'config.json'
         self.text = 'test arbitrary text key Ω # $ literal'
         self.config = copy.deepcopy(DEFAULT_CONFIG)
-        self.config['pool'].update(host='pool.example', WR_wallet='fixture-wallet')
+        self.config['S3'].update(host='S3.example', WR_S2='fixture-S2')
         self.config['vpn']['link'] = 'vless://fixture@example.invalid:443'
         write_open_text(self.directory / '.env', self.text)
 
@@ -35,7 +35,7 @@ class ConfigDecodeTests(unittest.TestCase):
         envelope = json.loads(self.path.read_text(encoding='utf-8'))
         self.assertEqual(envelope['format'], FORMAT)
         self.assertEqual(set(envelope), {'format', 'salt', 'ciphertext'})
-        self.assertNotIn('fixture-wallet', self.path.read_text(encoding='utf-8'))
+        self.assertNotIn('fixture-S2', self.path.read_text(encoding='utf-8'))
         self.assertEqual(read_config(self.path), self.config)
         self.assertEqual(load_config(self.path)['training']['job_sequence'], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
@@ -78,7 +78,7 @@ class ConfigDecodeTests(unittest.TestCase):
         self.assertNotIn('SECRET', str(caught.exception))
         self.assertFalse(self.path.exists())
 
-    def test_existing_mining_config_without_cnn_settings_still_loads(self):
+    def test_existing_S1_config_without_cnn_settings_still_loads(self):
         self.config.pop('side_job')
         save_config(self.path, self.config)
         self.assertEqual(load_config(self.path)['side_job']['repo_url'], '')
@@ -97,7 +97,7 @@ class ConfigDecodeTests(unittest.TestCase):
             'open_text': 'wrong process key', 'OPEN_TEXT': 'wrong upper-case key',
             'LRAEP_CONFIG_KEY': 'wrong legacy key',
         }):
-            self.assertEqual(load_config(self.path)['pool']['WR_wallet'], 'fixture-wallet')
+            self.assertEqual(load_config(self.path)['S3']['WR_S2'], 'fixture-S2')
 
     def test_missing_dotenv_does_not_fall_back_to_process_or_config_key(self):
         self.write_envelope()
@@ -129,7 +129,7 @@ class ConfigDecodeTests(unittest.TestCase):
         write_open_text(self.directory / '.env', 'PRIVATE_WRONG_KEY')
         with self.assertRaisesRegex(ConfigError, 'decode') as caught:
             load_config(self.path)
-        for value in (self.text, 'PRIVATE_WRONG_KEY', 'fixture-wallet', envelope['ciphertext']):
+        for value in (self.text, 'PRIVATE_WRONG_KEY', 'fixture-S2', envelope['ciphertext']):
             self.assertNotIn(value, str(caught.exception))
         write_open_text(self.directory / '.env', self.text)
         envelope['ciphertext'] = envelope['ciphertext'][:-8] + 'AAAAAAAA'
@@ -144,7 +144,7 @@ class ConfigDecodeTests(unittest.TestCase):
                 with self.assertRaises(ConfigError) as caught:
                     load_config(self.path)
                 self.assertNotIn('PRIVATE_LEGACY_TOKEN', str(caught.exception))
-                self.assertNotIn('fixture-wallet', str(caught.exception))
+                self.assertNotIn('fixture-S2', str(caught.exception))
 
     def test_invalid_envelope_errors_do_not_include_untrusted_values(self):
         document = {'format': 'PRIVATE_FORMAT', 'salt': 'PRIVATE_SALT', 'ciphertext': 'PRIVATE_CIPHERTEXT'}
@@ -160,7 +160,7 @@ class ConfigDecodeTests(unittest.TestCase):
         update_config(self.path, {'training': {'job_sequence': [["main", 5, 50], ["main", 0, -1]]}})
         updated = read_config(self.path)
         self.assertEqual(updated['training']['job_sequence'], [["main", 5, 50], ["main", 0, -1]])
-        self.assertEqual(updated['pool'], self.config['pool'])
+        self.assertEqual(updated['S3'], self.config['S3'])
         self.assertEqual(updated['vpn'], self.config['vpn'])
         self.assertEqual((self.directory / '.env').read_bytes(), dotenv_before)
         self.assertEqual({entry.name for entry in self.directory.iterdir()}, {'.env', 'config.json'})

@@ -1,31 +1,31 @@
 # WR/PearlHash in the custom trainer
 
-Choose `pool.protocol: "WR"` (or `"pearlhash"`) to use the PearlHash
+Choose `S3.protocol: "WR"` (or `"pearlhash"`) to use the PearlHash
 adapter. KEX keeps its own protocol and work path. This option runs the
 trainer's Python/CUDA code; it does not invoke the WR executable or load
 its libraries. The external WR research workspace supplies evidence and is
 not a runtime dependency; its location is documented in the main README.
 
-Use the app's single `config.json`. Set `pool.WR.host`, `pool.WR.port`,
-`pool.WR_wallet` and `pool.worker`, and run from the trainer directory:
+Use the app's single `config.json`. Set `S3.WR.host`, `S3.WR.port`,
+`S3.WR_S2` and `S3.worker`, and run from the trainer directory:
 
 ```bash
-.venv/bin/python ann_trainer.py pool-login-check --miner WR
-.venv/bin/python ann_trainer.py pool --miner WR
+.venv/bin/python ann_trainer.py S3-login-check --miner WR
+.venv/bin/python ann_trainer.py S3 --miner WR
 ```
 
-`pool-login-check` authenticates and validates one generation-3 job and the
+`S3-login-check` authenticates and validates one generation-3 job and the
 connection's eight-byte extranonce. It performs no GPU search or submission.
-Use `pool-check` to test TCP/TLS without authentication. The example endpoint
+Use `S3-check` to test TCP/TLS without authentication. The example endpoint
 has a blank host. Set your private endpoint explicitly; the captured endpoint
 is listed in the main README.
 The application codec obfuscates frames; it does not provide TLS encryption.
-When an endpoint supports TLS, `pool.WR.tls` enables certificate and hostname
+When an endpoint supports TLS, `S3.WR.tls` enables certificate and hostname
 verification through the same transport as KEX.
 
-The CLI `--miner WR` selects both the WR adapter and `pool.WR` connection
-profile from the shared file. WR uses `pool.WR_wallet`; KEX uses
-`pool.KEX_uname` and `pool.KEX`. VPN, device, training settings and worker name
+The CLI `--miner WR` selects both the WR adapter and `S3.WR` connection
+profile from the shared file. WR uses `S3.WR_S2`; KEX uses
+`S3.KEX_uname` and `S3.KEX`. VPN, device, training settings and worker name
 remain shared. No separate WR configuration file is needed.
 KEX's optional gzip proof transport is unavailable on PearlHash.
 
@@ -54,7 +54,7 @@ show an online worker with zero GPUs and zero connected-worker hashrate.
 
 Report acknowledgements are tracked separately from share acknowledgements.
 They do not increment submitted or accepted share counters. Reported device
-rate is distinct from pool credit, which depends on accepted mining shares.
+rate is distinct from S3 credit, which depends on accepted S1 shares.
 
 The normal terminal row uses training-style progress: `Main | Step 100 |
 elapsed=00:02:30 | GPU 42%`. A configured main-batch limit adds a total and
@@ -77,32 +77,32 @@ noise seeds before the reserved row is removed from the search view.
 The existing trainer supplies commitments, deterministic noise and integer
 matrix search. Before submission, an independent CPU path reconstructs the
 work from the compact witness, recomputes the selected tile digest and checks
-the exact pool target. Random KEX matrices are never sent as PearlHash
+the exact S3 target. Random KEX matrices are never sent as PearlHash
 work. The original header and its network difficulty remain unchanged.
 
 ## Unknown requests
 
-`pool.stop_on_unknown_request` defaults to `true`. An unfamiliar incoming
+`S3.stop_on_unknown_request` defaults to `true`. An unfamiliar incoming
 method or notification, invalid frame, unsupported job layout or generation
 causes the trainer to invalidate its current work, save the received data,
-close the pool connection, cancel further GPU work, and exit with an error.
+close the S3 connection, cancel further GPU work, and exit with an error.
 It does not reconnect automatically after a compatibility failure. A GPU
 stage already running finishes before control returns to the cancellation
 check; its result cannot be submitted after invalidation.
 
 The terminal prints a critical notice with the saved file's path, and rings
 the terminal bell when attached to a terminal. A separate private JSON file
-preserves the UTC timestamp, pool endpoint, diagnostic reason, exact incoming
+preserves the UTC timestamp, S3 endpoint, diagnostic reason, exact incoming
 frame bytes in hex, and decoded JSON when available. No configured password,
-wallet, outgoing login or proof is added. Remote messages themselves may contain
+S2, outgoing login or proof is added. Remote messages themselves may contain
 private data; files are created with mode `0600`, new directories with `0700`.
 
-Set `pool.unknown_request_dir` to choose where to save records. Relative paths
+Set `S3.unknown_request_dir` to choose where to save records. Relative paths
 resolve beside the configuration file. With `null`, records go under
-`training.output_dir/unknown-pool-requests`. Recording failures also stop the
+`training.output_dir/unknown-S3-requests`. Recording failures also stop the
 trainer and print an error. Files use unique names and survive later runs.
 
-Setting `pool.stop_on_unknown_request` to `false` permits unfamiliar extension
+Setting `S3.stop_on_unknown_request` to `false` permits unfamiliar extension
 methods and named notifications to be recorded, warned about and ignored.
 Malformed frames, invalid jobs and unsupported generations still stop the
 trainer because they cannot be used to construct work safely.

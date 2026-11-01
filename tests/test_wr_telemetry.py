@@ -1,4 +1,4 @@
-"""WR GPU report timing and work units, independent of remote pool statistics."""
+"""WR GPU report timing and work units, independent of remote S3 statistics."""
 
 from bisect import bisect_right
 from contextlib import ExitStack
@@ -10,9 +10,9 @@ from unittest.mock import MagicMock, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
 import LRAEP_trainer
-from LRAEP_trainer import pool_training as worker
-from LRAEP_trainer.pool_client import JobSnapshot
-from LRAEP_trainer.pool_protocol import PoolJob
+from LRAEP_trainer import S3_training as worker
+from LRAEP_trainer.S3_client import JobSnapshot
+from LRAEP_trainer.S3_protocol import S3Job
 from LRAEP_trainer.protocol import TrainingConfig
 
 
@@ -21,8 +21,8 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.configuration = copy.deepcopy(DEFAULT_CONFIG)
-        self.configuration['pool'].update(protocol='WR', host='pool.example',
-                                            WR_wallet='test-wallet', KEX_uname='test-user',
+        self.configuration['S3'].update(protocol='WR', host='S3.example',
+                                            WR_S2='test-S2', KEX_uname='test-user',
                                             worker='test-rig', reconnect_delay=0)
         self.configuration['training'].update(m=128, n=128, k=2048,
                                                 max_batches=1, max_seconds=0)
@@ -33,7 +33,7 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.session.__enter__.return_value = self.session
         self.session.negotiated_gzip = False
         self.session.latest_report_accepted = True
-        self.session.wait_job.return_value = JobSnapshot(PoolJob('job', bytes(76), 0, 3, 1), 1)
+        self.session.wait_job.return_value = JobSnapshot(S3Job('job', bytes(76), 0, 3, 1), 1)
         self.session.is_current.return_value = True
         self.session.report_info.side_effect = self.report
         self.factory = self.stack.enter_context(
@@ -43,7 +43,7 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.stack.enter_context(patch.object(worker.torch.cuda, 'is_available', return_value=True))
         self.stack.enter_context(patch.object(worker.torch.cuda, 'get_device_name', return_value='selected GPU'))
         self.stack.enter_context(patch.object(worker.native_cuda, 'available', return_value=False))
-        self.stack.enter_context(patch.object(worker, 'pool_share_target', return_value=1))
+        self.stack.enter_context(patch.object(worker, 'S3_share_target', return_value=1))
         self.prepare = self.stack.enter_context(patch('LRAEP_trainer.wr_work.prepare_wr_batch'))
         self.stack.enter_context(patch.object(worker, 'prepare_batch'))
         self.search = self.stack.enter_context(patch.object(worker, 'search_batch', side_effect=self.complete_search))
@@ -65,7 +65,7 @@ class WRReportSchedulingTests(unittest.TestCase):
 
     def test_registration_then_first_completed_batch_report_do_not_require_a_share(self):
         with self.assertLogs(worker.LOG, level='INFO') as logs:
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         work = 128 * 128 * 2048
         self.assertEqual(self.reports, [(0.0, 'selected GPU', 0.0),
                                         (1.0, 'selected GPU', float(work))])
@@ -84,7 +84,7 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.assertEqual(worker.WR_STARTUP_REPORT_INTERVAL, 10.0)
         self.assertEqual(worker.WR_STARTUP_REPORT_WINDOW, 120.0)
         self.assertEqual(worker.WR_REPORT_INTERVAL, 120.0)
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         work = 128 * 128 * 2048
         self.assertEqual([record[0] for record in self.reports],
                          [0.0, 1.0, 11.0, 21.0, 119.0, 239.0, 359.0])
@@ -103,7 +103,7 @@ class WRReportSchedulingTests(unittest.TestCase):
                  for index in range(batches)]
         self.configuration['training'].update(m=4096, n=4096, k=16384, max_batches=batches)
         self.search_times = iter(times)
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.search.call_count, 989)
         self.assertEqual(len(self.reports), 7)
         self.assertAlmostEqual(self.reports[1][2] / 1e9, 189.11)
@@ -131,40 +131,40 @@ class WRReportSchedulingTests(unittest.TestCase):
             self.factory.call_args.kwargs['stop_event'].set()
             return MagicMock()
         self.prepare.side_effect = cancel
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.reports, [(0.0, 'selected GPU', 0.0)])
         self.search.assert_not_called()
         self.session.submit.assert_not_called()
 
     def test_login_only_reports_no_gpu_or_hashrate(self):
-        self.assertEqual(worker.run_pool_training(self.configuration, login_only=True), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
         self.assertEqual(self.reports, [])
         self.search.assert_not_called()
         self.monitor.assert_not_called()
 
     def test_kex_does_not_send_wr_reports(self):
-        self.configuration['pool']['protocol'] = 'KEX'
-        with patch('LRAEP_trainer.pool_client.PoolSession', return_value=self.session):
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.configuration['S3']['protocol'] = 'KEX'
+        with patch('LRAEP_trainer.S3_client.S3Session', return_value=self.session):
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.reports, [])
         self.session.report_info.assert_not_called()
 
 
-class PoolHashrateUnitTests(unittest.TestCase):
+class S3HashrateUnitTests(unittest.TestCase):
     def test_raw_hs_and_diagnostic_units_use_completed_mac_count(self):
         config = TrainingConfig(m=4096, n=4096, k=16384)
-        stats = worker.PoolTrainingStats(batches=15, accepted=0)
+        stats = worker.S3TrainingStats(batches=15, accepted=0)
         expected = 15 * 4096 * 4096 * 16384
-        self.assertEqual(worker.pool_hashrate(stats, config, 1.0), expected)
+        self.assertEqual(worker.S3_hashrate(stats, config, 1.0), expected)
         self.assertEqual(worker.format_hashrate(expected), '4.12 TH/s')
         stats.accepted = 100
-        self.assertEqual(worker.pool_hashrate(stats, config, 1.0), expected)
+        self.assertEqual(worker.S3_hashrate(stats, config, 1.0), expected)
 
     def test_zero_work_and_short_elapsed_values_stay_finite(self):
         config = TrainingConfig(m=128, n=128, k=2048)
-        self.assertEqual(worker.pool_hashrate(worker.PoolTrainingStats(), config, 0), 0)
+        self.assertEqual(worker.S3_hashrate(worker.S3TrainingStats(), config, 0), 0)
         work = 128 * 128 * 2048
-        self.assertEqual(worker.pool_hashrate(worker.PoolTrainingStats(batches=1), config, 0), work / 0.001)
+        self.assertEqual(worker.S3_hashrate(worker.S3TrainingStats(batches=1), config, 0), work / 0.001)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-"""Effort schedules must take precedence over starting mining resources."""
+"""Effort schedules must take precedence over starting S1 resources."""
 
 import copy
 from contextlib import ExitStack
@@ -26,14 +26,14 @@ class EntrypointEffortTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(os.environ))
         self.temporary = self.stack.enter_context(tempfile.TemporaryDirectory())
         self.config = copy.deepcopy(DEFAULT_CONFIG)
-        self.config["pool"].update(protocol="WR", host="pool.example", WR_wallet="test-wallet")
+        self.config["S3"].update(protocol="WR", host="S3.example", WR_S2="test-S2")
         self.config["vpn"].update(enabled=True, link="vless://dummy@example.invalid:443")
         self.stack.enter_context(patch("LRAEP_trainer.config.load_config", return_value=self.config))
         self.vpn = self.stack.enter_context(patch("LRAEP_trainer.vpn.ManagedVPN"))
         self.routed = self.stack.enter_context(patch("LRAEP_trainer.network.routed"))
         self.helpers = self.stack.enter_context(patch("LRAEP_trainer.protocol.load_official_helpers"))
         self.cuda = self.stack.enter_context(patch("torch.cuda.is_available", return_value=False))
-        self.worker = self.stack.enter_context(patch("LRAEP_trainer.pool_training.run_pool_training", return_value=0))
+        self.worker = self.stack.enter_context(patch("LRAEP_trainer.S3_training.run_S3_training", return_value=0))
 
     def test_immediate_exit_skips_vpn_helpers_cuda_and_worker(self):
         self.config["training"]["job_sequence"] = [("side-job", 0, -1)]

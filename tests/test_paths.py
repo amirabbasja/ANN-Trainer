@@ -51,12 +51,12 @@ class ApplicationPathTests(unittest.TestCase):
         with patch.dict("os.environ", {
             "HOME": "/tmp/lraep-home",
             "LRAEP_CACHE_DIR": "~/kernel-cache",
-            "LRAEP_DATA_DIR": "~/mining-data",
+            "LRAEP_DATA_DIR": "~/S1-data",
             "XDG_CACHE_HOME": "/tmp/unused-cache",
             "XDG_DATA_HOME": "/tmp/unused-data",
         }, clear=True):
             self.assertEqual(paths.cache_dir(), Path("/tmp/lraep-home/kernel-cache"))
-            self.assertEqual(paths.artifacts_dir(), Path("/tmp/lraep-home/mining-data/artifacts"))
+            self.assertEqual(paths.artifacts_dir(), Path("/tmp/lraep-home/S1-data/artifacts"))
 
     def test_empty_environment_values_use_the_default_locations(self):
         with patch.dict("os.environ", {

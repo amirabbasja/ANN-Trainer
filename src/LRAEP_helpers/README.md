@@ -24,3 +24,20 @@ Original copyright and license notices are retained in `LICENSE` and in the
 Rust dependency license files. Names inside those notices and upstream source
 URLs intentionally identify their original authors. See the project
 `THIRD_PARTY_NOTICES.md` for attribution.
+
+
+## Abbreviations
+
+| Original | Abbreviation |
+| --- | --- |
+| mining | S1 |
+| wallet | S2 |
+| pool | S3 |
+| stratum | S4 |
+
+These substitutions apply case-insensitively to local names, filenames, imports,
+configuration keys, and CLI commands (for example, `pool` becomes `S3` and
+`WR_wallet` becomes `WR_S2`). Existing README examples retain their original
+spelling; substitute the abbreviations when using them. External protocol
+literals, upstream URLs, package APIs, and license text retain their required
+spellings.

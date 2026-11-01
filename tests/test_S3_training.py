@@ -1,4 +1,4 @@
-"""Pool-loop state changes, plus a real GPU-to-local-pool proof exchange."""
+"""S3-loop state changes, plus a real GPU-to-local-S3 proof exchange."""
 
 import base64
 import copy
@@ -16,22 +16,22 @@ from unittest.mock import MagicMock, call, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
 import LRAEP_trainer
-from LRAEP_trainer import gpu_pacing, pool_training as worker
-from LRAEP_trainer.pool_client import JobSnapshot, PoolAuthenticationError, ShareResult
-from LRAEP_trainer.pool_protocol import PoolJob
+from LRAEP_trainer import gpu_pacing, S3_training as worker
+from LRAEP_trainer.S3_client import JobSnapshot, S3AuthenticationError, ShareResult
+from LRAEP_trainer.S3_protocol import S3Job
 from LRAEP_trainer.protocol import TrainingConfig
 
 
-class PoolLoopTests(unittest.TestCase):
+class S3LoopTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.configuration = copy.deepcopy(DEFAULT_CONFIG)
-        self.configuration["pool"].update(protocol="KEX", host="pool.example", KEX_uname="test-account",
-                                           WR_wallet="wr-test-wallet",
+        self.configuration["S3"].update(protocol="KEX", host="S3.example", KEX_uname="test-account",
+                                           WR_S2="wr-test-S2",
                                            worker="test-rig", reconnect_delay=0)
         self.configuration["training"].update(m=128, n=128, max_batches=1)
-        self.job = PoolJob("job-one", bytes(76), 130000, 3, 1234)
+        self.job = S3Job("job-one", bytes(76), 130000, 3, 1234)
         self.snapshot = JobSnapshot(self.job, 1)
         self.session = MagicMock()
         self.session.__enter__.return_value = self.session
@@ -40,7 +40,7 @@ class PoolLoopTests(unittest.TestCase):
         self.session.is_current.return_value = True
         self.session.submit.return_value = ShareResult(True, None)
         self.factory = self.stack.enter_context(
-            patch("LRAEP_trainer.pool_client.PoolSession", return_value=self.session)
+            patch("LRAEP_trainer.S3_client.S3Session", return_value=self.session)
         )
         self.stack.enter_context(patch.object(worker, "load_official_helpers"))
         self.stack.enter_context(patch.object(worker.torch.cuda, "is_available", return_value=True))
@@ -50,7 +50,7 @@ class PoolLoopTests(unittest.TestCase):
         self.monitor.return_value.start.return_value.read.return_value = 42
         self.progress = self.stack.enter_context(patch.object(worker, "LiveProgress"))
         self.stack.enter_context(patch.object(worker.native_cuda, "available", return_value=False))
-        self.stack.enter_context(patch.object(worker, "pool_share_target", return_value=5678))
+        self.stack.enter_context(patch.object(worker, "S3_share_target", return_value=5678))
         self.prepare = self.stack.enter_context(patch.object(worker, "prepare_batch"))
         self.search = self.stack.enter_context(
             patch.object(worker, "search_batch", return_value=iter([(0, 0, bytes(32))]))
@@ -58,7 +58,7 @@ class PoolLoopTests(unittest.TestCase):
         self.proof = MagicMock()
         self.proof.to_base64.return_value = "cHJvb2Y="
         self.verify = self.stack.enter_context(
-            patch.object(worker, "verified_pool_share", return_value=(self.proof, bytes(32)))
+            patch.object(worker, "verified_S3_share", return_value=(self.proof, bytes(32)))
         )
         self.header = SimpleNamespace(nbits=0x1D00FFFF)
         native = ModuleType("LRAEP_trainer.primitives")
@@ -67,13 +67,41 @@ class PoolLoopTests(unittest.TestCase):
         self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", native, create=True))
 
     def test_completed_last_batch_verifies_and_submits_at_share_target(self):
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.search.assert_called_once()
         self.verify.assert_called_once_with(
             self.prepare.return_value, self.header, 3, 0, 0, bytes(32), 5678,
         )
         self.session.submit.assert_called_once_with(self.snapshot, "cHJvb2Y=")
         self.assertEqual(self.header.nbits, 0x1D00FFFF)
+
+    def test_telegram_uses_config_and_completed_work_and_closes_with_training(self):
+        self.configuration["trainer_name"] = "configured trainer"
+        self.configuration["telegram"].update(
+            enabled=True, tgBot_key="123:TEST_TOKEN", tgChatID=123,
+            update_interval_seconds=15,
+        )
+        with patch.object(worker, "TelegramUpdates") as updates:
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
+        config, snapshot = updates.call_args.args
+        self.assertIs(config, self.configuration)
+        self.assertEqual(config["trainer_name"], "configured trainer")
+        self.assertEqual(config["telegram"]["update_interval_seconds"], 15)
+        text = snapshot()
+        self.assertIn("Step 1/1", text)
+        self.assertIn("GPU 42%", text)
+        self.assertIn("Hashrate (avg):", text)
+        self.assertIn("submitted=1 accepted=1 rejected=0 stale=0", text)
+        updates.return_value.__enter__.assert_called_once()
+        updates.return_value.__exit__.assert_called_once()
+
+    def test_login_check_does_not_start_telegram(self):
+        self.configuration["telegram"].update(
+            enabled=True, tgBot_key="123:TEST_TOKEN", tgChatID=123,
+        )
+        with patch.object(worker, "TelegramUpdates") as updates:
+            self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
+        updates.assert_not_called()
 
     def test_gpu_pacing_runs_between_batches_after_share_submission(self):
         self.configuration["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
@@ -84,7 +112,7 @@ class PoolLoopTests(unittest.TestCase):
             pacer.return_value.max_utilization = 100
             pacer.return_value.set_utilization.side_effect = lambda value: setattr(pacer.return_value, "max_utilization", value)
             pacer.return_value.wait.side_effect = lambda *_a, **_kw: order.append("wait")
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(order, ["search", "submit", "wait", "search", "submit"])
         pacer.assert_called_once_with(worker.torch.device("cuda:0"), 100)
         pacer.return_value.set_utilization.assert_called_once_with(60)
@@ -143,7 +171,7 @@ class PoolLoopTests(unittest.TestCase):
             self.prepare.side_effect = prepare
             worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
             with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
-                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(order, ["prepare", "synchronize", "pause", "prepare"])
         worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
         self.search.assert_called_once()
@@ -163,29 +191,29 @@ class PoolLoopTests(unittest.TestCase):
             worker.torch.cuda.synchronize.side_effect = lambda _device: order.append("synchronize")
             self.monitor.return_value.start.return_value.close.side_effect = lambda: order.append("close")
             with patch.object(worker, "GpuPacer", gpu_pacing.GpuPacer):
-                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(order, ["search", "synchronize", "close"])
         worker.torch.cuda.synchronize.assert_called_once_with(worker.torch.device("cuda:0"))
         self.session.__exit__.assert_called_once()
         self.verify.assert_not_called()
         self.session.submit.assert_not_called()
 
-    def test_initial_pause_delays_mining_until_the_positive_interval(self):
+    def test_initial_pause_delays_S1_until_the_positive_interval(self):
         with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(prepared_at, [30])
         self.assertEqual(clock.pauses, [(0, 30, 0, 0, 0)])
         pacer.set_utilization.assert_called_once_with(70)
         self.session.submit.assert_called_once()
 
-    def test_pause_between_positive_intervals_performs_no_mining(self):
+    def test_pause_between_positive_intervals_performs_no_S1(self):
         with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(prepared_at, [0, 30])
         self.assertEqual(clock.pauses, [(10, 20, 1, 1, 1)])
         self.assertEqual(pacer.set_utilization.call_args_list, [call(80), call(30)])
@@ -210,7 +238,7 @@ class PoolLoopTests(unittest.TestCase):
                 clock.now = kw["deadline"]
 
             pacer.wait.side_effect = pace
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(prepared_at, [0, 30, 60, 90, 120])
         self.assertEqual(side_job_at, [10, 40, 70, 100])
         self.assertEqual(self.session.wait_job.call_count, 5)
@@ -226,7 +254,7 @@ class PoolLoopTests(unittest.TestCase):
                             for now, text in statuses), "main progress must resume after a side-job interval")
         cnn.return_value.close.assert_called_once()
 
-    def test_initial_side_job_trains_before_pool_connection_or_job_wait(self):
+    def test_initial_side_job_trains_before_S3_connection_or_job_wait(self):
         with self.clocked_schedule([("side-job", 10, 70), ("main", 20, 80)]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def side_job_batch(**_kw):
@@ -240,7 +268,7 @@ class PoolLoopTests(unittest.TestCase):
 
             cnn.return_value.step.side_effect = side_job_batch
             cnn.return_value.status.return_value = "Side-job | Epoch 1 | Preparing"
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.prepare.assert_called_once()
         self.session.submit.assert_called_once()
         cnn.return_value.step.assert_called_once()
@@ -257,7 +285,7 @@ class PoolLoopTests(unittest.TestCase):
 
             self.prepare.side_effect = prepare
             with self.assertLogs(worker.LOG, level="INFO") as messages:
-                self.assertEqual(worker.run_pool_training(self.configuration), 0)
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.prepare.call_count, 2)
         self.search.assert_called_once()
         self.session.submit.assert_called_once()
@@ -267,7 +295,7 @@ class PoolLoopTests(unittest.TestCase):
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
         with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
         self.factory.assert_not_called()
@@ -281,7 +309,7 @@ class PoolLoopTests(unittest.TestCase):
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
         self.configuration["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         cuda.assert_not_called()
         worker.load_official_helpers.assert_not_called()
         self.factory.assert_not_called()
@@ -299,7 +327,7 @@ class PoolLoopTests(unittest.TestCase):
             return self.session
 
         self.session.__enter__.side_effect = wait_for_exit
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.factory.assert_called_once()
         self.assertLessEqual(self.factory.call_args.args[0]["connect_timeout"], 0.3)
         self.session.__exit__.assert_called_once()
@@ -310,17 +338,17 @@ class PoolLoopTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
-        from LRAEP_trainer.pool_transport import PoolConnectionError
+        from LRAEP_trainer.S3_transport import S3ConnectionError
 
         self.configuration["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
             self.assertTrue(stopped.wait(2), "schedule did not stop share submission")
-            raise PoolConnectionError("scheduled exit")
+            raise S3ConnectionError("scheduled exit")
 
         self.session.submit.side_effect = wait_for_exit
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.factory.assert_called_once()
         self.session.submit.assert_called_once()
         self.session.__exit__.assert_called_once()
@@ -330,21 +358,21 @@ class PoolLoopTests(unittest.TestCase):
     def test_job_sequence_creates_one_shared_schedule(self):
         self.configuration["training"].update(job_sequence=[("main", 60, 70)])
         with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         schedules.assert_called_once()
         self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
         self.prepare.assert_called_once()
         self.search.assert_called_once()
         self.session.submit.assert_called_once()
 
-    def test_progress_reports_training_steps_and_gpu_without_mining_counter_logs(self):
+    def test_progress_reports_training_steps_and_gpu_without_S1_counter_logs(self):
         self.configuration["training"]["max_batches"] = 3
         self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
         with self.assertLogs(worker.LOG, level="INFO") as messages:
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
         self.assertIn("Main job stopped: steps=3 elapsed=", output)
-        self.assertNotIn("Pool accepted training share", output)
+        self.assertNotIn("S3 accepted training share", output)
         display = self.progress.return_value.__enter__.return_value
         last_status = display.update.call_args.args[0]
         self.assertIn("Main | Step 3/3 (100.0%)", last_status)
@@ -356,25 +384,25 @@ class PoolLoopTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 3)
         self.monitor.return_value.start.return_value.close.assert_called_once()
 
-    def test_telemetry_is_closed_when_pool_authentication_fails(self):
-        self.session.__enter__.side_effect = PoolAuthenticationError("invalid account")
-        with self.assertRaises(PoolAuthenticationError):
-            worker.run_pool_training(self.configuration)
+    def test_telemetry_is_closed_when_S3_authentication_fails(self):
+        self.session.__enter__.side_effect = S3AuthenticationError("invalid account")
+        with self.assertRaises(S3AuthenticationError):
+            worker.run_S3_training(self.configuration)
         self.monitor.return_value.start.return_value.close.assert_called_once()
         self.progress.return_value.__exit__.assert_called_once()
 
     def test_telemetry_uses_callers_current_device_for_implicit_cuda(self):
         self.configuration["device"] = "cuda"
         with patch.object(worker.torch.cuda, "current_device", return_value=2):
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.monitor.assert_called_once_with("cuda:2")
 
     def test_job_change_during_preparation_skips_old_gpu_work(self):
-        next_job = PoolJob("job-two", bytes(76), 130001, 3, 1234)
+        next_job = S3Job("job-two", bytes(76), 130001, 3, 1234)
         newer = JobSnapshot(next_job, 2)
         self.session.wait_job.side_effect = [self.snapshot, newer]
         self.session.is_current.side_effect = lambda item: item is newer
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.prepare.call_count, 2)
         self.search.assert_called_once()
         self.session.submit.assert_called_once_with(newer, "cHJvb2Y=")
@@ -385,7 +413,7 @@ class PoolLoopTests(unittest.TestCase):
             return iter([(0, 0, bytes(32))])
 
         self.search.side_effect = search
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.verify.assert_not_called()
         self.session.submit.assert_not_called()
 
@@ -393,78 +421,78 @@ class PoolLoopTests(unittest.TestCase):
         self.search.side_effect = [worker.TrainingCancelled("stale"), iter([])]
         with patch.object(worker, "GpuPacer") as pacer:
             pacer.return_value.max_utilization = 80
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(pacer.return_value.finish.call_count, 2)
         pacer.return_value.wait.assert_called_once()
 
     def test_rejection_is_not_logged_as_accepted(self):
         self.session.submit.return_value = ShareResult(False, "low difficulty")
         with self.assertLogs(worker.LOG, level="INFO") as messages:
-            self.assertEqual(worker.run_pool_training(self.configuration), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
-        self.assertIn("Pool rejected training share", output)
+        self.assertIn("S3 rejected training share", output)
         self.assertIn("low difficulty", output)
-        self.assertNotIn("Pool accepted training share", output)
+        self.assertNotIn("S3 accepted training share", output)
         self.session.submit.assert_called_once()
 
     def test_authentication_failure_stops_without_reconnect_loop(self):
-        self.session.__enter__.side_effect = PoolAuthenticationError("invalid account")
-        with self.assertRaises(PoolAuthenticationError):
-            worker.run_pool_training(self.configuration)
+        self.session.__enter__.side_effect = S3AuthenticationError("invalid account")
+        with self.assertRaises(S3AuthenticationError):
+            worker.run_S3_training(self.configuration)
         self.factory.assert_called_once()
         self.prepare.assert_not_called()
 
     def test_login_check_requires_no_gpu_and_does_not_prepare_or_submit(self):
         with patch.object(worker.torch.cuda, "is_available", return_value=False):
-            self.assertEqual(worker.run_pool_training(self.configuration, login_only=True), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
         self.prepare.assert_not_called()
         self.search.assert_not_called()
         self.session.submit.assert_not_called()
         self.monitor.assert_not_called()
 
     def test_pearlhash_login_selects_its_own_adapter_without_gpu(self):
-        self.configuration["pool"].update(protocol="WR", host="pool.example")
+        self.configuration["S3"].update(protocol="WR", host="S3.example")
         with patch("LRAEP_trainer.wr_client.WRSession", return_value=self.session) as wr:
-            self.assertEqual(worker.run_pool_training(self.configuration, login_only=True), 0)
+            self.assertEqual(worker.run_S3_training(self.configuration, login_only=True), 0)
         wr.assert_called_once()
         self.factory.assert_not_called()
         self.prepare.assert_not_called()
 
     def test_wr_alias_and_host_selection(self):
         for protocol, expected in (("WR", "WR"), ("pearlhash", "WR"), ("KEX", "KEX")):
-            for host in ("pool.example", "localhost", "127.0.0.1"):
+            for host in ("S3.example", "localhost", "127.0.0.1"):
                 with self.subTest(protocol=protocol, host=host):
-                    self.assertEqual(worker.select_pool_protocol({"host": host, "protocol": protocol}), expected)
+                    self.assertEqual(worker.select_S3_protocol({"host": host, "protocol": protocol}), expected)
         with self.assertRaisesRegex(ValueError, "explicitly select KEX or WR"):
-            worker.select_pool_protocol({"host": "pool.example", "protocol": "auto"})
+            worker.select_S3_protocol({"host": "S3.example", "protocol": "auto"})
         for protocol in ("kex", "wr", "unknown", None):
             with self.subTest(protocol=protocol), self.assertRaisesRegex(ValueError, "KEX or WR"):
-                worker.select_pool_protocol({"host": "pool.example", "protocol": protocol})
+                worker.select_S3_protocol({"host": "S3.example", "protocol": protocol})
 
-    def test_missing_pool_endpoint_stops_before_helpers_or_session(self):
-        self.configuration["pool"]["host"] = ""
-        with self.assertRaisesRegex(ValueError, "fill pool.host"):
-            worker.run_pool_training(self.configuration)
+    def test_missing_S3_endpoint_stops_before_helpers_or_session(self):
+        self.configuration["S3"]["host"] = ""
+        with self.assertRaisesRegex(ValueError, "fill S3.host"):
+            worker.run_S3_training(self.configuration)
         worker.load_official_helpers.assert_not_called()
         self.factory.assert_not_called()
         self.prepare.assert_not_called()
 
     def test_unknown_wr_request_stop_cannot_be_reported_as_normal_completion(self):
-        from LRAEP_trainer.pool_client import PoolCompatibilityError
+        from LRAEP_trainer.S3_client import S3CompatibilityError
 
-        self.configuration["pool"].update(protocol="WR", host="pool.example")
+        self.configuration["S3"].update(protocol="WR", host="S3.example")
         def start(_settings, stop_event, **_options):
             self.prepare.side_effect = lambda *_a, **_kw: stop_event.set()
-            self.session.raise_if_failed.side_effect = PoolCompatibilityError("Unknown PearlHash request; training stopped")
+            self.session.raise_if_failed.side_effect = S3CompatibilityError("Unknown PearlHash request; training stopped")
             return self.session
         with patch("LRAEP_trainer.wr_client.WRSession", side_effect=start), \
                 patch("LRAEP_trainer.wr_work.prepare_wr_batch", self.prepare), \
-                self.assertRaisesRegex(PoolCompatibilityError, "Unknown PearlHash"):
-            worker.run_pool_training(self.configuration)
+                self.assertRaisesRegex(S3CompatibilityError, "Unknown PearlHash"):
+            worker.run_S3_training(self.configuration)
         self.factory.assert_not_called()
 
     def test_time_limit_interrupts_a_waiting_authentication(self):
-        from LRAEP_trainer.pool_transport import PoolConnectionError
+        from LRAEP_trainer.S3_transport import S3ConnectionError
 
         self.configuration["training"]["max_seconds"] = 0.05
 
@@ -472,40 +500,40 @@ class PoolLoopTests(unittest.TestCase):
             stop_event = self.factory.call_args.kwargs["stop_event"]
             if not stop_event.wait(1):
                 raise AssertionError("time limit did not stop authentication")
-            raise PoolConnectionError("stopped")
+            raise S3ConnectionError("stopped")
 
         self.session.__enter__.side_effect = wait_until_stopped
         started = time.monotonic()
-        self.assertEqual(worker.run_pool_training(self.configuration), 0)
+        self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertLess(time.monotonic() - started, 0.8)
         self.assertLessEqual(self.factory.call_args.args[0]["connect_timeout"], 0.05)
         self.search.assert_not_called()
 
-    def test_unsupported_pool_messages_stop_without_reconnect(self):
-        from LRAEP_trainer.pool_client import PoolCompatibilityError
+    def test_unsupported_S3_messages_stop_without_reconnect(self):
+        from LRAEP_trainer.S3_client import S3CompatibilityError
 
-        self.session.wait_job.side_effect = PoolCompatibilityError("unsupported certificate")
-        with self.assertRaises(PoolCompatibilityError):
-            worker.run_pool_training(self.configuration)
+        self.session.wait_job.side_effect = S3CompatibilityError("unsupported certificate")
+        with self.assertRaises(S3CompatibilityError):
+            worker.run_S3_training(self.configuration)
         self.factory.assert_called_once()
         self.search.assert_not_called()
 
 
-class PoolStatusTests(unittest.TestCase):
+class S3StatusTests(unittest.TestCase):
     def test_unbounded_steps_use_training_format_and_elapsed_time(self):
         cfg = TrainingConfig(m=128, n=128, k=2048)
-        stats = worker.PoolTrainingStats(batches=2, attempts=512, submitted=3,
+        stats = worker.S3TrainingStats(batches=2, attempts=512, submitted=3,
                                          accepted=2, rejected=1, stale=4)
-        status = worker.pool_status(stats, cfg, 3723, 75)
+        status = worker.S3_status(stats, cfg, 3723, 75)
         self.assertEqual(status, "Main | Step 2 | elapsed=01:02:03 | GPU 75%")
 
     def test_configured_batch_limit_has_true_step_progress(self):
-        status = worker.pool_status(worker.PoolTrainingStats(batches=2), TrainingConfig(), 1, 75,
+        status = worker.S3_status(worker.S3TrainingStats(batches=2), TrainingConfig(), 1, 75,
                                     max_batches=10)
         self.assertEqual(status, "Main | Step 2/10 (20.0%) | elapsed=00:00:01 | GPU 75%")
 
     def test_missing_gpu_utilization_and_unstarted_work(self):
-        status = worker.pool_status(worker.PoolTrainingStats(), TrainingConfig(), 0, None)
+        status = worker.S3_status(worker.S3TrainingStats(), TrainingConfig(), 0, None)
         self.assertEqual(status, "Main | Step 0 | elapsed=00:00:00 | GPU N/A")
 
 
@@ -530,7 +558,7 @@ class LocalGPUIntegrationTests(unittest.TestCase):
         cfg = copy.deepcopy(DEFAULT_CONFIG)
         cfg["official_source"] = str(self.root / "src" / "LRAEP_helpers")
         cfg["training"].update(m=m, n=n, k=k, max_batches=1, max_seconds=15)
-        cfg["pool"].update(protocol="KEX", host="127.0.0.1", tls=False,
+        cfg["S3"].update(protocol="KEX", host="127.0.0.1", tls=False,
                            KEX_uname="local-test-account", worker="gpu-test",
                            compression=compression, connect_timeout=3, read_timeout=5)
         header = self.pm.IncompleteBlockHeader(
@@ -547,7 +575,7 @@ class LocalGPUIntegrationTests(unittest.TestCase):
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         listener.settimeout(10)
-        cfg["pool"]["port"] = listener.getsockname()[1]
+        cfg["S3"]["port"] = listener.getsockname()[1]
         observed = {}
         errors = []
 
@@ -599,22 +627,22 @@ class LocalGPUIntegrationTests(unittest.TestCase):
 
         with patch.object(worker, "search_batch", side_effect=one_candidate), \
                 self.assertLogs(worker.LOG, level="DEBUG") as messages:
-            result = worker.run_pool_training(cfg)
+            result = worker.run_S3_training(cfg)
         server.join(timeout=3)
-        self.assertFalse(server.is_alive(), "local pool server did not stop")
+        self.assertFalse(server.is_alive(), "local S3 server did not stop")
         if errors:
             raise errors[0]
         self.assertEqual(result, 0)
         self.assertGreater(observed["proof_bytes"], 1000)
         self.assertIn("accepted=1", " ".join(messages.output))
 
-    def test_gpu_to_local_pool_native_plain_proof(self):
+    def test_gpu_to_local_S3_native_plain_proof(self):
         self.check_exchange("none")
 
-    def test_gpu_to_local_pool_negotiated_gzip_plain_proof(self):
+    def test_gpu_to_local_S3_negotiated_gzip_plain_proof(self):
         self.check_exchange("gzip")
 
-    def test_gpu_to_local_pool_large_batch_native_plain_proof(self):
+    def test_gpu_to_local_S3_large_batch_native_plain_proof(self):
         self.check_exchange("none", m=4096, n=4096, k=16384)
 
 

@@ -116,7 +116,22 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assert_saved_candidate()
         self.watcher.thread.join.assert_called_once()
 
-    def test_main_progress_counts_real_steps_without_mining_counters(self):
+    def test_telegram_uses_solo_configuration_and_completed_work(self):
+        from LRAEP_trainer.config import DEFAULT_CONFIG
+
+        configuration = dict(DEFAULT_CONFIG, trainer_name="solo test trainer")
+        self.args.side_job_configuration = configuration
+        with patch.object(cli, "TelegramUpdates") as updates:
+            self.assertEqual(cli.train(self.args), 0)
+        config, snapshot = updates.call_args.args
+        self.assertIs(config, configuration)
+        self.assertIn("Step 1/1", snapshot())
+        self.assertIn("GPU 42%", snapshot())
+        self.assertIn("Blocks accepted:", snapshot())
+        updates.return_value.__enter__.assert_called_once()
+        updates.return_value.__exit__.assert_called_once()
+
+    def test_main_progress_counts_real_steps_without_S1_counters(self):
         with self.assertLogs(cli.LOG, level="INFO") as messages:
             self.assertEqual(cli.train(self.args), 0)
         display = self.progress.return_value.__enter__.return_value
@@ -197,7 +212,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.search.assert_not_called()
         self.assertEqual(self.signals.call_count, 4)
 
-    def test_initial_pause_resumes_mining_after_its_interval(self):
+    def test_initial_pause_resumes_S1_after_its_interval(self):
         self.args.job_sequence = [("main", 0.02, 0), ("main", 60, 80)]
         started = time.monotonic()
         self.assertEqual(cli.train(self.args), 0)

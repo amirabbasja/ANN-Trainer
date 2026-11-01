@@ -31,8 +31,8 @@ class ConfigNotebookTests(unittest.TestCase):
                 "output_dir": "results",
                 "job_sequence": [["main", 5, 80], ["side-job", 1, 0], ["main", 0, -1]],
             },
-            "pool": {
-                "protocol": "KEX", "WR_wallet": "test-wr-wallet",
+            "S3": {
+                "protocol": "KEX", "WR_S2": "test-wr-S2",
                 "password": "PRIVATE-SOURCE-PASSWORD",
                 "KEX": {"host": "kex.example", "port": 8048, "tls": True},
                 "WR": {"host": "wr.example", "port": 9000, "tls": False},
@@ -92,8 +92,8 @@ class ConfigNotebookTests(unittest.TestCase):
         self.assertEqual(json.loads(self.source.read_text()), self.settings)
         envelope = json.loads(self.destination.read_text())
         expected = copy.deepcopy(self.settings)
-        expected["mode"] = "pool"
-        expected["pool"]["protocol"] = "WR"
+        expected["mode"] = "S3"
+        expected["S3"]["protocol"] = "WR"
         self.assertEqual(decode_config_document(envelope, key_text), expected)
         self.assertNotIn("private-thesis", self.destination.read_text())
         self.assertEqual(read_open_text(env_path), key_text)
@@ -113,9 +113,9 @@ class ConfigNotebookTests(unittest.TestCase):
         namespace["CONFIG_PATH"] = self.source
         output = io.StringIO()
         with redirect_stdout(output):
-            namespace["update_from_dict"]({"pool": {"worker": "updated-worker"}})
+            namespace["update_from_dict"]({"S3": {"worker": "updated-worker"}})
         expected = copy.deepcopy(self.settings)
-        expected["pool"]["worker"] = "updated-worker"
+        expected["S3"]["worker"] = "updated-worker"
         self.assertEqual(json.loads(self.source.read_text()), expected)
         with redirect_stdout(output):
             namespace["replace_from_dict"](self.settings)

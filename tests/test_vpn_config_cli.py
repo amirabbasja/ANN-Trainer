@@ -75,10 +75,10 @@ class VPNCommandTests(unittest.TestCase):
         self.path = self.directory / "config.json"
         self.settings = copy.deepcopy(DEFAULT_CONFIG)
         self.settings["vpn"].update(enabled=True, link="vless://SECRET@vpn.example:443")
-        self.settings["pool"].pop("KEX", None)
-        self.settings["pool"].pop("WR", None)
-        self.settings["pool"]["KEX_uname"] = "public-test-wallet"
-        self.settings["pool"]["host"] = "pool.example"
+        self.settings["S3"].pop("KEX", None)
+        self.settings["S3"].pop("WR", None)
+        self.settings["S3"]["KEX_uname"] = "public-test-S2"
+        self.settings["S3"]["host"] = "S3.example"
         self.proxy = SocksProxy("127.0.0.1", 19080, "private-user", "private-password")
         self.managed = MagicMock()
         self.managed.__enter__.return_value = self.proxy
@@ -93,9 +93,9 @@ class VPNCommandTests(unittest.TestCase):
         self.assertIs(current_proxy(), self.proxy)
         return 0
 
-    def test_pool_and_transport_check_execute_inside_managed_route(self):
+    def test_S3_and_transport_check_execute_inside_managed_route(self):
         self.write()
-        for command, function in (("pool", "pool_train"), ("pool-check", "pool_check")):
+        for command, function in (("S3", "S3_train"), ("S3-check", "S3_check")):
             with self.subTest(command=command), \
                  patch("LRAEP_trainer.vpn.ManagedVPN", return_value=self.managed) as core, \
                  patch.object(cli, function, side_effect=self.assert_route) as operation, \
@@ -107,12 +107,12 @@ class VPNCommandTests(unittest.TestCase):
                 self.assertIsNone(current_proxy())
                 cuda.assert_not_called()
 
-    def test_pool_login_check_executes_inside_route_without_gpu_initialization(self):
+    def test_S3_login_check_executes_inside_route_without_gpu_initialization(self):
         self.write()
         with patch("LRAEP_trainer.vpn.ManagedVPN", return_value=self.managed), \
-             patch("LRAEP_trainer.pool_training.run_pool_training", side_effect=self.assert_route) as login, \
+             patch("LRAEP_trainer.S3_training.run_S3_training", side_effect=self.assert_route) as login, \
              patch.object(cli, "require_cuda") as cuda:
-            self.assertEqual(cli.main(self.arguments(["pool-login-check"])), 0)
+            self.assertEqual(cli.main(self.arguments(["S3-login-check"])), 0)
         self.assertTrue(login.call_args.kwargs["login_only"])
         self.assertIsNone(current_proxy())
         cuda.assert_not_called()
@@ -132,7 +132,7 @@ class VPNCommandTests(unittest.TestCase):
     def test_config_selected_default_mode_also_uses_vpn(self):
         self.write()
         with patch("LRAEP_trainer.vpn.ManagedVPN", return_value=self.managed), \
-             patch.object(cli, "pool_train", side_effect=self.assert_route) as train:
+             patch.object(cli, "S3_train", side_effect=self.assert_route) as train:
             self.assertEqual(cli.main(self.arguments([])), 0)
         train.assert_called_once()
         self.assertIsNone(current_proxy())
@@ -140,7 +140,7 @@ class VPNCommandTests(unittest.TestCase):
     def test_failed_core_never_runs_any_network_command(self):
         self.write()
         self.managed.__enter__.side_effect = VPNError("proxy core unavailable")
-        for command, function in (("pool", "pool_train"), ("pool-check", "pool_check"),
+        for command, function in (("S3", "S3_train"), ("S3-check", "S3_check"),
                                   ("train", "train")):
             with self.subTest(command=command), \
                  patch("LRAEP_trainer.vpn.ManagedVPN", return_value=self.managed), \
@@ -156,9 +156,9 @@ class VPNCommandTests(unittest.TestCase):
     def test_command_failure_closes_core_and_restores_route(self):
         self.write()
         with patch("LRAEP_trainer.vpn.ManagedVPN", return_value=self.managed), \
-             patch.object(cli, "pool_check", side_effect=OSError("pool unavailable")), \
+             patch.object(cli, "S3_check", side_effect=OSError("S3 unavailable")), \
              self.assertLogs(cli.LOG, level="ERROR"):
-            self.assertEqual(cli.main(self.arguments(["pool-check"])), 1)
+            self.assertEqual(cli.main(self.arguments(["S3-check"])), 1)
         self.managed.__exit__.assert_called_once()
         self.assertIsNone(current_proxy())
 
@@ -187,8 +187,8 @@ class VPNCommandTests(unittest.TestCase):
         self.assertEqual(operation.call_args.kwargs, {"timeout": 5, "attempts": 3, "output": None})
 
     def test_vpn_check_miner_flag_selects_profile_from_same_config_in_both_positions(self):
-        self.settings["pool"].update(
-            protocol="KEX", WR_wallet="wr-only-wallet", KEX_uname="kex-only-name",
+        self.settings["S3"].update(
+            protocol="KEX", WR_S2="wr-only-S2", KEX_uname="kex-only-name",
             KEX={"host": "kex.example", "port": 8048, "tls": True, "ca_file": None},
             WR={"host": "wr.example", "port": 9000, "tls": False, "ca_file": None},
         )
@@ -200,30 +200,30 @@ class VPNCommandTests(unittest.TestCase):
                  patch("LRAEP_trainer.vpn_check.run_vpn_check", return_value=0) as operation:
                 self.assertEqual(cli.main(self.arguments(command)), 0)
             selected = operation.call_args.args[0]
-            pool = selected["pool"]
-            self.assertEqual((pool["protocol"], pool["host"], pool["port"], pool["tls"]),
+            S3 = selected["S3"]
+            self.assertEqual((S3["protocol"], S3["host"], S3["port"], S3["tls"]),
                              ("WR", "wr.example", 9000, False))
-            self.assertEqual((pool["WR_wallet"], pool["KEX_uname"]),
-                             ("wr-only-wallet", "kex-only-name"))
+            self.assertEqual((S3["WR_S2"], S3["KEX_uname"]),
+                             ("wr-only-S2", "kex-only-name"))
             self.assertTrue(selected["vpn"]["enabled"])
             self.assertEqual(selected["vpn"]["link"], self.settings["vpn"]["link"])
-            self.assertNotIn("WR", pool)
-            self.assertNotIn("KEX", pool)
+            self.assertNotIn("WR", S3)
+            self.assertNotIn("KEX", S3)
             core.assert_not_called()
             self.assertEqual(self.path.read_text(), original)
 
     def test_selected_wr_endpoint_is_validated_before_vpn_check_network_activity(self):
-        self.settings["pool"].update(
+        self.settings["S3"].update(
             protocol="KEX", KEX={"host": "kex.example", "port": 8048},
             WR={"host": "", "port": 9000},
         )
         self.write()
         with patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
-             patch("LRAEP_trainer.vpn_check._probe_pool") as pool, \
+             patch("LRAEP_trainer.vpn_check._probe_S3") as S3, \
              self.assertLogs(cli.LOG, level="ERROR") as logs:
             self.assertEqual(cli.main(self.arguments(["vpn-check", "--miner", "WR"])), 1)
         core.assert_not_called()
-        pool.assert_not_called()
+        S3.assert_not_called()
         self.assertIn("host", " ".join(logs.output))
 
     def test_vpn_check_accepts_explicit_input_and_report_flags(self):
@@ -253,8 +253,8 @@ class VPNCommandTests(unittest.TestCase):
         self.settings["vpn"]["enabled"] = False
         self.write()
         with patch("LRAEP_trainer.vpn.ManagedVPN") as core, \
-             patch.object(cli, "pool_check", return_value=0):
-            self.assertEqual(cli.main(self.arguments(["pool-check"])), 0)
+             patch.object(cli, "S3_check", return_value=0):
+            self.assertEqual(cli.main(self.arguments(["S3-check"])), 0)
         core.assert_not_called()
         self.assertIsNone(current_proxy())
 

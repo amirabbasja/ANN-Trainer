@@ -1,4 +1,4 @@
-"""Validated, repeating wall-clock schedules for mining effort."""
+"""Validated, repeating wall-clock schedules for S1 effort."""
 
 from contextlib import contextmanager
 import logging
@@ -49,7 +49,7 @@ class JobSequence:
     """Repeat intervals until stopped or the first exit entry is reached.
 
     All positions use monotonic wall time, so pauses, pacing and reconnections
-    share the same timeline. The active kind selects mining or CNN training.
+    share the same timeline. The active kind selects S1 or CNN training.
     """
 
     def __init__(self, entries, *, started=None):
@@ -122,7 +122,7 @@ class JobSequence:
         return self.current()[0] == -1
 
     def wait(self, stopped, *, deadline=None):
-        """Wait through pauses; return whether mining may start right now."""
+        """Wait through pauses; return whether S1 may start right now."""
         while not stopped.is_set():
             now = time.monotonic()
             if deadline is not None and now >= deadline:

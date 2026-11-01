@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
-from LRAEP_trainer import native_cuda, pool_training as worker
+from LRAEP_trainer import native_cuda, S3_training as worker
 from LRAEP_trainer.pearl_codec import decode_frame, encode_frame
 from LRAEP_trainer.protocol import load_official_helpers
 
@@ -37,8 +37,8 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         configuration["device"] = "cuda:0"
         configuration["training"].update(m=128, n=128, k=2048, tile_h=8, tile_w=8,
                                           max_batches=1, max_seconds=30)
-        configuration["pool"].update(protocol="WR", host="127.0.0.1", tls=False,
-                                     WR_wallet="local-test-account", worker="gpu-test",
+        configuration["S3"].update(protocol="WR", host="127.0.0.1", tls=False,
+                                     WR_S2="local-test-account", worker="gpu-test",
                                      compression="none", connect_timeout=3, read_timeout=15)
         notify = list(job_result())
         # Make every correctly computed GPU ticket eligible; the client still
@@ -55,7 +55,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
         listener.settimeout(10)
-        configuration["pool"]["port"] = listener.getsockname()[1]
+        configuration["S3"]["port"] = listener.getsockname()[1]
 
         def serve():
             try:
@@ -110,7 +110,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         server = threading.Thread(target=serve, daemon=True)
         server.start()
         original_search = worker.search_batch
-        original_rate = worker.pool_hashrate
+        original_rate = worker.S3_hashrate
         rate_measurements = []
 
         def measured_rate(stats, cfg, elapsed):
@@ -122,13 +122,13 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
             return itertools.islice(original_search(*args), 1)
 
         with tempfile.TemporaryDirectory() as directory:
-            configuration["pool"]["unknown_request_dir"] = directory
+            configuration["S3"]["unknown_request_dir"] = directory
             try:
                 with patch.object(worker.native_cuda, "available", return_value=native), \
                         patch.object(worker, "search_batch", side_effect=one_candidate), \
-                        patch.object(worker, "pool_hashrate", side_effect=measured_rate), \
+                        patch.object(worker, "S3_hashrate", side_effect=measured_rate), \
                         self.assertLogs(worker.LOG, level="DEBUG") as messages:
-                    result = worker.run_pool_training(configuration)
+                    result = worker.run_S3_training(configuration)
             finally:
                 server.join(5)
         if errors:

@@ -56,7 +56,7 @@ by default under `~/.local/share/LRAEP/bin/`.
 
 ## Permitted networking references
 
-The custom pool networking code was written independently using published
+The custom S3 networking code was written independently using published
 wire specifications and factual captures. Official PEARL proof helpers and
 their proof-system dependencies are bundled as described above. No external
 miner's executable, GPU implementation, or networking client implementation
@@ -68,10 +68,10 @@ is vendored or required at runtime.
   No license is stated in the notes; only protocol facts are referenced.
 - spark-pearl-miner, Apache-2.0, revision
   `65365633e3bff61b0f29d72109622dd22ff5a379`: protocol documentation and a
-  redacted-wallet TLS capture. Header/target bytes are used as factual test
+  redacted-S2 TLS capture. Header/target bytes are used as factual test
   vectors. https://github.com/xXGuilasXx/spark-pearl-miner/tree/65365633e3bff61b0f29d72109622dd22ff5a379
 - pearl-metal-miner, Apache-2.0, revision
-  `3d4cc7dadbd1de98ba20e9beb162806a0e70266b`: earlier pool wire survey.
+  `3d4cc7dadbd1de98ba20e9beb162806a0e70266b`: earlier S3 wire survey.
   https://github.com/Breakwater-ecosystem/pearl-metal-miner/tree/3d4cc7dadbd1de98ba20e9beb162806a0e70266b
 
 See `docs/kex-protocol-review.md` for the scope and evidentiary limits of

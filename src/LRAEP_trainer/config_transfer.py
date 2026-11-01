@@ -4,23 +4,23 @@ import copy
 import json
 from pathlib import Path
 
-from .config import ConfigError, _atomic_write, _config_path, _validate_config, read_config, resolve_pool_settings
+from .config import ConfigError, _atomic_write, _config_path, _validate_config, read_config, resolve_S3_settings
 from .config_export import encode_config_document, write_open_text
 
 
 def prepare_wr_config(source_path):
     """Select WR and include CNN settings without changing the source."""
     values = copy.deepcopy(read_config(source_path))
-    values["mode"] = "pool"
-    values.setdefault("pool", {})["protocol"] = "WR"
+    values["mode"] = "S3"
+    values.setdefault("S3", {})["protocol"] = "WR"
     runtime = _validate_config(values, _config_path(source_path))
     if not runtime["vpn"]["enabled"]:
         raise ConfigError("WR export requires vpn.enabled to be true")
-    pool = resolve_pool_settings(runtime["pool"], "WR")
-    from .pool_training import validate_pool_endpoint, validate_pool_identity
+    S3 = resolve_S3_settings(runtime["S3"], "WR")
+    from .S3_training import validate_S3_endpoint, validate_S3_identity
 
-    validate_pool_endpoint(pool)
-    validate_pool_identity(pool, "WR", validate_address=False)
+    validate_S3_endpoint(S3)
+    validate_S3_identity(S3, "WR", validate_address=False)
     # Materialize the shared dataset default only inside the encrypted export;
     # the standalone source intentionally has no repository URL default.
     values.setdefault("side_job", {}).setdefault("repo_url", runtime["side_job"]["repo_url"])
