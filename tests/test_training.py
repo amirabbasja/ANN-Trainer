@@ -125,21 +125,23 @@ class TrainingControlFlowTests(unittest.TestCase):
             self.assertEqual(cli.train(self.args), 0)
         config, snapshot = updates.call_args.args
         self.assertIs(config, configuration)
-        self.assertIn("Step 1/1", snapshot())
-        self.assertIn("GPU 42%", snapshot())
-        self.assertIn("Blocks accepted:", snapshot())
+        fields = snapshot().split(" | ")
+        self.assertEqual(fields[:3], ["1", "main", "42%"])
+        self.assertEqual(len(fields), 5)
+        self.assertGreater(float(fields[4]), 0)
         updates.return_value.__enter__.assert_called_once()
         updates.return_value.__exit__.assert_called_once()
 
     def test_main_progress_counts_real_steps_without_S1_counters(self):
-        with self.assertLogs(cli.LOG, level="INFO") as messages:
+        with self.assertLogs(cli.LOG, level="DEBUG") as messages:
             self.assertEqual(cli.train(self.args), 0)
         display = self.progress.return_value.__enter__.return_value
         status = display.update.call_args.args[0]
-        self.assertIn("Main | Step 1/1 (100.0%)", status)
-        self.assertIn("elapsed=", status)
-        self.assertIn("GPU 42%", status)
-        output = " ".join(messages.output) + status
+        self.assertEqual(status.split(" | ")[:3], ["1", "main", "42%"])
+        self.assertEqual(len(status.split(" | ")), 5)
+        self.assertGreater(float(status.split(" | ")[4]), 0)
+        self.assertTrue(all(message.startswith("DEBUG:") for message in messages.output))
+        output = status
         for label in ("accepted=", "submitted=", "Hashrate", "tile_attempts=", "loss=", "accuracy="):
             self.assertNotIn(label, output)
         self.monitor.return_value.start.return_value.close.assert_called_once()
@@ -267,7 +269,8 @@ class TrainingControlFlowTests(unittest.TestCase):
         with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 patch.object(cli, "GpuPacer"), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn, \
-                self.assertLogs(cli.LOG, level="INFO") as messages:
+                self.assertLogs(cli.LOG, level="DEBUG") as messages:
+            cnn.return_value._progress_epoch = 1
             cnn.return_value.status.return_value = "Side-job | Epoch 1 | Step 1/2 (50.0%) | loss=0.2 accuracy=50.0% | GPU 42%"
             cnn.return_value.step.side_effect = lambda **_kw: (now.__setitem__(0, 102.0), True)[1]
             self.assertEqual(cli.train(self.args), 0)
@@ -278,7 +281,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         cnn.return_value.close.assert_called_once()
         self.node.submit.assert_not_called()
         display = self.progress.return_value.__enter__.return_value
-        self.assertEqual(display.update.call_args.args[0], cnn.return_value.status.return_value)
+        self.assertEqual(display.update.call_args.args[0], "3 | main | 42% | 00:00:00 | 0")
         self.assertEqual(cnn.call_args.kwargs["before_log"], display.clear)
 
     def test_main_progress_resumes_after_side_job_interval(self):
@@ -290,14 +293,15 @@ class TrainingControlFlowTests(unittest.TestCase):
                 patch.object(cli, "GpuPacer") as pacer, \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             status = "Side-job | Epoch 1 | Step 1/2 (50.0%) | loss=0.2 accuracy=50.0% | GPU 42%"
+            cnn.return_value._progress_epoch = 1
             cnn.return_value.status.return_value = status
             cnn.return_value.step.side_effect = lambda **_kw: (now.__setitem__(0, 102.0), True)[1]
             pacer.return_value.wait.side_effect = lambda *_a, **kw: now.__setitem__(0, kw["deadline"])
             self.assertEqual(cli.train(self.args), 0)
         display = self.progress.return_value.__enter__.return_value
         rows = [call.args[0] for call in display.update.call_args_list]
-        self.assertIn(status, rows)
-        self.assertTrue(rows[-1].startswith("Main | Step 2/2 (100.0%)"))
+        self.assertTrue(any(row.startswith("2 | side | 42% | ") for row in rows))
+        self.assertTrue(rows[-1].startswith("3 | main | 42% | "))
         self.assertEqual(self.search.call_count, 2)
         cnn.return_value.step.assert_called_once()
 

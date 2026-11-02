@@ -18,14 +18,14 @@ from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 
 
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
-HEADER_MASK = bytes.fromhex(
-    "9d2f73c411a85be0367ad14e920cbf65f32884da176eb941cc530fa67de21974"
-)
-WORK_PREFIX_MASK = bytes.fromhex(
-    "4dc0d47dff723cf8f75a583b596cf848f5106dd0d0aa7bdded9d4d566a929ffaa"
-    "bea8985cf34a26af1b118e2c697f283f0caadd643b0975390a17c79aae32e69c"
-    "f166b57a6f64dd02914e7e4"
-)
+
+
+def header_mask():
+    return bytes.fromhex('9d2f73c411a85be0367ad14e920cbf65f32884da176eb941cc530fa67de21974')
+
+
+def work_prefix_mask():
+    return bytes.fromhex('4dc0d47dff723cf8f75a583b596cf848f5106dd0d0aa7bdded9d4d566a929ffaabea8985cf34a26af1b118e2c697f283f0caadd643b0975390a17c79aae32e69cf166b57a6f64dd02914e7e4')
 
 
 class UnknownWRRequest(S3ProtocolError):
@@ -42,7 +42,9 @@ def _hex_bytes(value: Any, length: int, label: str) -> bytes:
 def decode_notify_payload(value: str) -> bytes:
     """Recover the observed 76-byte block header from its 200-byte work blob."""
     payload = _hex_bytes(value, 200, "notify payload")
-    header = bytes(byte ^ WORK_PREFIX_MASK[index] ^ HEADER_MASK[index % 32]
+    prefix = work_prefix_mask()
+    mask = header_mask()
+    header = bytes(byte ^ prefix[index] ^ mask[index % 32]
                    for index, byte in enumerate(payload[:76]))
     # A syntactically valid work blob must also carry a valid compact target.
     nbits = int.from_bytes(header[72:76], "little")

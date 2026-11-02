@@ -10,7 +10,7 @@ import unittest
 from LRAEP_trainer import S6_codec
 from LRAEP_trainer.S6_requests import build_submit_request
 from LRAEP_trainer.S3_protocol import S3ProtocolError
-from LRAEP_trainer.wire_constants import S5_NONCE
+from LRAEP_trainer.wire_constants import s5_nonce
 from LRAEP_trainer.wr_protocol import (
     UnknownWRRequest, WRDialect, WRShare,
 )
@@ -23,7 +23,7 @@ def fixtures(name):
     return json.loads(
         (FIXTURES / ("wr_" + name + ".json")).read_text(),
         object_hook=lambda fields: {
-            S5_NONCE if key == "bWluZXJfbm9uY2U=" else key: value
+            s5_nonce() if key == "bWluZXJfbm9uY2U=" else key: value
             for key, value in fields.items()
         },
     )
@@ -77,7 +77,7 @@ class WRCodecTests(unittest.TestCase):
             request = fixture["request"]
             fields = {key: value for key, value in request["params"][0].items()
                       if key not in {"nonce", "tail_mode", "sb_p"}}
-            fields["S5_nonce"] = fields.pop(S5_NONCE)
+            fields["S5_nonce"] = fields.pop(s5_nonce())
             built = build_submit_request(request["id"], **fields)
             self.assertEqual(built, request)
             self.assertEqual(S6_codec.encode_frame(built, bytes.fromhex(fixture["request_wire"][:8])),
@@ -186,7 +186,7 @@ class WRProtocolTests(unittest.TestCase):
         request = self.dialect.submit_request(job, share, 7)
         self.assertEqual(request["method"], "submit")
         self.assertEqual(request["params"][0]["worker_nonce"], job.worker_nonce.hex())
-        self.assertEqual(request["params"][0][S5_NONCE], "00" * 8)
+        self.assertEqual(request["params"][0][s5_nonce()], "00" * 8)
         self.assertNotIn("plain_proof", request["params"][0])
         for incompatible in [replace(share, worker_nonce=b"x" * 8), "base64-proof"]:
             with self.assertRaises(S3ProtocolError):

@@ -12,6 +12,7 @@ import threading
 import time
 from types import ModuleType, SimpleNamespace
 import unittest
+import weakref
 from unittest.mock import MagicMock, call, patch
 
 from LRAEP_trainer.config import DEFAULT_CONFIG
@@ -20,7 +21,7 @@ from LRAEP_trainer import gpu_pacing, S3_training as worker
 from LRAEP_trainer.S3_client import JobSnapshot, S3AuthenticationError, ShareResult
 from LRAEP_trainer.S3_protocol import S3Job
 from LRAEP_trainer.protocol import TrainingConfig
-from LRAEP_trainer.wire_constants import S7_LEGACY_ALIAS
+from LRAEP_trainer.wire_constants import s7_legacy_alias
 
 
 class S3LoopTests(unittest.TestCase):
@@ -67,6 +68,139 @@ class S3LoopTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(sys.modules, {"LRAEP_trainer.primitives": native}))
         self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", native, create=True))
 
+    def check_work_release(self, stage):
+        class Buffer:
+            def to_base64(self):
+                return "cHJvb2Y="
+
+        references = []
+        prepared = []
+        checked = []
+        failures = []
+        self.session.__exit__ = lambda *_args: False
+        batches = 2 if stage in ("complete", "candidate") else 1
+        with self.clocked_schedule(
+            [("main", 10, 80), ("side-job", 20, 70), ("main", 10, 80)],
+            batches=batches,
+        ) as (clock, pacer), patch("LRAEP_trainer.side_job.SideJob") as cnn:
+            def tracked():
+                value = Buffer()
+                references.append(weakref.ref(value))
+                return value
+
+            def prepare(*_args, **_kwargs):
+                prepared.append(clock.now)
+                value = tracked()
+                if stage == "prepare" and len(prepared) == 1:
+                    clock.now = 10
+                return value
+
+            def search(batch, *_args):
+                if len(prepared) == 1 and stage == "search":
+                    clock.now = 10
+                    raise worker.TrainingCancelled("boundary")
+                if len(prepared) == 1 and stage == "connection":
+                    from LRAEP_trainer.S3_transport import S3ConnectionError
+                    failure = S3ConnectionError("disconnected")
+                    failures.append(failure)
+                    clock.now = 10
+                    raise failure
+                buffer = tracked()
+
+                def candidates():
+                    active = buffer
+                    if len(prepared) == 1 and stage == "candidate":
+                        clock.now = 10
+                    yield 0, 0, bytes(32)
+                    yield 0, 0, bytes(32)
+                    self.assertIsNotNone(active)
+
+                return candidates()
+
+            def verify(*_args):
+                return tracked(), bytes(32)
+
+            def assert_released(where):
+                self.assertTrue(references)
+                self.assertTrue(all(reference() is None for reference in references), where)
+                checked.append(where)
+
+            def wait(*_args, **kwargs):
+                assert_released("pacing")
+                clock.now = kwargs["deadline"]
+
+            def side_step(**_kwargs):
+                assert_released("side")
+                return True
+
+            pacer.wait.side_effect = wait
+            cnn.return_value.step.side_effect = side_step
+            cnn.return_value._progress_epoch = 1
+            with patch.object(worker, "prepare_batch", prepare), \
+                    patch.object(worker, "search_batch", search), \
+                    patch.object(worker, "verified_S3_share", verify), \
+                    patch.object(worker, "_release_work") as release:
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
+                self.assertGreaterEqual(release.call_count, 2)
+            self.assertIn("side", checked)
+            self.assertEqual(prepared, [0, 30])
+            assert_released("exit")
+
+    def test_releases_completed_work_before_pacing_and_side_job(self):
+        self.check_work_release("complete")
+
+    def test_releases_prepared_work_when_boundary_cancels_preparation(self):
+        self.check_work_release("prepare")
+
+    def test_releases_work_when_search_is_cancelled(self):
+        self.check_work_release("search")
+
+    def test_releases_suspended_candidate_generator_at_boundary(self):
+        self.check_work_release("candidate")
+
+    def test_releases_work_and_handled_traceback_before_reconnect(self):
+        self.check_work_release("connection")
+
+    def test_boundary_change_closes_session_before_starting_side_job(self):
+        from LRAEP_trainer.effort import JobSequence
+
+        state = {"open": False, "crossed": False}
+        current_job = JobSequence.current_job
+        with self.clocked_schedule([
+            ("main", 10, 80), ("side-job", 20, 70), ("main", 10, 80),
+        ]) as (clock, pacer), patch("LRAEP_trainer.side_job.SideJob") as cnn:
+            def enter_session(*_args):
+                state["open"] = True
+                return self.session
+
+            def exit_session(*_args):
+                state["open"] = False
+                return False
+
+            def crossing(schedule, *args, **kwargs):
+                value = current_job(schedule, *args, **kwargs)
+                if state["open"] and not state["crossed"]:
+                    state["crossed"] = True
+                    clock.now = 10
+                return value
+
+            def side_step(**_kwargs):
+                self.assertFalse(state["open"])
+                release.assert_called()
+                return True
+
+            self.session.__enter__ = enter_session
+            self.session.__exit__ = exit_session
+            cnn.return_value.step.side_effect = side_step
+            cnn.return_value._progress_epoch = 1
+            pacer.wait.side_effect = lambda *_args, **kwargs: setattr(clock, "now", kwargs["deadline"])
+            with patch.object(JobSequence, "current_job", crossing), \
+                    patch.object(worker, "_release_work") as release:
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
+        self.assertTrue(state["crossed"])
+        cnn.return_value.step.assert_called_once()
+        self.prepare.assert_called_once()
+
     def test_completed_last_batch_verifies_and_submits_at_share_target(self):
         self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.search.assert_called_once()
@@ -89,10 +223,11 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(config["trainer_name"], "configured trainer")
         self.assertEqual(config["telegram"]["update_interval_seconds"], 15)
         text = snapshot()
-        self.assertIn("Step 1/1", text)
-        self.assertIn("GPU 42%", text)
-        self.assertIn("Hashrate (avg):", text)
-        self.assertIn("submitted=1 accepted=1 rejected=0 stale=0", text)
+        fields = text.split(" | ")
+        self.assertEqual(fields[:3], ["1", "main", "42%"])
+        self.assertRegex(fields[3], r"^\d{2}:\d{2}:\d{2}$")
+        self.assertGreater(float(fields[4]), 0)
+        self.assertEqual(len(fields), 5)
         updates.return_value.__enter__.assert_called_once()
         updates.return_value.__exit__.assert_called_once()
 
@@ -158,6 +293,78 @@ class S3LoopTests(unittest.TestCase):
             pacer.max_utilization = 100
             pacer.set_utilization.side_effect = lambda value: setattr(pacer, "max_utilization", value)
             yield clock, pacer
+
+    def test_vpn_failure_waits_for_current_job_then_runs_side_and_next_main(self):
+        from LRAEP_trainer.network import SocksProxy, routed
+        from LRAEP_trainer.S3_transport import S3ConnectionError
+
+        self.configuration["vpn"].update(enabled=True, check_url=None)
+        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 40), ("main", 10, 80)]) as (clock, pacer), \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn, \
+                patch.object(worker, "TelegramUpdates") as updates, \
+                routed(SocksProxy("127.0.0.1", 19090)):
+            prepared_at = []
+            connected_at = []
+            self.factory.side_effect = lambda *_a, **_kw: (connected_at.append(clock.now), self.session)[1]
+            self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            cnn.return_value._progress_epoch = 1
+            cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
+
+            def job_wait(**_kw):
+                if self.session.wait_job.call_count == 1:
+                    clock.now = 2
+                    raise S3ConnectionError("VPN endpoint disconnected")
+                return self.snapshot
+
+            self.session.wait_job.side_effect = job_wait
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
+        self.assertEqual(connected_at, [0, 30])
+        self.assertEqual(prepared_at, [30])
+        self.session.submit.assert_called_once()
+        cnn.return_value.step.assert_called_once()
+        alerts = [item for item in updates.return_value.__enter__.return_value.event.call_args_list
+                  if "VPN connection lost" in item.args[0]]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].kwargs, {"direct": True})
+        self.assertTrue(all(row[2] == 0 for row in clock.pauses if row[0] < 10))
+
+    def test_vpn_loss_cancels_gpu_candidate_without_submission_or_same_job_retry(self):
+        from LRAEP_trainer.network import SocksProxy, routed
+        from LRAEP_trainer.job_control import VPNJobGuard
+
+        self.configuration["vpn"].update(enabled=True, check_url=None)
+        guards = []
+
+        def guard_factory(*args):
+            guard = VPNJobGuard(*args)
+            guards.append(guard)
+            return guard
+
+        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 40), ("main", 10, 80)]) as (clock, pacer), \
+                patch("LRAEP_trainer.side_job.SideJob") as cnn, \
+                patch.object(worker, "VPNJobGuard", side_effect=guard_factory), \
+                routed(SocksProxy("127.0.0.1", 19090)):
+            prepared_at = []
+            self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
+            cnn.return_value._progress_epoch = 1
+            cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
+
+            def search(_batch, _target, _device, cancelled):
+                if self.search.call_count == 1:
+                    clock.now = 2
+                    self.assertTrue(guards[0].connection_lost())
+                    self.assertTrue(cancelled())
+                    raise worker.TrainingCancelled("VPN unavailable")
+                self.assertFalse(cancelled())
+                return iter([(0, 0, bytes(32))])
+
+            self.search.side_effect = search
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
+        self.assertEqual(prepared_at, [0, 30])
+        self.assertEqual(self.search.call_count, 2)
+        self.verify.assert_called_once()
+        self.session.submit.assert_called_once()
+        self.session.close.assert_called_once()
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
         with self.clocked_schedule([("main", 10, 100), ("main", 20, 0), ("main", 10, 100)]) as (clock, _):
@@ -230,12 +437,13 @@ class S3LoopTests(unittest.TestCase):
             display.update.side_effect = lambda text, **_: statuses.append((clock.now, text))
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             cnn.return_value.step.side_effect = lambda **_kw: (side_job_at.append(clock.now), True)[1]
+            cnn.return_value._progress_epoch = 1
             cnn.return_value.status.side_effect = lambda *_: f"Side-job | Epoch 1 | Step {cnn.return_value.step.call_count}/20"
 
             def pace(*_a, **kw):
                 if clock.now % 30 == 10:
-                    self.assertEqual(statuses[-1][1],
-                                     f"Side-job | Epoch 1 | Step {cnn.return_value.step.call_count}/20")
+                    self.assertEqual(statuses[-1][1].split(" | ")[1:],
+                                     ["side", "42%", "00:00:20", "1"])
                 clock.now = kw["deadline"]
 
             pacer.wait.side_effect = pace
@@ -249,9 +457,9 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(self.search.call_count, 5)
         self.assertEqual(self.session.submit.call_count, 5)
         cnn.assert_called_once_with(self.configuration, before_log=display.clear)
-        self.assertTrue(any(now == 10 and text == "Side-job | Epoch 1 | Step 1/20"
+        self.assertTrue(any(now == 10 and text == "2 | side | 42% | 00:00:20 | 1"
                             for now, text in statuses))
-        self.assertTrue(any(now == 30 and text.startswith("Main | Step 2/5")
+        self.assertTrue(any(now == 30 and text.startswith("3 | main | 42% | ")
                             for now, text in statuses), "main progress must resume after a side-job interval")
         cnn.return_value.close.assert_called_once()
 
@@ -263,10 +471,11 @@ class S3LoopTests(unittest.TestCase):
                 self.session.wait_job.assert_not_called()
                 self.prepare.assert_not_called()
                 display = self.progress.return_value.__enter__.return_value
-                self.assertEqual(display.update.call_args.args[0], "Side-job | Epoch 1 | Preparing")
+                self.assertEqual(display.update.call_args.args[0], "1 | side | 42% | 00:00:10 | 1")
                 clock.now = 10
                 return True
 
+            cnn.return_value._progress_epoch = 1
             cnn.return_value.step.side_effect = side_job_batch
             cnn.return_value.status.return_value = "Side-job | Epoch 1 | Preparing"
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
@@ -278,6 +487,7 @@ class S3LoopTests(unittest.TestCase):
     def test_role_transition_cancels_old_preparation_at_unchanged_gpu_cap(self):
         with self.clocked_schedule([("main", 10, 70), ("side-job", 20, 70)]) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
+            cnn.return_value._progress_epoch = 1
             cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
 
             def prepare(*_a, **_kw):
@@ -285,7 +495,7 @@ class S3LoopTests(unittest.TestCase):
                     clock.now = 10
 
             self.prepare.side_effect = prepare
-            with self.assertLogs(worker.LOG, level="INFO") as messages:
+            with self.assertLogs(worker.LOG, level="DEBUG") as messages:
                 self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.prepare.call_count, 2)
         self.search.assert_called_once()
@@ -369,17 +579,17 @@ class S3LoopTests(unittest.TestCase):
     def test_progress_reports_training_steps_and_gpu_without_S1_counter_logs(self):
         self.configuration["training"]["max_batches"] = 3
         self.search.side_effect = lambda *_: iter([(0, 0, bytes(32))])
-        with self.assertLogs(worker.LOG, level="INFO") as messages:
+        with self.assertLogs(worker.LOG, level="DEBUG") as messages:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
         self.assertIn("Main job stopped: steps=3 elapsed=", output)
-        self.assertNotIn("S3 accepted training share", output)
+        self.assertTrue(all(message.startswith("DEBUG:") for message in messages.output))
         display = self.progress.return_value.__enter__.return_value
         last_status = display.update.call_args.args[0]
-        self.assertIn("Main | Step 3/3 (100.0%)", last_status)
-        self.assertIn("GPU 42%", last_status)
-        self.assertIn("elapsed=", last_status)
-        for text in (output, last_status):
+        self.assertEqual(last_status.split(" | ")[:3], ["1", "main", "42%"])
+        self.assertEqual(len(last_status.split(" | ")), 5)
+        self.assertGreater(float(last_status.split(" | ")[4]), 0)
+        for text in (last_status,):
             for label in ("Hashrate", "accepted=", "rejected=", "submitted=", "batches=", "attempts=", "stale="):
                 self.assertNotIn(label, text)
         self.assertEqual(self.session.submit.call_count, 3)
@@ -428,7 +638,7 @@ class S3LoopTests(unittest.TestCase):
 
     def test_rejection_is_not_logged_as_accepted(self):
         self.session.submit.return_value = ShareResult(False, "low difficulty")
-        with self.assertLogs(worker.LOG, level="INFO") as messages:
+        with self.assertLogs(worker.LOG, level="DEBUG") as messages:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
         self.assertIn("S3 rejected training share", output)
@@ -461,7 +671,7 @@ class S3LoopTests(unittest.TestCase):
 
     def test_wr_alias_and_host_selection(self):
         for protocol, expected in (("WR", "WR"), ("S7", "WR"),
-                                   (S7_LEGACY_ALIAS, "WR"), ("KEX", "KEX")):
+                                   (s7_legacy_alias(), "WR"), ("KEX", "KEX")):
             for host in ("S3.example", "localhost", "127.0.0.1"):
                 with self.subTest(protocol=protocol, host=host):
                     self.assertEqual(worker.select_S3_protocol({"host": host, "protocol": protocol}), expected)

@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.progress import LiveProgress
+from LRAEP_trainer.progress import LiveProgress, job_status
 
 
 class TerminalStream(io.StringIO):
@@ -74,17 +74,20 @@ class ProgressTests(unittest.TestCase):
             progress.update("a\n\r\tb\x00\x1b[31mred\x1b[0m\x1b]0;title\x07")
         self.assertEqual(stream.getvalue(), "\r\x1b[2Ka   bred\n")
 
-    def test_redirected_output_only_writes_latest_status_on_close(self):
+    def test_redirected_output_emits_throttled_progress_and_latest_on_close(self):
         stream = io.StringIO()
-        progress = LiveProgress(stream)
-        progress.update("old")
-        progress.clear()
-        progress.update("latest")
-        self.assertEqual(stream.getvalue(), "")
+        with patch("LRAEP_trainer.progress.time.monotonic", side_effect=[10, 10.1]):
+            progress = LiveProgress(stream)
+            progress.update("1 | main | 80% | 00:01:00 | 123.45")
+            progress.clear()
+            progress.update("1 | main | 80% | 00:00:59 | 124")
+        self.assertEqual(stream.getvalue(), "1 | main | 80% | 00:01:00 | 123.45\n")
         progress.close()
         progress.close()
         progress.update("after close")
-        self.assertEqual(stream.getvalue(), "latest\n")
+        self.assertEqual(stream.getvalue(),
+                         "1 | main | 80% | 00:01:00 | 123.45\n"
+                         "1 | main | 80% | 00:00:59 | 124\n")
 
     def test_context_manager_closes_on_exception_without_swallowing_it(self):
         stream = TerminalStream()
@@ -99,6 +102,30 @@ class ProgressTests(unittest.TestCase):
         with LiveProgress(stream):
             pass
         self.assertEqual(stream.getvalue(), "")
+
+
+class JobStatusTests(unittest.TestCase):
+    def test_main_rate_is_a_number_without_units(self):
+        self.assertEqual(job_status(1, "main", 80, 60, 123.45),
+                         "1 | main | 80% | 00:01:00 | 123.45")
+
+    def test_side_speed_is_the_epoch_number(self):
+        self.assertEqual(job_status(2, "side", 50, 30, 4),
+                         "2 | side | 50% | 00:00:30 | 4")
+
+    def test_zero_and_missing_values_remain_five_fields(self):
+        self.assertEqual(job_status(3, "main", None, None, None),
+                         "3 | main | N/A | --:--:-- | 0")
+        self.assertEqual(job_status(3, "side-job", 0, -1, 0),
+                         "3 | side | 0% | 00:00:00 | 0")
+
+    def test_nonfinite_remaining_time_is_displayed_without_crashing(self):
+        self.assertEqual(job_status(3, "main", 0, float("inf"), float("nan")),
+                         "3 | main | 0% | --:--:-- | 0")
+
+    def test_long_job_time_does_not_wrap_after_a_day(self):
+        self.assertEqual(job_status(4, "main", 1, 90061, 1000.0),
+                         "4 | main | 1% | 25:01:01 | 1000")
 
 
 if __name__ == "__main__":

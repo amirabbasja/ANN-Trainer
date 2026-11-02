@@ -8,7 +8,7 @@ import unittest
 
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config
 from LRAEP_trainer.paths import artifacts_dir
-from LRAEP_trainer.wire_constants import S7_LEGACY_ALIAS
+from LRAEP_trainer.wire_constants import s7_legacy_alias
 
 
 class ConfigTests(unittest.TestCase):
@@ -159,7 +159,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["S3"]["KEX_uname"], "my-account")
         self.assertEqual(result["S3"]["WR_S2"], "my-wr-address")
         self.assertEqual(result["S3"]["password"], "d=2097152")
-        for protocol in ("S7", "WR", S7_LEGACY_ALIAS):
+        for protocol in ("S7", "WR", s7_legacy_alias()):
             with self.subTest(protocol=protocol):
                 self.assertEqual(self.load({"version": 1, "S3": {"protocol": protocol}})["S3"]["protocol"], "WR")
 

@@ -68,6 +68,17 @@ Restart the kernel when you want to discard its state and completely reset its
 GPU memory. Checkpoints saved to disk survive that restart. Rerun all cells to
 resume training; preserving notebook variables is not required.
 
+Both copies decode protocol strings, masks, and coefficient tables on demand;
+decoded values are no longer stored as module globals. Native key and target
+tensors are created for each operation without a persistent data cache. Each
+completed or cancelled batch releases its matrices, candidate generator, and
+proof references before pacing. Sessions close before side intervals or schedule
+pauses, and cleanup collects unreachable objects and returns unused CUDA allocator
+memory on the selected device. This shortens data lifetimes; it does not guarantee
+that freed CPU or GPU memory has been overwritten. Runtime configuration remains
+available for the active application. Restart an existing kernel or process to
+load these changes and discard its previously loaded modules and state.
+
 ## Configuration and checkpoints
 
 Maintain configuration in `trainer/config.json` and export it from

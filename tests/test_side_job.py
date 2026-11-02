@@ -84,22 +84,39 @@ class ProgressTests(unittest.TestCase):
             finally:
                 job.close()
 
-    def test_standalone_reports_optimizer_steps_and_closes_display_and_job(self):
+    def test_standalone_reports_epoch_rows_and_routes_lifecycle_and_progress(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
         config["device"] = "cuda"
+        config["telegram"].update(enabled=True, tgBot_key="123:main", heartbeat_tgBot_key="456:progress")
         with patch("LRAEP_trainer.config.load_config", return_value=config), \
              patch("LRAEP_trainer.side_job.torch.cuda.current_device", return_value=2), \
              patch("LRAEP_trainer.side_job.SideJob") as factory, \
              patch("LRAEP_trainer.progress.LiveProgress") as display, \
+             patch("LRAEP_trainer.telegram.TelegramUpdates") as telegram, \
              patch("LRAEP_trainer.telemetry.GpuUtilization") as monitor:
             job = factory.return_value
-            job.step.side_effect = [True, True, False]
-            job.status.side_effect = ["Preparing", "Step 1/2", "Step 2/2 (100.0%)", "Epoch 1 Complete"]
+            job._progress_epoch = 1
+            epochs = iter([1, 2, 3])
+
+            def step():
+                job._progress_epoch = next(epochs)
+                return job._progress_epoch < 3
+
+            job.step.side_effect = step
             progress = display.return_value.__enter__.return_value
             monitor.return_value.__enter__.return_value.read.return_value = 40
             self.assertEqual(main([]), 0)
-            self.assertEqual([call.args[0] for call in progress.update.call_args_list],
-                             ["Preparing", "Step 1/2", "Step 2/2 (100.0%)", "Epoch 1 Complete"])
+            self.assertEqual([call.args[0] for call in progress.update.call_args_list], [
+                "1 | side | 40% | --:--:-- | 1", "1 | side | 40% | --:--:-- | 1",
+                "1 | side | 40% | --:--:-- | 2", "1 | side | 40% | --:--:-- | 3",
+            ])
+            self.assertIs(telegram.call_args.args[0], config)
+            self.assertEqual(telegram.call_args.args[1](), progress.update.call_args.args[0])
+            updates = telegram.return_value.__enter__.return_value
+            self.assertEqual([call.args[0] for call in updates.event.call_args_list],
+                             ["Job 1 side starting", "Job 1 side finished"])
+            telegram.return_value.__exit__.assert_called_once()
+            job.status.assert_not_called()
             self.assertIs(factory.call_args.kwargs["before_log"], progress.clear)
             monitor.assert_called_once_with("cuda:2")
             display.return_value.__exit__.assert_called_once()
@@ -110,12 +127,18 @@ class ProgressTests(unittest.TestCase):
         with patch("LRAEP_trainer.config.load_config", return_value=copy.deepcopy(DEFAULT_CONFIG)), \
              patch("LRAEP_trainer.side_job.SideJob") as factory, \
              patch("LRAEP_trainer.progress.LiveProgress") as display, \
+             patch("LRAEP_trainer.telegram.TelegramUpdates") as telegram, \
              patch("LRAEP_trainer.telemetry.GpuUtilization") as monitor:
+            factory.return_value._progress_epoch = 1
             factory.return_value.step.side_effect = KeyboardInterrupt
             self.assertEqual(main([]), 130)
             factory.return_value.close.assert_called_once()
             display.return_value.__exit__.assert_called_once()
             monitor.return_value.__exit__.assert_called_once()
+            updates = telegram.return_value.__enter__.return_value
+            self.assertEqual([call.args[0] for call in updates.event.call_args_list],
+                             ["Job 1 side starting", "Job 1 side finished"])
+            telegram.return_value.__exit__.assert_called_once()
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")

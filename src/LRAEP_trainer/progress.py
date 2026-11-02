@@ -55,17 +55,32 @@ def main_status(steps: int, elapsed: float, gpu_percent: int | None, *, max_step
     return f"Main | Step {step} | elapsed={format_elapsed(elapsed)} | GPU {utilization}"
 
 
+
+def job_status(job_number, job_title, gpu_percent, time_remaining, speed):
+    title = "side" if job_title == "side-job" else job_title
+    if title not in {"main", "side"}:
+        raise ValueError("job title must be main or side")
+    utilization = "N/A" if gpu_percent is None else f"{gpu_percent}%"
+    if time_remaining is None or not math.isfinite(time_remaining):
+        remaining = "--:--:--"
+    else:
+        hours, remainder = divmod(int(max(0, time_remaining)), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        remaining = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    if speed is None or not math.isfinite(speed):
+        value = "0"
+    elif isinstance(speed, int):
+        value = str(speed)
+    else:
+        value = f"{speed:.2f}".rstrip("0").rstrip(".")
+    return f"{job_number} | {title} | {utilization} | {remaining} | {value}"
+
+
 class LiveProgress:
-    """Rewrite one terminal row, or emit one final line when redirected.
 
-    Call ``clear()`` before ordinary log messages, then ``update()`` to resume
-    the status row. Logging handlers are never modified. Closing flushes the
-    newest status even if its last update was throttled.
-    """
-
-    def __init__(self, stream=None, interval: float = 1.0):
+    def __init__(self, stream=None, interval: float=1.0):
         if not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval < 0:
-            raise ValueError("progress interval must be finite and nonnegative")
+            raise ValueError('progress interval must be finite and nonnegative')
         self.stream = sys.stderr if stream is None else stream
         self.interval = interval
         try:
@@ -84,34 +99,32 @@ class LiveProgress:
             columns = os.get_terminal_size(self.stream.fileno()).columns
         except (AttributeError, OSError, ValueError):
             columns = shutil.get_terminal_size(fallback=(120, 24)).columns
-        # Leave the final column unused so the terminal never wraps the row.
         return max(0, columns - 1)
 
     def _render(self, text: str) -> None:
-        self.stream.write("\r\x1b[2K" + _fit_columns(text, self._columns()))
+        self.stream.write('\r\x1b[2K' + _fit_columns(text, self._columns()) if self._tty else text + '\n')
         self.stream.flush()
         self._rendered_text = text
         self._active = True
 
-    def update(self, text: str, force: bool = False) -> None:
+    def update(self, text: str, force: bool=False) -> None:
         with self._lock:
             if self._closed:
                 return
             self._latest_text = _plain_text(text)
-            if not self._tty:
+            if self._latest_text == self._rendered_text and self._active:
                 return
             now = time.monotonic()
-            if not force and self._active and now - self._last_update < self.interval:
+            if not force and self._active and (now - self._last_update < self.interval):
                 return
             self._render(self._latest_text)
             self._last_update = now
 
     def clear(self) -> None:
-        """Erase an active status row before writing a normal log message."""
         with self._lock:
-            if self._closed or not self._active:
+            if self._closed or not self._active or not self._tty:
                 return
-            self.stream.write("\r\x1b[2K")
+            self.stream.write('\r\x1b[2K')
             self.stream.flush()
             self._active = False
             self._rendered_text = None
@@ -124,9 +137,9 @@ class LiveProgress:
                 if self._tty:
                     if not self._active or self._rendered_text != self._latest_text:
                         self._render(self._latest_text)
-                    self.stream.write("\n")
-                else:
-                    self.stream.write(self._latest_text + "\n")
+                    self.stream.write('\n')
+                elif self._rendered_text != self._latest_text:
+                    self.stream.write(self._latest_text + '\n')
                 self.stream.flush()
             self._active = False
             self._closed = True

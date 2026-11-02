@@ -6,6 +6,7 @@ Reference schemas: https://xtls.github.io/en/config/transport.html
 """
 
 from __future__ import annotations
+from contextvars import ContextVar
 
 import base64
 import binascii
@@ -31,6 +32,11 @@ class VPNError(RuntimeError):
 
 
 VPNProxy = SocksProxy
+_CURRENT_VPN = ContextVar("LRAEP_managed_vpn", default=None)
+
+def current_vpn():
+    return _CURRENT_VPN.get()
+
 
 
 def _text(value, label, *, empty=False):
@@ -359,6 +365,7 @@ class ManagedVPN:
         self.link = settings.get("link", "") if link is None else link
         self.proxy: VPNProxy | None = None
         self.process: subprocess.Popen | None = None
+        self._route_token = None
 
     def __enter__(self) -> VPNProxy:
         if self.process is not None:
@@ -381,10 +388,12 @@ class ManagedVPN:
         startup = self.settings.get("startup_timeout", 10.0)
         if type(startup) not in (int, float) or not math.isfinite(startup) or not 0 < startup <= 300:
             raise VPNError("vpn.startup_timeout must be between 0 and 300 seconds")
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
-            reservation.bind(("127.0.0.1", 0))
-            port = reservation.getsockname()[1]
-        proxy = VPNProxy("127.0.0.1", port, secrets.token_hex(16), secrets.token_hex(24))
+        proxy = self.proxy
+        if proxy is None:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reservation:
+                reservation.bind(("127.0.0.1", 0))
+                port = reservation.getsockname()[1]
+            proxy = VPNProxy("127.0.0.1", port, secrets.token_hex(16), secrets.token_hex(24))
         self.proxy = proxy
         try:
             configuration = {
@@ -411,6 +420,8 @@ class ManagedVPN:
                 if _ready(proxy, min(remaining, 0.2)):
                     if self.process.poll() is not None:
                         raise VPNError("Xray core exited during startup")
+                    if self._route_token is None:
+                        self._route_token = _CURRENT_VPN.set(self)
                     return proxy
                 time.sleep(min(0.05, max(0, deadline - time.monotonic())))
         except BaseException as exc:
@@ -419,7 +430,22 @@ class ManagedVPN:
                 raise
             raise VPNError("could not start the Xray core") from None
 
+    def ensure_ready(self):
+        if self.process is not None and self.process.poll() is None:
+            return self.proxy
+        proxy = self.proxy
+        self.close()
+        self.proxy = proxy
+        try:
+            return self.__enter__()
+        except BaseException:
+            self.proxy = proxy
+            raise
+
     def close(self):
+        if self._route_token is not None:
+            _CURRENT_VPN.reset(self._route_token)
+            self._route_token = None
         process, self.process = self.process, None
         try:
             if process is not None:

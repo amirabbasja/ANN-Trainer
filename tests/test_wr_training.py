@@ -14,7 +14,7 @@ from LRAEP_trainer.config import DEFAULT_CONFIG
 from LRAEP_trainer import native_cuda, S3_training as worker
 from LRAEP_trainer.S6_codec import decode_frame, encode_frame
 from LRAEP_trainer.protocol import load_official_helpers
-from LRAEP_trainer.wire_constants import S5_NONCE
+from LRAEP_trainer.wire_constants import s5_nonce
 
 from test_wr_protocol import job_result
 
@@ -92,13 +92,13 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                             share = request["params"][0]
                             self.assertEqual(set(share), {
                                 "m", "n", "k", "rank", "tile_h", "tile_w", "sb", "sb_p", "tail_mode",
-                                "a_rows", "b_cols", S5_NONCE, "worker_nonce", "nonce",
+                                "a_rows", "b_cols", s5_nonce(), "worker_nonce", "nonce",
                             })
                             self.assertEqual((share["m"], share["n"], share["k"]), (129, 128, 2048))
                             self.assertEqual((share["rank"], share["tile_h"], share["tile_w"]), (128, 8, 8))
                             self.assertEqual(share["worker_nonce"], extranonce)
-                            self.assertEqual(len(bytes.fromhex(share[S5_NONCE])), 8)
-                            self.assertEqual(share["nonce"], share[S5_NONCE])
+                            self.assertEqual(len(bytes.fromhex(share[s5_nonce()])), 8)
+                            self.assertEqual(share["nonce"], share[s5_nonce()])
                             self.assertEqual((share["sb"], share["sb_p"], share["tail_mode"]), (1, [], 1))
                             self.assertEqual(len(share["a_rows"]), 8)
                             self.assertEqual(len(share["b_cols"]), 8)

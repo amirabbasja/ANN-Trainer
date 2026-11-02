@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from .wire_constants import S5_NONCE
+from .wire_constants import s5_nonce
 
 
 def _i32(value: int, name: str) -> int:
@@ -61,7 +61,7 @@ def build_submit_request(
         "b_cols": [_i32(value, "b_cols index") for value in b_cols],
         "k": _i32(k, "k"),
         "m": _i32(m, "m"),
-        S5_NONCE: S5,
+        s5_nonce(): S5,
         "n": _i32(n, "n"),
         "nonce": S5,
         "rank": _i32(rank, "rank"),

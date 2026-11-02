@@ -27,6 +27,8 @@ from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
 from .progress import LiveProgress, format_elapsed, main_status
 from .telemetry import GpuUtilization
 from .telegram import TelegramUpdates
+from .job_control import JobEvents, VPNJobGuard
+from .progress import job_status
 
 LOG = logging.getLogger("LRAEP_trainer")
 
@@ -43,6 +45,7 @@ class TipWatcher:
         self._rpc_timeout = node.timeout
         self.tip = None
         self.failed = True
+        self.vpn_guard = None
         self.stopped = stopped if stopped is not None else threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -63,6 +66,9 @@ class TipWatcher:
                 boundary = min(boundary, self.deadline)
                 if time.monotonic() >= self.deadline:
                     break
+            if self.vpn_guard is not None and self.vpn_guard.check():
+                self.stopped.wait(min(1.0, max(0, boundary - time.monotonic())))
+                continue
             remaining = boundary - time.monotonic()
             if remaining <= 0:
                 continue
@@ -72,6 +78,8 @@ class TipWatcher:
                 self.failed = False
             except NodeError:
                 self.failed = True
+                if self.vpn_guard is not None:
+                    self.vpn_guard.connection_lost(boundary)
             self.stopped.wait(max(0, min(self.interval, boundary - time.monotonic())))
 
     def stale(self, parent: str) -> bool:
@@ -180,21 +188,17 @@ def train(args) -> int:
 
             def show_main(force=False):
                 nonlocal active_job
-                force = force or active_job != "main"
-                active_job = "main"
-                progress.update(main_status(batches, time.monotonic() - started, monitor.read(),
-                                            max_steps=args.max_batches), force=force)
+                events.update()
+                kind = schedule.current_job()[0]
+                force = force or active_job != kind
+                active_job = kind
+                progress.update(telegram_snapshot(), force=force)
 
             def show_side_job(job):
-                nonlocal active_job
-                force = active_job != "side-job"
-                active_job = "side-job"
-                progress.update(job.status(monitor.read()), force=force)
+                show_main()
 
             def log(level, message, *values):
-                if LOG.isEnabledFor(level):
-                    progress.clear()
-                    LOG.log(level, message, *values)
+                LOG.debug(message, *values)
 
             if hasattr(args, "side_job_configuration"):
                 side_job_configuration = args.side_job_configuration
@@ -204,13 +208,22 @@ def train(args) -> int:
             side_job = ScheduledSideJob(side_job_configuration, before_log=progress.clear, on_progress=show_side_job)
 
             def telegram_snapshot():
-                elapsed = time.monotonic() - started
-                return "\n".join([
-                    main_status(batches, elapsed, monitor.read(), max_steps=args.max_batches),
-                    f"Attempts: {attempts} | Blocks accepted: {accepted}",
-                ])
+                now = time.monotonic()
+                number, kind, percentage, boundary = schedule.position(now)
+                remaining = (0 if percentage == -1 else
+                             max(0, (boundary if deadline is None else min(boundary, deadline)) - now))
+                if kind == "side-job":
+                    speed = getattr(side_job.job, "_progress_epoch", 0) if side_job.job is not None else 0
+                else:
+                    speed = (0 if percentage <= 0 or vpn_guard.blocked() else
+                             batches * cfg.m * cfg.n * cfg.k / max(0.001, now - started))
+                return job_status(number, "side" if kind == "side-job" else "main",
+                                  monitor.read(), remaining, speed)
 
-            resources.enter_context(TelegramUpdates(side_job_configuration, telegram_snapshot))
+            updates = resources.enter_context(TelegramUpdates(side_job_configuration, telegram_snapshot))
+            events = JobEvents(schedule, updates)
+            resources.callback(events.finish)
+            vpn_guard = resources.enter_context(VPNJobGuard(schedule, side_job_configuration, updates))
             log(logging.INFO, "GPU job sequence: %s", args.job_sequence)
             use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
             from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
@@ -220,6 +233,7 @@ def train(args) -> int:
             node = NodeClient(**node_options)
             watcher = TipWatcher(NodeClient(**node_options), args.poll_interval,
                                  schedule=schedule, stopped=stopped, deadline=deadline)
+            watcher.vpn_guard = vpn_guard
             watcher.thread.start()
             rng = np.random.default_rng()
             output = Path(args.output_dir).expanduser().resolve()
@@ -232,7 +246,7 @@ def train(args) -> int:
                 # Existing requests remain synchronous and bounded by the next
                 # effort boundary, rather than continuing in detached threads.
                 kind, percentage, boundary = schedule.current_job()
-                if stopped.is_set() or kind != "main" or percentage <= 0:
+                if stopped.is_set() or kind != "main" or percentage <= 0 or vpn_guard.check():
                     raise TrainingCancelled("GPU effort is paused or stopped")
                 remaining = stage_deadline(boundary) - time.monotonic()
                 if remaining <= 0:
@@ -245,6 +259,9 @@ def train(args) -> int:
                 if not schedule.wait(stopped, deadline=deadline) or finished():
                     break
                 if side_job.run_if_active(schedule, stopped, pacer, deadline=deadline):
+                    continue
+                if not vpn_guard.resume():
+                    vpn_guard.wait(stopped, deadline=deadline, on_progress=show_main)
                     continue
                 show_main()
                 try:
@@ -264,7 +281,10 @@ def train(args) -> int:
                     watcher.failed = False
 
                     def template_stale():
-                        return finished() or watcher.stale(parent) or time.monotonic() >= expires
+                        if vpn_guard.enabled and watcher.failed is True:
+                            vpn_guard.connection_lost()
+                        return (finished() or vpn_guard.check() or watcher.stale(parent)
+                                or time.monotonic() >= expires)
 
                     while not template_stale():
                         if not schedule.wait(stopped, deadline=deadline) or template_stale():
@@ -274,6 +294,8 @@ def train(args) -> int:
                             break
                         if percentage <= 0:
                             continue
+                        if not vpn_guard.resume():
+                            break
                         pacer.set_utilization(percentage)
                         if previous_effort != (kind, percentage):
                             log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind.capitalize(), percentage)
@@ -286,7 +308,7 @@ def train(args) -> int:
                         def candidate_cancelled():
                             # A completed final batch remains eligible unless
                             # a schedule transition, stop, or chain tip invalidates it.
-                            return (stopped.is_set() or watcher.stale(parent)
+                            return (stopped.is_set() or vpn_guard.check() or watcher.stale(parent)
                                     or time.monotonic() >= boundary
                                     or schedule.current()[0] <= 0)
 
@@ -295,13 +317,15 @@ def train(args) -> int:
                                               native=use_native)
                         if cancelled():
                             pacer.finish(cancelled=True)
-                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                            if not vpn_guard.check():
+                                pacer.wait(stopped, deadline=stage_deadline(boundary))
                             continue
                         try:
                             matches = search_batch(batch, target, args.device, cancelled)
                         except TrainingCancelled:
                             pacer.finish(cancelled=True)
-                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                            if not vpn_guard.check():
+                                pacer.wait(stopped, deadline=stage_deadline(boundary))
                             continue
                         pacer.finish()
                         batches += 1
@@ -345,13 +369,13 @@ def train(args) -> int:
                 except TrainingCancelled:
                     continue
                 except NodeError as exc:
+                    if vpn_guard.connection_lost():
+                        vpn_guard.wait(stopped, deadline=deadline, on_progress=show_main)
+                        continue
                     log(logging.WARNING, "%s; retrying in 3 seconds", exc)
                     _, boundary = schedule.current()
                     stopped.wait(max(0, min(3, stage_deadline(boundary) - time.monotonic())))
-            if active_job == "side-job" and side_job.job is not None:
-                progress.update(side_job.job.status(monitor.read()), force=True)
-            else:
-                show_main(force=True)
+            show_main(force=True)
         finally:
             stopped.set()
             try:
@@ -363,7 +387,7 @@ def train(args) -> int:
                     watcher.thread.join()
                 for sig, handler in old_handlers.items():
                     signal.signal(sig, handler)
-    LOG.info("Main job stopped: steps=%d elapsed=%s", batches, format_elapsed(time.monotonic() - started))
+    LOG.debug("Main job stopped: steps=%d elapsed=%s", batches, format_elapsed(time.monotonic() - started))
     LOG.debug("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
     return 0
 
@@ -552,7 +576,8 @@ def main(argv=None) -> int:
     vpn.add_argument("--timeout", type=float, default=5, help="seconds per connection attempt (up to 60)")
     vpn.add_argument("--output", help="optional JSON report; share-link credentials are omitted")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.basicConfig(level=(logging.ERROR if args.command in (None, "train", "S3") else logging.INFO),
+                        format="%(asctime)s %(message)s")
     try:
         from .config import load_config
 

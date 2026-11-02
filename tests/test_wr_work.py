@@ -12,7 +12,7 @@ import torch
 
 from LRAEP_trainer.protocol import TrainingConfig, load_official_helpers
 from LRAEP_trainer.wr_protocol import WRJob, WRShare
-from LRAEP_trainer.wire_constants import S5_NONCE
+from LRAEP_trainer.wire_constants import s5_nonce
 from LRAEP_trainer.wr_work import (
     prepare_wr_batch, reconstruct_wr_digest,
     verified_wr_share, wr_nonce_tail,
@@ -46,7 +46,7 @@ class WRWorkTests(unittest.TestCase):
         cls.captures = json.loads(
             (root / "tests/fixtures/wr_accepted_work.json").read_text(),
             object_hook=lambda fields: {
-                S5_NONCE if key == "bWluZXJfbm9uY2U=" else key: value
+                s5_nonce() if key == "bWluZXJfbm9uY2U=" else key: value
                 for key, value in fields.items()
             },
         )
@@ -65,7 +65,7 @@ class WRWorkTests(unittest.TestCase):
     def share_from_fixture(fixture):
         fields = {name: value for name, value in fixture["share"].items()
                   if name not in {"nonce", "tail_mode", "sb_p"}}
-        fields["S5_nonce"] = fields.pop(S5_NONCE)
+        fields["S5_nonce"] = fields.pop(s5_nonce())
         for name in ("S5_nonce", "worker_nonce"):
             fields[name] = bytes.fromhex(fields[name])
         for name in ("a_rows", "b_cols"):

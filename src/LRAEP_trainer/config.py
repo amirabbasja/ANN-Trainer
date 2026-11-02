@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
 from .effort import normalize_job_sequence
 from .paths import artifacts_dir
-from .wire_constants import S7_LEGACY_ALIAS
+from .wire_constants import s7_legacy_alias
 
 
 class ConfigError(RuntimeError):
@@ -30,6 +30,7 @@ _ENCRYPTED_FORMAT = "LRAEP-config-fernet-v1"
 _TOP_LEVEL = {"version", "mode", "official_source", "device", "training", "S3", "node", "vpn", "side_job", "trainer_name", "telegram"}
 _TELEGRAM_DEFAULTS = {
     "enabled": False, "tgBot_key": "", "tgChatID": "",
+    "heartbeat_tgBot_key": "",
     "update_interval_seconds": 300,
 }
 _TRAINING_DEFAULTS = {
@@ -160,6 +161,9 @@ def _telegram_config(config):
     token = _string(settings["tgBot_key"], "telegram.tgBot_key")
     if token and re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) is None:
         raise ConfigError("telegram.tgBot_key must be a valid bot token")
+    heartbeat_token = _string(settings["heartbeat_tgBot_key"], "telegram.heartbeat_tgBot_key")
+    if heartbeat_token and re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", heartbeat_token) is None:
+        raise ConfigError("telegram.heartbeat_tgBot_key must be a valid bot token")
     chat_id = settings["tgChatID"]
     if type(chat_id) is not int:
         _string(chat_id, "telegram.tgChatID")
@@ -275,9 +279,9 @@ def _documentation(value, directory, field="S3.protocol_documentation"):
 def _S3_protocol(value):
     if value == "auto":
         raise ConfigError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
-    if not isinstance(value, str) or value not in {"KEX", "WR", "S7", S7_LEGACY_ALIAS}:
+    if not isinstance(value, str) or value not in {"KEX", "WR", "S7", s7_legacy_alias()}:
         raise ConfigError("S3.protocol must select KEX or WR")
-    return "WR" if value in {"S7", S7_LEGACY_ALIAS} else value
+    return "WR" if value in {"S7", s7_legacy_alias()} else value
 
 
 def _validate_S3_connection(settings, section, directory):

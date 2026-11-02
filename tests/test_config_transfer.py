@@ -129,11 +129,13 @@ print(json.dumps({'raw': raw, 'runtime': runtime, 'S3': S3}, ensure_ascii=False)
         self.values["trainer_name"] = "WR test trainer"
         self.values["telegram"] = {
             "enabled": True, "tgBot_key": "123:PRIVATE_TELEGRAM_TOKEN", "tgChatID": -123,
+            "heartbeat_tgBot_key": "456:PRIVATE_HEARTBEAT_TOKEN",
             "update_interval_seconds": 42,
         }
         self.save_source()
         transfer.export_wr_config(self.source, self.destination, open_text=self.text)
         self.assertNotIn("PRIVATE_TELEGRAM_TOKEN", self.destination.read_text())
+        self.assertNotIn("PRIVATE_HEARTBEAT_TOKEN", self.destination.read_text())
         loaded = self.isolated_wr_load()
         self.assertEqual(loaded["runtime"]["telegram"], self.values["telegram"])
         self.assertEqual(loaded["runtime"]["trainer_name"], "WR test trainer")
