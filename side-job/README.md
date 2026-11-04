@@ -1,4 +1,4 @@
-# CNN side-job
+# CNN job-1
 
 This job trains a residual CNN to classify Tibetan manuscript pages as
 `non_flipped` (0) or `flipped` (1). The default model has about 11.4 million
@@ -19,21 +19,22 @@ epochs. `0` means repeat indefinitely. The launcher finds the checkout's shared
 config by default and also works when called by absolute path from another
 directory. `Ctrl+C` stops training and removes the current downloaded shard.
 
-The S5's `training.job_sequence` also runs this CNN for positive `side-job`
-intervals. For example, `[["main", 60, 80], ["side-job", 120, 50]]` alternates mining
+The S5's `training.job_sequence` also runs this CNN for positive `job-1`
+intervals. For example, `[{"title":"job-0","time":60,"max_gpu_utilization":80}, {"title":"job-1","time":120,"max_gpu_utilization":50}]` alternates mining
 and CNN batches, applying the interval's GPU duty-cycle target. Model and partial
 epoch state remain in memory between intervals. Main-batch limits count mining
 batches. The standalone launcher trains continuously using `side_job.epochs`.
 
 The separate [standalone WR trainer](../docs/standalone-wr.md) also runs these
-CNN intervals. Its notebook export includes `side_job` settings inside the
-encrypted `config.json`; it reads `open_text` from the adjacent `.env` file.
+CNN intervals. The config manager writes its readable `side_job` settings
+directly to the standalone `config.json`. Only `S_3` is encrypted, with `qwe`
+as the default key; no `.env` is needed.
 WR keeps its own checkpoints under `LRAEP-WR-Trainer/data/side-job/`.
 
 Both launch paths show the current epoch's progress in one updating terminal row:
 
 ```text
-Side-job | Epoch 2/10 | Step 125/400 (31.2%) | loss=0.1234 accuracy=95.0% | GPU 42%
+job-1 | Epoch 2/10 | Step 125/400 (31.2%) | loss=0.1234 accuracy=95.0% | GPU 42%
 ```
 
 Each step is one optimizer batch. The percentage counts images processed from
@@ -45,9 +46,9 @@ footer without decoding every image in advance. Unlimited training shows the
 epoch number without a limit. Preparing a shard shows `Preparing` until its
 training totals are known. Completion logs a summary for every epoch.
 
-During scheduled main intervals, the display returns to `Main | Step ...` with
+During scheduled job-0 intervals, the display returns to `job-0 | Step ...` with
 elapsed time and GPU usage. The partial CNN epoch resumes at its previous step
-when the next side-job interval begins. Redirected output keeps epoch summaries
+when the next job-1 interval begins. Redirected output keeps epoch summaries
 and the final status without adding one line per batch.
 
 ## Data and epochs
@@ -147,8 +148,8 @@ A 155-image shard then produces 4,960 training examples across 32 passes and
 all presentations, including repeats. More passes keep the GPU busy longer
 between downloads; they do not guarantee better model accuracy.
 
-For scheduled side-job training, the third value of each positive `side-job` interval
-is a duty-cycle ceiling, not a utilization guarantee. Use `100` to allow
+For scheduled job-1 training, each dictionary's `max_gpu_utilization`
+is the duty-cycle target, with no tolerance or additional margin. Use `100` to allow
 continuous computation when targeting at least 80% measured GPU activity.
 Downloads, initial decoding, checkpoints and schedule pauses can still show 0%.
 The [PyTorch performance guide](https://docs.pytorch.org/tutorials/recipes/recipes/tuning_guide)

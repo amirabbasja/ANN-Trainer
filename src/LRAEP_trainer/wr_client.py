@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .fixed_constants import constant_text
+
 from dataclasses import replace
 import logging
 import threading
@@ -19,6 +21,11 @@ from .wr_protocol import UnknownWRRequest, WRDialect
 LOG = logging.getLogger("LRAEP_trainer")
 
 
+class _AuthMethod:
+    def __get__(self, instance, owner=None):
+        return constant_text(b'%gDga$p')
+
+
 class WRSession(S3Session):
     """A S7 connection with fatal, recorded unknown-message handling.
 
@@ -27,13 +34,13 @@ class WRSession(S3Session):
     connection. Compatibility failures never trigger automatic reconnection.
     """
 
-    AUTH_METHOD = "login"
+    AUTH_METHOD = _AuthMethod()
     MAX_PENDING_REPORTS = 4
 
     def __init__(self, settings: dict, stop_event: threading.Event | None = None,
                  unknown_handler: Callable[..., None] | None = None) -> None:
         if settings.get("compression", "none") != "none":
-            raise S3ProtocolError("S7 compression must be none")
+            raise S3ProtocolError(constant_text(b'^pJ<d$jaB%!qn8x$jOJw($v$3#lnZl$jQP'))
         super().__init__(settings, stop_event)
         self._worker_nonce: bytes | None = None
         self._unknown_handler = unknown_handler
@@ -47,7 +54,7 @@ class WRSession(S3Session):
         """Initialize only WR's selected identity during shared session setup."""
         return WRDialect(
             WR_S2=self.settings.get("WR_S2", ""),
-            worker=self.settings.get("worker", ""),
+            worker=self.settings.get(constant_text(b'(8$%y!qo'), ""),
             agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
         )
 
@@ -69,7 +76,7 @@ class WRSession(S3Session):
         expired = [request_id for request_id, deadline in self._report_pending.items() if now >= deadline]
         for request_id in expired:
             del self._report_pending[request_id]
-            LOG.warning("S7 GPU report acknowledgement timed out")
+            LOG.warning(constant_text(b'^pJ<(_wt9;!q>>v(}%{y%*n{m%fiFJ!pg$Q(}&Z}%EH5k$kNj'))
 
     @property
     def latest_report_id(self) -> int | None:
@@ -95,11 +102,11 @@ class WRSession(S3Session):
             with self._condition:
                 self._raise_failure()
                 if not self._authorized:
-                    raise S3ConnectionError("S7 session must authenticate before reporting GPU information")
+                    raise S3ConnectionError(constant_text(b'^pJ<t!qn8x$jOJw($v$3#?sTz!pYOl#KzOYhsDCd$koD!)xy`v)zi+&z=z=X@`ujJ!N}Fh#?#Ko$p'))
                 self._expire_reports_locked()
                 if len(self._report_pending) >= self.MAX_PENDING_REPORTS:
                     del self._report_pending[next(iter(self._report_pending))]
-                    LOG.warning("S7 discarded an unacknowledged GPU report")
+                    LOG.warning(constant_text(b'^pJ<c&eX)l)x*NWhsMc=(#gie%*n{m%fiFJ!o!E)_wt9;!q>>v(*'))
                 request_id = self._next_id
                 # Validate the same uint64 representation used by all WR
                 # requests before reserving an ID in this session.
@@ -111,7 +118,7 @@ class WRSession(S3Session):
             try:
                 self._send(request)
             except (S3ConnectionError, S3ProtocolError):
-                self._fail(S3ConnectionError("S7 GPU report send failed"))
+                self._fail(S3ConnectionError(constant_text(b'^pJ<(_wt9;!q>>v(}&c;$-{@i#?H&a!v')))
                 raise
         return request_id
 
@@ -124,13 +131,17 @@ class WRSession(S3Session):
                 return
 
     def _send(self, message: dict) -> None:
+        encoded = None
         try:
-            encoded = encode_frame(message)
-        except CodecError as error:
-            raise S3ProtocolError("Could not encode S7 request") from error
-        if len(encoded) > self.MAX_FRAME_BYTES:
-            raise S3ProtocolError("S7 request exceeds the frame size limit")
-        self.transport.send(encoded)
+            try:
+                encoded = encode_frame(message)
+            except CodecError as error:
+                raise S3ProtocolError(constant_text(b'<jB&?!-vVp(}%*z#K^<KhxCw#)xy@&!qn3')) from error
+            if len(encoded) > self.MAX_FRAME_BYTES:
+                raise S3ProtocolError(constant_text(b'^pJ<u!q(El)YFH;-^9Yg!_<e<&%%en)yB%ght$s9!iUSw%Ffd'))
+            self.transport.send(encoded)
+        finally:
+            del message, encoded
 
     def _unknown(self, frame: bytes, response: dict | None, reason: str) -> None:
         with self._condition:
@@ -144,7 +155,7 @@ class WRSession(S3Session):
             self._generation += 1
             self._recording_unknown = True
             self._compatibility_failure = S3CompatibilityError(
-                "Unknown S7 request; training stopped",
+                constant_text(b'^2yA}$k54$^pJ<u!q(El)YF`Y)78e#$<E2Zht$)^*Vn?s'),
             )
         diagnostic_failed = False
         if self._unknown_handler is not None:
@@ -152,7 +163,7 @@ class WRSession(S3Session):
                 self._unknown_handler(frame, response, reason, fatal=True)
             except Exception:
                 diagnostic_failed = True
-        message = "Unknown S7 request; training stopped"
+        message = constant_text(b'^2yA}$k54$^pJ<u!q(El)YF`Y)78e#$<E2Zht$)^*Vn?s')
         if diagnostic_failed:
             message += "; diagnostic recording failed"
         error = S3CompatibilityError(message)
@@ -177,11 +188,11 @@ class WRSession(S3Session):
                     boundary = buffered.find(b"\n")
                     if boundary < 0:
                         if len(buffered) >= self.MAX_FRAME_BYTES:
-                            self._unknown(bytes(buffered), None, "S7 frame exceeds the size limit")
+                            self._unknown(bytes(buffered), None, constant_text(b'^pJ<a)yB%ghr-{)!otJUhtto(ht$s9!iUSw%Ffd'))
                             return
                         break
                     if boundary + 1 > self.MAX_FRAME_BYTES:
-                        self._unknown(bytes(buffered[:boundary + 1]), None, "S7 frame exceeds the size limit")
+                        self._unknown(bytes(buffered[:boundary + 1]), None, constant_text(b'^pJ<a)yB%ghr-{)!otJUhtto(ht$s9!iUSw%Ffd'))
                         return
                     frame = bytes(buffered[:boundary + 1])
                     del buffered[:boundary + 1]
@@ -197,7 +208,7 @@ class WRSession(S3Session):
                             if self._unknown_handler is not None:
                                 self._unknown_handler(frame, response, str(error), fatal=False)
                         except Exception:
-                            self._unknown(frame, response, "Could not record ignored S7 request")
+                            self._unknown(frame, response, constant_text(b'<jB&?!-vVp(}&f<#K_gdht9ys$koEbhxCw#)xy@&!qn3'))
                             return
                     except (CodecError, S3ProtocolError) as error:
                         self._unknown(frame, response, str(error))
@@ -206,18 +217,18 @@ class WRSession(S3Session):
                         return
         except S3ConnectionError as error:
             if buffered and not self._closed_event.is_set():
-                self._unknown(bytes(buffered), None, "S7 connection ended with an unterminated frame")
+                self._unknown(bytes(buffered), None, constant_text(b'^pJ<d$jQmV#M92m$%n$p!@|Rd(9YA(hsMc=(#g}p)ymGv#?!*Xhr!jx%EA'))
             else:
                 self._fail(error)
         except Exception:
-            self._fail(S3ConnectionError("S7 reader failed"))
+            self._fail(S3ConnectionError(constant_text(b'^pJ<u!p6hG)rY~x&db8X')))
 
     def _handle(self, response: dict) -> None:
         with self._condition:
             if self._closed_event.is_set():
                 return
         kind = self.dialect.classify(response)
-        if kind == "extranonce":
+        if kind == constant_text(b'!r#-?#>vRZ#KH'):
             worker_nonce = self.dialect.parse_extranonce(response["result"])
             with self._condition:
                 if self._closed_event.is_set():
@@ -229,12 +240,12 @@ class WRSession(S3Session):
                     self._generation += 1
                     self._condition.notify_all()
             return
-        if kind == "notify":
+        if kind == constant_text(b'$;i{r!QK'):
             with self._condition:
                 if self._closed_event.is_set():
                     return
                 job = self.dialect.parse_job(
-                    response["result"], self.settings.get("certificate_version"), self._worker_nonce,
+                    response["result"], self.settings.get(constant_text(b'#KP6n&cV*a#?!+1(Zbc#&dA9')), self._worker_nonce,
                 )
                 if job != self._job:
                     self._job = job
@@ -246,7 +257,7 @@ class WRSession(S3Session):
             self._expire_reports_locked()
             if request_id == self._auth_id and not self._authorized:
                 if not self.dialect.accept(response):
-                    self._fail(S3AuthenticationError("S7 rejected authentication"))
+                    self._fail(S3AuthenticationError(constant_text(b'^pJ<u!p*|O)561t#?sTz!pYOl#KzOk$jJ')))
                     return
                 self._authorized = True
                 self._condition.notify_all()
@@ -256,9 +267,9 @@ class WRSession(S3Session):
                 if request_id == self._latest_report_id:
                     self._latest_report_accepted = accepted
                 if accepted:
-                    LOG.debug("S7 acknowledged GPU information report")
+                    LOG.debug(constant_text(b'^pJ<f#LUUa(96QZz{10a;P>)}&dI^Z)yl@x&dAA!)xy`v)zb'))
                 else:
-                    LOG.warning("S7 rejected GPU information report")
+                    LOG.warning(constant_text(b'^pJ<u!p*|O)561t;P>)}&dI^Z)yl@x&dAA!)xy`v)zb'))
                 self._condition.notify_all()
             elif request_id in self._pending:
                 pending = self._pending[request_id]

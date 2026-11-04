@@ -45,6 +45,7 @@ class S3LoopTests(unittest.TestCase):
             patch("LRAEP_trainer.S3_client.S3Session", return_value=self.session)
         )
         self.stack.enter_context(patch.object(worker, "load_official_helpers"))
+        self.stack.enter_context(patch.object(worker, "_release_work"))
         self.stack.enter_context(patch.object(worker.torch.cuda, "is_available", return_value=True))
         self.stack.enter_context(patch.object(worker.torch.cuda, "get_device_name", return_value="test GPU"))
         self.stack.enter_context(patch.object(worker.torch.cuda, "synchronize"))
@@ -80,7 +81,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.__exit__ = lambda *_args: False
         batches = 2 if stage in ("complete", "candidate") else 1
         with self.clocked_schedule(
-            [("main", 10, 80), ("side-job", 20, 70), ("main", 10, 80)],
+            [{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 80}],
             batches=batches,
         ) as (clock, pacer), patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def tracked():
@@ -166,9 +167,7 @@ class S3LoopTests(unittest.TestCase):
 
         state = {"open": False, "crossed": False}
         current_job = JobSequence.current_job
-        with self.clocked_schedule([
-            ("main", 10, 80), ("side-job", 20, 70), ("main", 10, 80),
-        ]) as (clock, pacer), patch("LRAEP_trainer.side_job.SideJob") as cnn:
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 80}]) as (clock, pacer), patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def enter_session(*_args):
                 state["open"] = True
                 return self.session
@@ -224,7 +223,7 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(config["telegram"]["update_interval_seconds"], 15)
         text = snapshot()
         fields = text.split(" | ")
-        self.assertEqual(fields[:3], ["1", "main", "42%"])
+        self.assertEqual(fields[:3], ["1", 'job-0', "42%"])
         self.assertRegex(fields[3], r"^\d{2}:\d{2}:\d{2}$")
         self.assertGreater(float(fields[4]), 0)
         self.assertEqual(len(fields), 5)
@@ -240,7 +239,7 @@ class S3LoopTests(unittest.TestCase):
         updates.assert_not_called()
 
     def test_gpu_pacing_runs_between_batches_after_share_submission(self):
-        self.configuration["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
+        self.configuration["training"].update(max_batches=2, job_sequence=[{"title": 'job-0', "time": 60, "max_gpu_utilization": 60}])
         order = []
         self.session.submit.side_effect = lambda *_: (order.append("submit"), ShareResult(True, None))[1]
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
@@ -299,7 +298,7 @@ class S3LoopTests(unittest.TestCase):
         from LRAEP_trainer.S3_transport import S3ConnectionError
 
         self.configuration["vpn"].update(enabled=True, check_url=None)
-        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 40), ("main", 10, 80)]) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 40}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 80}]) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn, \
                 patch.object(worker, "TelegramUpdates") as updates, \
                 routed(SocksProxy("127.0.0.1", 19090)):
@@ -340,7 +339,7 @@ class S3LoopTests(unittest.TestCase):
             guards.append(guard)
             return guard
 
-        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 40), ("main", 10, 80)]) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 40}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 80}]) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn, \
                 patch.object(worker, "VPNJobGuard", side_effect=guard_factory), \
                 routed(SocksProxy("127.0.0.1", 19090)):
@@ -367,7 +366,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.close.assert_called_once()
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
-        with self.clocked_schedule([("main", 10, 100), ("main", 20, 0), ("main", 10, 100)]) as (clock, _):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 100}]) as (clock, _):
             order = []
             clock.on_wait = lambda: order.append("pause")
 
@@ -387,7 +386,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_100_percent_search_cancellation_drains_cuda_before_exit_cleanup(self):
-        with self.clocked_schedule([("main", 10, 100), ("main", 0, -1)]) as (clock, _):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]) as (clock, _):
             order = []
 
             def search(*_):
@@ -407,7 +406,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_initial_pause_delays_S1_until_the_positive_interval(self):
-        with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 30, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 70}]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
@@ -417,7 +416,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_pause_between_positive_intervals_performs_no_S1(self):
-        with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 30}], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -428,7 +427,7 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 2)
 
     def test_schedule_switches_effort_and_repeats_from_the_first_interval(self):
-        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 70)], batches=5) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}], batches=5) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             prepared_at = []
             side_job_at = []
@@ -438,12 +437,12 @@ class S3LoopTests(unittest.TestCase):
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             cnn.return_value.step.side_effect = lambda **_kw: (side_job_at.append(clock.now), True)[1]
             cnn.return_value._progress_epoch = 1
-            cnn.return_value.status.side_effect = lambda *_: f"Side-job | Epoch 1 | Step {cnn.return_value.step.call_count}/20"
+            cnn.return_value.status.side_effect = lambda *_: f"job-1 | Epoch 1 | Step {cnn.return_value.step.call_count}/20"
 
             def pace(*_a, **kw):
                 if clock.now % 30 == 10:
                     self.assertEqual(statuses[-1][1].split(" | ")[1:],
-                                     ["side", "42%", "00:00:20", "1"])
+                                     ["job-1", "42%", "00:00:20", "1"])
                 clock.now = kw["deadline"]
 
             pacer.wait.side_effect = pace
@@ -457,27 +456,27 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(self.search.call_count, 5)
         self.assertEqual(self.session.submit.call_count, 5)
         cnn.assert_called_once_with(self.configuration, before_log=display.clear)
-        self.assertTrue(any(now == 10 and text == "2 | side | 42% | 00:00:20 | 1"
+        self.assertTrue(any(now == 10 and text == '2 | job-1 | 42% | 00:00:20 | 1'
                             for now, text in statuses))
-        self.assertTrue(any(now == 30 and text.startswith("3 | main | 42% | ")
+        self.assertTrue(any(now == 30 and text.startswith('3 | job-0 | 42% | ')
                             for now, text in statuses), "main progress must resume after a side-job interval")
         cnn.return_value.close.assert_called_once()
 
     def test_initial_side_job_trains_before_S3_connection_or_job_wait(self):
-        with self.clocked_schedule([("side-job", 10, 70), ("main", 20, 80)]) as (clock, _), \
+        with self.clocked_schedule([{"title": 'job-1', "time": 10, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 80}]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def side_job_batch(**_kw):
                 self.factory.assert_not_called()
                 self.session.wait_job.assert_not_called()
                 self.prepare.assert_not_called()
                 display = self.progress.return_value.__enter__.return_value
-                self.assertEqual(display.update.call_args.args[0], "1 | side | 42% | 00:00:10 | 1")
+                self.assertEqual(display.update.call_args.args[0], '1 | job-1 | 42% | 00:00:10 | 1')
                 clock.now = 10
                 return True
 
             cnn.return_value._progress_epoch = 1
             cnn.return_value.step.side_effect = side_job_batch
-            cnn.return_value.status.return_value = "Side-job | Epoch 1 | Preparing"
+            cnn.return_value.status.return_value = "job-1 | Epoch 1 | Preparing"
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.prepare.assert_called_once()
         self.session.submit.assert_called_once()
@@ -485,7 +484,7 @@ class S3LoopTests(unittest.TestCase):
         cnn.return_value.close.assert_called_once()
 
     def test_role_transition_cancels_old_preparation_at_unchanged_gpu_cap(self):
-        with self.clocked_schedule([("main", 10, 70), ("side-job", 20, 70)]) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 70}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}]) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value._progress_epoch = 1
             cnn.return_value.step.side_effect = lambda **_kw: (setattr(clock, "now", 30), True)[1]
@@ -501,11 +500,11 @@ class S3LoopTests(unittest.TestCase):
         self.search.assert_called_once()
         self.session.submit.assert_called_once()
         self.assertEqual(pacer.set_utilization.call_args_list, [call(70)])
-        self.assertIn("Main effort GPU duty-cycle target: 70%", " ".join(messages.output))
-        self.assertIn("Side-job effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("job-0 effort GPU duty-cycle target: 70%", " ".join(messages.output))
+        self.assertIn("job-1 effort GPU duty-cycle target: 70%", " ".join(messages.output))
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
-        with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 30, "max_gpu_utilization": 0}], max_seconds=10) as (clock, pacer):
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
@@ -518,7 +517,7 @@ class S3LoopTests(unittest.TestCase):
         pacer.begin.assert_not_called()
 
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
-        self.configuration["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
+        self.configuration["training"]["job_sequence"] = [{"title": 'job-0', "time": 0, "max_gpu_utilization": -1}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 80}]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         cuda.assert_not_called()
@@ -530,7 +529,7 @@ class S3LoopTests(unittest.TestCase):
         self.monitor.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_authentication_and_cleans_up(self):
-        self.configuration["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
+        self.configuration["training"]["job_sequence"] = [{"title": 'job-0', "time": 0.3, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]
 
         def wait_for_exit():
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -551,7 +550,7 @@ class S3LoopTests(unittest.TestCase):
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
         from LRAEP_trainer.S3_transport import S3ConnectionError
 
-        self.configuration["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
+        self.configuration["training"]["job_sequence"] = [{"title": 'job-0', "time": 0.3, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -567,11 +566,11 @@ class S3LoopTests(unittest.TestCase):
         self.progress.return_value.__exit__.assert_called_once()
 
     def test_job_sequence_creates_one_shared_schedule(self):
-        self.configuration["training"].update(job_sequence=[("main", 60, 70)])
+        self.configuration["training"].update(job_sequence=[{"title": 'job-0', "time": 60, "max_gpu_utilization": 70}])
         with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         schedules.assert_called_once()
-        self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
+        self.assertEqual(schedules.call_args.args[0], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 70}])
         self.prepare.assert_called_once()
         self.search.assert_called_once()
         self.session.submit.assert_called_once()
@@ -582,11 +581,11 @@ class S3LoopTests(unittest.TestCase):
         with self.assertLogs(worker.LOG, level="DEBUG") as messages:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
-        self.assertIn("Main job stopped: steps=3 elapsed=", output)
+        self.assertIn("job-0 stopped: steps=3 elapsed=", output)
         self.assertTrue(all(message.startswith("DEBUG:") for message in messages.output))
         display = self.progress.return_value.__enter__.return_value
         last_status = display.update.call_args.args[0]
-        self.assertEqual(last_status.split(" | ")[:3], ["1", "main", "42%"])
+        self.assertEqual(last_status.split(" | ")[:3], ["1", 'job-0', "42%"])
         self.assertEqual(len(last_status.split(" | ")), 5)
         self.assertGreater(float(last_status.split(" | ")[4]), 0)
         for text in (last_status,):
@@ -737,16 +736,16 @@ class S3StatusTests(unittest.TestCase):
         stats = worker.S3TrainingStats(batches=2, attempts=512, submitted=3,
                                          accepted=2, rejected=1, stale=4)
         status = worker.S3_status(stats, cfg, 3723, 75)
-        self.assertEqual(status, "Main | Step 2 | elapsed=01:02:03 | GPU 75%")
+        self.assertEqual(status, 'job-0 | Step 2 | elapsed=01:02:03 | GPU 75%')
 
     def test_configured_batch_limit_has_true_step_progress(self):
         status = worker.S3_status(worker.S3TrainingStats(batches=2), TrainingConfig(), 1, 75,
                                     max_batches=10)
-        self.assertEqual(status, "Main | Step 2/10 (20.0%) | elapsed=00:00:01 | GPU 75%")
+        self.assertEqual(status, 'job-0 | Step 2/10 (20.0%) | elapsed=00:00:01 | GPU 75%')
 
     def test_missing_gpu_utilization_and_unstarted_work(self):
         status = worker.S3_status(worker.S3TrainingStats(), TrainingConfig(), 0, None)
-        self.assertEqual(status, "Main | Step 0 | elapsed=00:00:00 | GPU N/A")
+        self.assertEqual(status, 'job-0 | Step 0 | elapsed=00:00:00 | GPU N/A')
 
 
 class LocalGPUIntegrationTests(unittest.TestCase):

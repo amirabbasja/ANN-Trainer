@@ -10,7 +10,6 @@ import time
 import unittest
 
 from LRAEP_trainer.config import DEFAULT_CONFIG, save_config
-from LRAEP_trainer.config_export import write_open_text
 
 
 ROOT = Path(__file__).resolve().parents[3] / 'LRAEP-WR-Trainer'
@@ -31,8 +30,7 @@ class NotebookDisplayTests(unittest.TestCase):
             config['S3'].update(protocol='WR', host='fixture.example', WR_S2='fixture-S2')
             config['vpn'].update(enabled=True, link='vless://fixture@example.invalid:443')
             config['side_job']['repo_url'] = 'https://huggingface.co/datasets/fixture/thesis'
-            config['training']['job_sequence'] = [['side-job', 2, 100], ['main', 1, 100]]
-            write_open_text(directory / '.env', 'notebook kernel fixture key')
+            config['training']['job_sequence'] = [{"title": 'job-1', "time": 2, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 1, "max_gpu_utilization": 100}]
             save_config(directory / 'config.json', config)
             manager = KernelManager(connection_file=str(directory / 'kernel.json'))
             manager.kernel_spec.argv = [sys.executable, '-m', 'ipykernel_launcher', '-f', '{connection_file}']

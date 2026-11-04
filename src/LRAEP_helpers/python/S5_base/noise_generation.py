@@ -1,3 +1,4 @@
+from LRAEP_trainer.noise_domains import tensor_domain, noise_draw
 from math import ceil
 
 import numpy as np
@@ -68,41 +69,21 @@ class NoiseGenerator:
         if B_cols < self.noise_rank:
             raise ValueError(f"B_cols must be greater than or equal to noise_rank, got {B_cols}")
 
-        seed_A = (
-            torch.frombuffer(bytearray(b"A_tensor" + b"\x00" * 24), dtype=torch.uint8)
-            .numpy()
-            .tobytes()
-        )
-        seed_B = (
-            torch.frombuffer(bytearray(b"B_tensor" + b"\x00" * 24), dtype=torch.uint8)
-            .numpy()
-            .tobytes()
-        )
-
-        A_L = self.__generate_uniform_random_matrix(seed_A, key_A, A_rows)
-        A_R = self.__generate_permutation_matrix(
-            seed_A,
-            key_A,
-            self.noise_rank,
-            common_dim,
-            assign_columns=True,
-        )
-        B_L = self.__generate_permutation_matrix(
-            seed_B,
-            key_B,
-            common_dim,
-            self.noise_rank,
-            assign_columns=False,
-        )
-        B_R = self.__generate_uniform_random_matrix(seed_B, key_B, B_cols).T
+        with tensor_domain() as domain:
+            A_L = self.__generate_uniform_random_matrix(domain, key_A, A_rows)
+            A_R = self.__generate_permutation_matrix(
+                domain, key_A, self.noise_rank, common_dim, assign_columns=True,
+            )
+        with tensor_domain(True) as domain:
+            B_L = self.__generate_permutation_matrix(
+                domain, key_B, common_dim, self.noise_rank, assign_columns=False,
+            )
+            B_R = self.__generate_uniform_random_matrix(domain, key_B, B_cols).T
 
         return A_L, A_R, B_L, B_R
 
     def __get_random_hash(self, index: int, seed: bytes, key: bytes, prepend_index: int) -> bytes:
-        message_prepend = np.zeros(8, dtype=np.int32)
-        message_prepend[prepend_index] = 1 + index
-        message_bytes = message_prepend.tobytes() + seed
-        return CNN_3ekalb(message_bytes, key=key).digest()
+        return noise_draw(CNN_3ekalb, index, seed, key, prepend_index)
 
     def __generate_uniform_random_matrix(
         self,

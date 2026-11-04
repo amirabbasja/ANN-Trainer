@@ -11,7 +11,6 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import LRAEP_trainer
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config, save_config
-from LRAEP_trainer.config_export import write_open_text
 from LRAEP_trainer import gpu_pacing, S3_training as worker
 
 
@@ -20,7 +19,6 @@ class GpuLimitTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.path = Path(self.temporary.name) / "config.json"
-        write_open_text(self.path.parent / ".env", "unit test text key")
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["vpn"]["link"] = "vless://dummy@example.invalid:443"
         self.config["side_job"]["repo_url"] = "https://huggingface.co/datasets/test-owner/test-thesis"
@@ -29,17 +27,16 @@ class GpuLimitTests(unittest.TestCase):
         self.config["training"].pop("job_sequence")
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        self.assertEqual(training["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertEqual(training["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertNotIn("side_job_effort", training)
         self.assertNotIn("max_gpu_utilization", training)
 
     def test_encrypted_config_preserves_mixed_job_sequence(self):
-        self.config["training"]["job_sequence"] = [
-            ["main", 0.5, 100], ["side-job", 2, 10], ["main", 3, 0], ["side-job", 0, -1]]
+        self.config["training"]["job_sequence"] = [{"title": 'job-0', "time": 0.5, "max_gpu_utilization": 100}, {"title": 'job-1', "time": 2, "max_gpu_utilization": 10}, {"title": 'job-0', "time": 3, "max_gpu_utilization": 0}, {"title": 'job-1', "time": 0, "max_gpu_utilization": -1}]
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
         self.assertEqual(training["job_sequence"],
-                         [("main", 0.5, 100), ("side-job", 2, 10), ("main", 3, 0), ("side-job", 0, -1)])
+                         [{"title": 'job-0', "time": 0.5, "max_gpu_utilization": 100}, {"title": 'job-1', "time": 2, "max_gpu_utilization": 10}, {"title": 'job-0', "time": 3, "max_gpu_utilization": 0}, {"title": 'job-1', "time": 0, "max_gpu_utilization": -1}])
         self.assertNotIn("main_effort", training)
         self.assertNotIn("side_job_effort", training)
 
@@ -48,13 +45,13 @@ class GpuLimitTests(unittest.TestCase):
         self.config["training"]["max_gpu_utilization"] = 70
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        self.assertEqual(training["job_sequence"], [("main", 60, 70)])
+        self.assertEqual(training["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 70}])
         self.assertNotIn("max_gpu_utilization", training)
 
     def test_explicit_job_sequence_takes_precedence_over_legacy_limit(self):
-        self.config["training"].update(job_sequence=[["main", 30, 40]], max_gpu_utilization=70)
+        self.config["training"].update(job_sequence=[{"title": 'job-0', "time": 30, "max_gpu_utilization": 40}], max_gpu_utilization=70)
         save_config(self.path, self.config)
-        self.assertEqual(load_config(self.path)["training"]["job_sequence"], [("main", 30, 40)])
+        self.assertEqual(load_config(self.path)["training"]["job_sequence"], [{"title": 'job-0', "time": 30, "max_gpu_utilization": 40}])
 
     def test_invalid_legacy_limits_are_rejected_even_with_main_schedule(self):
         for value in (0, 101, -1, True, 70.5, "70", None):
@@ -63,15 +60,15 @@ class GpuLimitTests(unittest.TestCase):
                 save_config(self.path, self.config)
 
     def test_job_sequence_validation_applies_before_encrypted_save(self):
-        malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ["main", 1, 80],
-                     [[1, 80]], [["main"]], [["main", 1]], [["main", 1, 80, 2, 0]],
+        malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ['job-0', 1, 80],
+                     [[1, 80]], [['job-0']], [['job-0', 1]], [['job-0', 1, 80, 2, 0]],
                      [["PRIVATE_SEQUENCE", 1, 80]], [["MAIN", 1, 80]], [["Side-job", 1, 80]],
                      [[True, 1, 80]], [[None, 1, 80]], [[[], 1, 80]],
-                     [["main", 0, 80]], [["side-job", -1, -1]], [["main", True, 80]],
-                     [["main", "1", 80]], [["main", float("inf"), 80]],
-                     [["side-job", float("nan"), 80]], [["main", 1, -2]],
-                     [["side-job", 1, 101]], [["main", 1, True]], [["main", 1, 70.5]],
-                     [["main", 1, "PRIVATE_SEQUENCE"]])
+                     [{"title": 'job-0', "time": 0, "max_gpu_utilization": 80}], [{"title": 'job-1', "time": -1, "max_gpu_utilization": -1}], [{"title": 'job-0', "time": True, "max_gpu_utilization": 80}],
+                     [{"title": 'job-0', "time": "1", "max_gpu_utilization": 80}], [{"title": 'job-0', "time": float("inf"), "max_gpu_utilization": 80}],
+                     [{"title": 'job-1', "time": float("nan"), "max_gpu_utilization": 80}], [{"title": 'job-0', "time": 1, "max_gpu_utilization": -2}],
+                     [{"title": 'job-1', "time": 1, "max_gpu_utilization": 101}], [{"title": 'job-0', "time": 1, "max_gpu_utilization": True}], [{"title": 'job-0', "time": 1, "max_gpu_utilization": 70.5}],
+                     [{"title": 'job-0', "time": 1, "max_gpu_utilization": "PRIVATE_SEQUENCE"}])
         for value in malformed:
             config = copy.deepcopy(self.config)
             config["training"]["job_sequence"] = value
@@ -90,16 +87,16 @@ class GpuLimitTests(unittest.TestCase):
     def test_effort_defaults_are_independent(self):
         save_config(self.path, self.config)
         training = load_config(self.path)["training"]
-        training["job_sequence"].append(("side-job", 1, 100))
+        training["job_sequence"].append(('job-1', 1, 100))
         again = load_config(self.path)["training"]
-        self.assertEqual(again["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertEqual(again["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertNotIn("side_job_effort", again)
         exported = copy.deepcopy(DEFAULT_CONFIG["training"])
         try:
             DEFAULT_CONFIG["training"]["job_sequence"][0][2] = 99
             self.config.pop("training")
             save_config(self.path, self.config)
-            self.assertEqual(load_config(self.path)["training"]["job_sequence"][0], ("main", 60, 80))
+            self.assertEqual(load_config(self.path)["training"]["job_sequence"][0], ('job-0', 60, 80))
         finally:
             DEFAULT_CONFIG["training"] = exported
 
@@ -164,7 +161,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.stack.enter_context(patch.object(LRAEP_trainer, "primitives", primitives, create=True))
 
     def test_wr_S3_paces_after_submitting_and_before_the_next_batch(self):
-        self.config["training"].update(max_batches=2, job_sequence=[("main", 60, 60)])
+        self.config["training"].update(max_batches=2, job_sequence=[{"title": 'job-0', "time": 60, "max_gpu_utilization": 60}])
         order = []
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
         self.session.submit.side_effect = lambda *_: (
@@ -231,7 +228,7 @@ class WRS3EffortTests(unittest.TestCase):
             yield clock, pacer
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
-        with self.clocked_schedule([("main", 10, 100), ("main", 20, 0), ("main", 10, 100)]) as (clock, _):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 100}]) as (clock, _):
             order = []
             clock.on_wait = lambda: order.append("pause")
 
@@ -251,7 +248,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_100_percent_search_cancellation_drains_cuda_before_exit_cleanup(self):
-        with self.clocked_schedule([("main", 10, 100), ("main", 0, -1)]) as (clock, _):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]) as (clock, _):
             order = []
 
             def search(*_):
@@ -271,7 +268,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_initial_pause_delays_S1_until_the_positive_interval(self):
-        with self.clocked_schedule([("main", 30, 0), ("main", 60, 70)]) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 30, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 70}]) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             self.assertEqual(worker.run_S3_training(self.config), 0)
@@ -281,7 +278,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_pause_between_positive_intervals_performs_no_S1(self):
-        with self.clocked_schedule([("main", 10, 80), ("main", 20, 0), ("main", 10, 30)], batches=2) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 30}], batches=2) as (clock, pacer):
             prepared_at = []
             self.prepare.side_effect = lambda *_a, **_kw: prepared_at.append(clock.now)
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -292,7 +289,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.assertEqual(self.session.submit.call_count, 2)
 
     def test_mixed_sequence_switches_effort_and_repeats_from_the_first_interval(self):
-        with self.clocked_schedule([("main", 10, 80), ("side-job", 20, 70)], batches=5) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}], batches=5) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             prepared_at = []
             trained_at = []
@@ -315,7 +312,7 @@ class WRS3EffortTests(unittest.TestCase):
                             for args, _ in display.update.call_args_list))
 
     def test_initial_side_job_trains_before_S3_connection_or_job_wait(self):
-        with self.clocked_schedule([("side-job", 10, 100), ("main", 20, 100)]) as (clock, _), \
+        with self.clocked_schedule([{"title": 'job-1', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 100}]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             def train_batch(**kwargs):
                 self.factory.assert_not_called()
@@ -335,7 +332,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.session.submit.assert_called_once()
 
     def test_unlimited_sequence_repeats_all_jobs_until_explicitly_stopped(self):
-        schedule = [('side-job', 2, 100), ('main', 3, 100), ('main', 1, 50)]
+        schedule = [{"title": 'job-1', "time": 2, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 3, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 1, "max_gpu_utilization": 50}]
         with self.clocked_schedule(schedule, batches=0, max_seconds=0) as (clock, pacer), \
                 patch('LRAEP_trainer.side_job.SideJob') as cnn:
             trained_at = []
@@ -358,7 +355,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.assertEqual(clock.now, 18)
 
     def test_side_job_only_schedule_never_connects_or_submits_S1_work(self):
-        with self.clocked_schedule([("side-job", 10, 100), ("main", 0, -1)], batches=0) as (clock, pacer), \
+        with self.clocked_schedule([{"title": 'job-1', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}], batches=0) as (clock, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value.step.return_value = True
             pacer.wait.side_effect = lambda *_a, **kw: setattr(clock, "now", kw["deadline"])
@@ -371,7 +368,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.session.submit.assert_not_called()
 
     def test_paused_side_job_does_not_construct_a_cnn(self):
-        with self.clocked_schedule([("side-job", 10, 0), ("main", 20, 100)]) as (clock, _), \
+        with self.clocked_schedule([{"title": 'job-1', "time": 10, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 100}]) as (clock, _), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(clock.now, 10)
@@ -379,7 +376,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.prepare.assert_called_once()
 
     def test_side_job_failure_closes_cnn_and_telemetry(self):
-        with self.clocked_schedule([("side-job", 10, 100)]) as (_, pacer), \
+        with self.clocked_schedule([{"title": 'job-1', "time": 10, "max_gpu_utilization": 100}]) as (_, pacer), \
                 patch("LRAEP_trainer.side_job.SideJob") as cnn:
             cnn.return_value.step.side_effect = RuntimeError("fixture training failure")
             with self.assertRaisesRegex(RuntimeError, "fixture training failure"):
@@ -390,7 +387,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.factory.assert_not_called()
 
     def test_zero_effort_until_time_limit_does_not_initialize_or_mine(self):
-        with self.clocked_schedule([("main", 30, 0)], max_seconds=10) as (clock, pacer):
+        with self.clocked_schedule([{"title": 'job-0', "time": 30, "max_gpu_utilization": 0}], max_seconds=10) as (clock, pacer):
             self.assertEqual(worker.run_S3_training(self.config), 0)
         self.assertEqual(clock.now, 10)
         worker.load_official_helpers.assert_not_called()
@@ -403,7 +400,7 @@ class WRS3EffortTests(unittest.TestCase):
         pacer.begin.assert_not_called()
 
     def test_terminal_first_interval_exits_before_helpers_cuda_or_sessions(self):
-        self.config["training"]["job_sequence"] = [("main", 0, -1), ("main", 60, 80)]
+        self.config["training"]["job_sequence"] = [{"title": 'job-0', "time": 0, "max_gpu_utilization": -1}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 80}]
         with patch.object(worker.torch.cuda, "is_available") as cuda:
             self.assertEqual(worker.run_S3_training(self.config), 0)
         cuda.assert_not_called()
@@ -415,7 +412,7 @@ class WRS3EffortTests(unittest.TestCase):
         self.monitor.assert_not_called()
 
     def test_terminal_interval_interrupts_blocked_authentication_and_cleans_up(self):
-        self.config["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
+        self.config["training"]["job_sequence"] = [{"title": 'job-0', "time": 0.3, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]
 
         def wait_for_exit():
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -436,7 +433,7 @@ class WRS3EffortTests(unittest.TestCase):
     def test_terminal_interval_interrupts_blocked_share_submission_and_cleans_up(self):
         from LRAEP_trainer.S3_transport import S3ConnectionError
 
-        self.config["training"]["job_sequence"] = [("main", 0.3, 80), ("main", 0, -1)]
+        self.config["training"]["job_sequence"] = [{"title": 'job-0', "time": 0.3, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]
 
         def wait_for_exit(*_):
             stopped = self.factory.call_args.kwargs["stop_event"]
@@ -452,11 +449,11 @@ class WRS3EffortTests(unittest.TestCase):
         self.progress.return_value.__exit__.assert_called_once()
 
     def test_main_jobs_use_one_shared_sequence(self):
-        self.config["training"].update(job_sequence=[("main", 60, 70)])
+        self.config["training"].update(job_sequence=[{"title": 'job-0', "time": 60, "max_gpu_utilization": 70}])
         with patch.object(worker, "JobSequence", wraps=worker.JobSequence) as schedules:
             self.assertEqual(worker.run_S3_training(self.config), 0)
         schedules.assert_called_once()
-        self.assertEqual(schedules.call_args.args[0], [("main", 60, 70)])
+        self.assertEqual(schedules.call_args.args[0], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 70}])
         self.prepare.assert_called_once()
         self.search.assert_called_once()
         self.session.submit.assert_called_once()

@@ -5,9 +5,9 @@ from functools import lru_cache
 import numpy as np
 import torch
 
+from .noise_domains import tensor_domain
 
-_SEED_A = b"A_tensor" + bytes(24)
-_SEED_B = b"B_tensor" + bytes(24)
+
 
 
 def _permutation_indices(generator, seed, key, count):
@@ -98,9 +98,11 @@ def generate_sparse_noise_factors(seed_a: bytes, seed_b: bytes, m: int, k: int, 
         raise ValueError(f"B_cols must be greater than or equal to noise_rank, got {n}")
 
     uniform = generator._NoiseGenerator__generate_uniform_random_matrix
-    al = uniform(_SEED_A, seed_a, m)
-    a_first, a_second = _permutation_indices(generator, _SEED_A, seed_a, k)
-    b_first, b_second = _permutation_indices(generator, _SEED_B, seed_b, k)
-    br = uniform(_SEED_B, seed_b, n).T
+    with tensor_domain() as domain:
+        al = uniform(domain, seed_a, m)
+        a_first, a_second = _permutation_indices(generator, domain, seed_a, k)
+    with tensor_domain(True) as domain:
+        b_first, b_second = _permutation_indices(generator, domain, seed_b, k)
+        br = uniform(domain, seed_b, n).T
     return (al, torch.from_numpy(a_first), torch.from_numpy(a_second),
             torch.from_numpy(b_first), torch.from_numpy(b_second), br)

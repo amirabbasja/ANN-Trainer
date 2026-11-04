@@ -1,4 +1,4 @@
-"""Plain source persistence and read-only support for legacy encrypted configs."""
+"""Section-only persistence and read-only support for legacy encrypted configs."""
 
 import copy
 import json
@@ -16,6 +16,7 @@ from LRAEP_trainer.config import (
 from LRAEP_trainer.config_crypto import (
     EncryptionError, decode_string, encode_string, generate_key,
 )
+from LRAEP_trainer.config_export import decode_config_document
 
 
 class StringEncryptionTests(unittest.TestCase):
@@ -93,14 +94,17 @@ class ConfigPersistenceTests(unittest.TestCase):
             "ciphertext": encode_string(raw, self.key),
         }))
 
-    def test_save_writes_pretty_plain_json_without_generating_keys(self):
+    def test_save_writes_pretty_json_with_only_s3_encrypted_without_generating_keys(self):
         self.settings["S3"]["password"] = "رمز عبور"
         original = copy.deepcopy(self.settings)
         save_config(self.path, self.settings)
         stored = self.path.read_text()
-        self.assertEqual(json.loads(stored), original)
+        self.assertEqual(decode_config_document(json.loads(stored)), original)
+        self.assertNotIn("S3", json.loads(stored))
+        self.assertIn("S_3", json.loads(stored))
         self.assertIn('\n  "version": 1,\n', stored)
-        self.assertIn("رمز عبور", stored)
+        self.assertNotIn("رمز عبور", stored)
+        self.assertIn("PRIVATE-NODE-PASSWORD", stored)
         self.assertTrue(stored.endswith("\n"))
         self.assertEqual(read_config(self.path), original)
         self.assertEqual(self.settings, original)
@@ -151,7 +155,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         self.write_legacy()
         original = read_config(self.path, key=self.key)
         save_config(self.path, original)
-        self.assertEqual(json.loads(self.path.read_text()), self.settings)
+        self.assertEqual(decode_config_document(json.loads(self.path.read_text())), self.settings)
         self.assertEqual(read_config(self.path), self.settings)
         self.assertEqual(set(self.directory.iterdir()), {self.path})
 
@@ -208,7 +212,7 @@ class ConfigPersistenceTests(unittest.TestCase):
         expected = copy.deepcopy(self.settings)
         expected["S3"]["KEX"]["port"] = 12345
         expected["training"]["max_batches"] = 3
-        self.assertEqual(json.loads(self.path.read_text()), expected)
+        self.assertEqual(decode_config_document(json.loads(self.path.read_text())), expected)
         self.assertEqual(read_config(self.path), expected)
         self.assertEqual(changes, original)
         self.assertEqual(set(self.directory.iterdir()), {self.path})

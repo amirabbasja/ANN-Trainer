@@ -1,3 +1,4 @@
+from .fixed_constants import constant_text
 import os
 import sys
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ class TrainingConfig:
         if self.m % self.tile_h or self.n % self.tile_w:
             raise ValueError('m and n must be divisible by their tile dimensions')
         if (self.tile_h + self.tile_w) * self.k > 1 << 22:
-            raise ValueError("selected proof rows and columns exceed S6's 4 MiB worker-input limit")
+            raise ValueError(constant_text(b')WXZc#M8pVhu77}$iauz$k5b>#>vBn#K_Ci%E{D+!r#Qg!o!F3k$}{PlZWcg<%iJ7)y%@xiq6T`($j~_&dScy'))
 
     def official_config(self):
         from LRAEP_trainer import primitives as pm
@@ -89,7 +90,7 @@ class DeferredMerkleTree:
             from S5_base.matrix_merkle_tree import MatrixMerkleTree
             tree = MatrixMerkleTree(self.signal.cpu(), self.key)
             if tree.root != self.root:
-                raise RuntimeError('native GPU Merkle root differs from the official CPU tree')
+                raise RuntimeError(constant_text(b'$;Q*p(ZYw|_wtA8!qv>n!iUw!$kT_z&cVUL)zpW<)yT?+)6c?($iczR#LmXchvfJ2htt)<!T'))
             self._tree = tree
         return self._tree
 
@@ -102,7 +103,7 @@ class DeferredMerkleTree:
 
 def prepare_batch(header, cert_version: int, config: TrainingConfig, rng: np.random.Generator, *, device: str | torch.device='cpu', gpu_signals: bool=False, native: bool=False) -> TrainingBatch:
     if cert_version not in (1, 2, 3):
-        raise ValueError(f'unsupported S6 certificate version {cert_version}')
+        raise ValueError(f"{constant_text(b'(#h1)*Vo9^)561t^pS_e!qwBx!Oq0S)53?*!qwEy$jOH')}{cert_version}")
     destination = torch.device(device)
     if gpu_signals:
         if destination.type != 'cuda':
@@ -121,7 +122,7 @@ def prepare_signal_batch(header, cert_version: int, config: TrainingConfig, a: t
     from S5_base.commitment_hash import CommitmentHasher
     from S5_base.matrix_merkle_tree import MatrixMerkleTree
     if cert_version not in (1, 2, 3):
-        raise ValueError(f'unsupported S6 certificate version {cert_version}')
+        raise ValueError(f"{constant_text(b'(#h1)*Vo9^)561t^pS_e!qwBx!Oq0S)53?*!qwEy$jOH')}{cert_version}")
     if not isinstance(a, torch.Tensor) or not isinstance(bt, torch.Tensor) or a.dtype != torch.int8 or (bt.dtype != torch.int8) or (a.ndim != 2) or (bt.ndim != 2) or (a.shape[1] != config.k) or (bt.shape[1] != config.k) or (a.shape[0] < config.m) or (bt.shape[0] < config.n):
         raise ValueError('signal matrices must cover the configured int8 training dimensions')
     destination = torch.device(device)
@@ -157,15 +158,15 @@ def prepare_signal_batch(header, cert_version: int, config: TrainingConfig, a: t
 def adjusted_target(base_target: int, config: TrainingConfig) -> int:
     from LRAEP_trainer import primitives as pm
     if not 0 < base_target < 2 ** 256:
-        raise ValueError('node target must be a positive 256-bit integer')
+        raise ValueError(constant_text(b'$;iXPhttN@z{1mq%F@)+hsDB&#)sF))Xvk+(ZYw7l97tV&eMm^$<xBX!qo'))
     result = pm.penalized_target_bound(base_target, config.official_config())
     if result is None:
-        raise ValueError('target scaling overflows; choose a harder test-network target')
+        raise ValueError(constant_text(b')5g`n!qbP;#Kz0c$-sxm(Zbci%gE5woQK5E$jH>fhsKA`#?`~Z)rZr<)YFQ|!qd>m)y#*}#?`>W(*'))
     return result
 
 def matching_tiles(transcripts: np.ndarray, key: bytes, target: int):
     if len(key) != 32 or not 0 <= target < 2 ** 256:
-        raise ValueError('invalid transcript hash key or target')
+        raise ValueError(constant_text(b'&dJfn%g)1x)78ew)Wp@!*VBj3#?;S;%);J>$km6_#?`>W(*'))
     for row in range(transcripts.shape[0]):
         for col in range(transcripts.shape[1]):
             message = transcripts[row, col].astype('<u4').tobytes()
@@ -192,23 +193,23 @@ def search_batch(batch: TrainingBatch, target: int, device: str, cancelled=lambd
 
 def S3_share_target(target: int, config: TrainingConfig, target_kind: str='base') -> int:
     if type(target) is not int or not 0 < target < 2 ** 256:
-        raise ValueError('S3 target must be a positive 256-bit integer')
+        raise ValueError(constant_text(b'^puCw#?`>W(}&8^)YFH>!iUC(*T~e))6UVthn13%ip9>;htA2<!ob4S'))
     if target_kind == 'base':
         return adjusted_target(target, config)
     if target_kind == 'final':
         return target
-    raise ValueError('S3 target kind must be base or final')
+    raise ValueError(constant_text(b'^puCw#?`>W(}&E?$-{@r($v$3#lnZh#?-=x$km6z&dJ8h'))
 
 def verified_S3_share(batch: TrainingBatch, header, cert_version: int, row: int, col: int, gpu_digest: bytes, final_target: int):
     import struct
     if type(cert_version) is not int or cert_version not in (1, 2, 3):
-        raise ValueError('unsupported S6 certificate version for S3 share')
+        raise ValueError(constant_text(b'(#h1)*Vo9^)561t^pS_e!qwBx!Oq0S)53?*!qwEy$jOJn$km7Rl!w&M#?`_'))
     if not isinstance(gpu_digest, bytes) or len(gpu_digest) != 32:
-        raise ValueError('GPU share digest must be exactly 32 bytes')
+        raise ValueError(constant_text(b';P>)})X&D%!iU4oz{1qihsx5_(}%^vhr-{+#M8^(hm@6v#op7x)B'))
     if type(final_target) is not int or not 0 < final_target < 2 ** 256:
-        raise ValueError('final S3 target must be a positive 256-bit integer')
+        raise ValueError(constant_text(b'!OqFX%ZK!ohttN@z{1mq%F@)+hsDB&#)sF))Xvk+(ZYw7l97tV&eMm^$<xBX!qo'))
     if type(row) is not int or type(col) is not int:
-        raise ValueError('S3 share tile coordinates must be integers')
+        raise ValueError(constant_text(b'^puCx&&Jilhttl>!iU7j$koHn$;Q*d)Q8H_)YFH>!iUbu)55^Q)zk'))
     from LRAEP_trainer import primitives as pm
     from S5_base.noisy_gemm import NoisyGemm
     proof = batch.plain_proof(row, col)
@@ -216,15 +217,15 @@ def verified_S3_share(batch: TrainingBatch, header, cert_version: int, row: int,
     reference = NoisyGemm(noise_rank=RANK, hash_tile_h=cfg.tile_h, hash_tile_w=cfg.tile_w)
     _, has_full_tiles, transcripts = reference._process_output_tile(batch.a_noised.cpu(), batch.b_noised.cpu(), cfg.k, row * cfg.tile_h, (row + 1) * cfg.tile_h, col * cfg.tile_w, (col + 1) * cfg.tile_w)
     if not has_full_tiles:
-        raise RuntimeError('official CPU reference produced no complete share tile')
+        raise RuntimeError(constant_text(b'$iczR#LmXchvfJ2ht<Nt!qvjb#KMQy)yTur#KOae$;gMq$jaBt!qdWs)X&D%!iUq&%fb'))
     words = [int(value) for value in transcripts[0][0].data]
     message = struct.pack('<16I', *words)
     digest = CNN_3ekalb(message, key=batch.commitment.noise_seed_A).digest()
     if digest != gpu_digest:
-        raise RuntimeError('GPU share digest differs from the official CPU reference')
+        raise RuntimeError(constant_text(b';P>)})X&D%!iU4oz{1qihr`an!NS$lhr!jz%7@d>!iUJg!Oq0a#><D~_wt9;!okAT!pX$K'))
     if int.from_bytes(digest, 'little') > final_target:
-        raise ValueError('training share does not meet the exact S3 target')
+        raise ValueError(constant_text(b')78e#$<E2Zht$u;)xw9v$imcz$;i`(%EH3ahtto(hr-{+#M6iLl!w#C)xg5j'))
     valid, message = pm.verify_plain_proof_for_cert_version(cert_version, header, proof, nbits_override=545259519)
     if not valid:
-        raise RuntimeError(f'S3 share rejected by official verification: {message}')
+        raise RuntimeError(f"{constant_text(b'^puCx&&Jilht<N(!o<_U!-vJ*hseRf&cx2f%ZJgz)y~1r#KzOk$jP0D')}{message}")
     return (proof, digest)

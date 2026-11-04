@@ -223,7 +223,7 @@ class ConfigDispatchTests(unittest.TestCase):
     def test_solo_mode_reads_file_credentials_and_cli_overrides(self):
         self.settings["mode"] = "solo"
         self.settings["training"].update(m=128, n=128, max_batches=2)
-        self.settings["training"]["job_sequence"] = [["main", 10, 65], ["side-job", 3, 15], ["main", 5, 0], ["main", 20, 35]]
+        self.settings["training"]["job_sequence"] = [{"title": 'job-0', "time": 10, "max_gpu_utilization": 65}, {"title": 'job-1', "time": 3, "max_gpu_utilization": 15}, {"title": 'job-0', "time": 5, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 35}]
         self.settings["node"].update(username="file-user", password="file-password",
                                     address="file-address")
         self.write_config()
@@ -234,7 +234,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.assertEqual(args.m, 512)
         self.assertEqual(args.n, 128)
         self.assertEqual(args.max_batches, 2)
-        self.assertEqual(args.job_sequence, [("main", 10, 65), ("side-job", 3, 15), ("main", 5, 0), ("main", 20, 35)])
+        self.assertEqual(args.job_sequence, [{"title": 'job-0', "time": 10, "max_gpu_utilization": 65}, {"title": 'job-1', "time": 3, "max_gpu_utilization": 15}, {"title": 'job-0', "time": 5, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 35}])
         self.assertFalse(hasattr(args, "side_job_effort"))
         self.assertEqual(args.rpc_username, "file-user")
         self.assertEqual(args.rpc_password, "file-password")
@@ -248,7 +248,7 @@ class ConfigDispatchTests(unittest.TestCase):
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main(["--config", str(self.file), "train", "--max-gpu-utilization", "60"]), 0)
         self.assertEqual(train.call_args.args[0].max_gpu_utilization, 60)
-        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 60, 60)])
+        self.assertEqual(train.call_args.args[0].job_sequence, [{"title": 'job-0', "time": 60, "max_gpu_utilization": 60}])
         with patch.object(cli, "load_official_helpers") as helpers, self.assertLogs(cli.LOG, level="ERROR"):
             self.assertEqual(cli.main(["--config", str(self.file), "train", "--max-gpu-utilization", "101"]), 1)
         helpers.assert_not_called()
@@ -259,9 +259,9 @@ class ConfigDispatchTests(unittest.TestCase):
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main([
                 "--config", str(self.file), "train", "--job-sequence",
-                '[["main", 2, 70], ["side-job", 3, 0], ["main", 0, -1]]',
+                '[{"title": "job-0", "time": 2, "max_gpu_utilization": 70}, {"title": "job-1", "time": 3, "max_gpu_utilization": 0}, {"title": "job-0", "time": 0, "max_gpu_utilization": -1}]',
             ]), 0)
-        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 2, 70), ("side-job", 3, 0), ("main", 0, -1)])
+        self.assertEqual(train.call_args.args[0].job_sequence, [{"title": 'job-0', "time": 2, "max_gpu_utilization": 70}, {"title": 'job-1', "time": 3, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 0, "max_gpu_utilization": -1}])
         self.assertFalse(hasattr(train.call_args.args[0], "max_gpu_utilization"))
 
     def test_solo_effort_override_is_validated_before_network_or_helpers(self):
@@ -269,8 +269,8 @@ class ConfigDispatchTests(unittest.TestCase):
         self.settings["vpn"].update(enabled=True, link="vless://SECRET@vpn.example:443")
         self.write_config()
         for schedule in ("not-json", "[]", "[[0, 70]]", '[["MAIN", 1, 80]]',
-                         '[["main", 0, 70]]', '[["side-job", 1, 101]]',
-                         '[["main", 1, true]]', '[["main", 1, -2]]'):
+                         '[{"title": "job-0", "time": 0, "max_gpu_utilization": 70}]', '[{"title": "job-1", "time": 1, "max_gpu_utilization": 101}]',
+                         '[{"title": "job-0", "time": 1, "max_gpu_utilization": true}]', '[{"title": "job-0", "time": 1, "max_gpu_utilization": -2}]'):
             with self.subTest(schedule=schedule), \
                     patch("LRAEP_trainer.vpn.ManagedVPN") as vpn, \
                     patch.object(cli, "load_official_helpers") as helpers, \
@@ -290,7 +290,7 @@ class ConfigDispatchTests(unittest.TestCase):
                 patch.object(cli, "train") as train, \
                 self.assertLogs(cli.LOG, level="ERROR") as messages:
             self.assertEqual(cli.main([
-                "--config", str(self.file), "train", "--job-sequence", '[["main", 1, 70]]',
+                "--config", str(self.file), "train", "--job-sequence", '[{"title": "job-0", "time": 1, "max_gpu_utilization": 70}]',
                 "--max-gpu-utilization", "60",
             ]), 1)
         self.assertIn("use only one", " ".join(messages.output))
@@ -300,11 +300,11 @@ class ConfigDispatchTests(unittest.TestCase):
     def test_solo_without_configuration_uses_default_effort_schedule(self):
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main(["train"]), 0)
-        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertEqual(train.call_args.args[0].job_sequence, [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertFalse(hasattr(train.call_args.args[0], "side_job_effort"))
 
     def test_immediate_exit_skips_network_helpers_and_S1_entrypoints(self):
-        self.settings["training"]["job_sequence"] = [["main", 0, -1]]
+        self.settings["training"]["job_sequence"] = [{"title": 'job-0', "time": 0, "max_gpu_utilization": -1}]
         # The requested exit also bypasses unavailable S1 credentials/endpoints.
         self.settings["S3"].update(host="", KEX_uname="", WR_S2="")
         self.write_config()
@@ -329,7 +329,7 @@ class ConfigDispatchTests(unittest.TestCase):
         self.write_config()
         with patch.object(cli, "load_official_helpers"), patch.object(cli, "train", return_value=0) as train:
             self.assertEqual(cli.main(["--config", str(self.file), "train"]), 0)
-        self.assertEqual(train.call_args.args[0].job_sequence, [("main", 60, 65)])
+        self.assertEqual(train.call_args.args[0].job_sequence, [{"title": 'job-0', "time": 60, "max_gpu_utilization": 65}])
 
     def test_solo_mode_without_subcommand_runs_solo_training(self):
         self.settings["mode"] = "solo"

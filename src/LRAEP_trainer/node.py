@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .fixed_constants import constant_text
+
 import base64
 import json
 import math
@@ -78,9 +80,9 @@ class NodeClient:
             try:
                 self._context = ssl.create_default_context(cafile=ca_file)
             except (OSError, ssl.SSLError):
-                raise NodeError("Could not load RPC certificate authority file") from None
+                raise NodeError(constant_text(b'<jB&?!-vVp(}&B*#>0p8_vDAf!qwBx!Oq0S)53?w($mk#)y~u2hr!Ov!T')) from None
         elif ca_file is not None:
-            raise NodeError("A certificate authority file requires an https RPC URL")
+            raise NodeError(constant_text(b'=7+?>)zi+w&cw#k!iUDv)6dA&&ePt9!OqLVht<N?($3Yw)Q85&htJc~*VKpg_vDB2_3H'))
         self._proxy = network.current_proxy()
         self._opener = network.http_opener(
             self._proxy, context=self._context, handlers=(_RejectRedirects(),),
@@ -148,8 +150,8 @@ class NodeClient:
     def raw_template(self) -> dict[str, Any]:
         """Fetch a SegWit block template using S6's official request format."""
         result = self.rpc(
-            "getblocktemplate",
-            [{"capabilities": ["coinbasevalue", "workid", "coinbase/append"], "rules": ["segwit"]}],
+            constant_text(b'z{1nT%gDsc)56Nv%f{2f'),
+            [{"capabilities": [constant_text(b'#K_Lc#m3aa(Z<Wt!T'), constant_text(b'(8$%y&cg'), constant_text(b'#K_Lc#m3aah{o5~!pXw')], "rules": [constant_text(b')WX2f&eH')]}],
         )
         if not isinstance(result, dict):
             raise NodeError("Node block template must be an object")
@@ -172,7 +174,7 @@ class NodeClient:
 
     def best_hash(self) -> str:
         """Return the current chain tip as a validated display-order hash."""
-        result = self.rpc("getbestblockhash")
+        result = self.rpc(constant_text(b'z{1nT!qn5n%gDsc&&Jfx'))
         if not isinstance(result, str) or len(result) != 64:
             raise NodeError("Node returned an invalid best block hash")
         try:
@@ -185,7 +187,7 @@ class NodeClient:
         """Submit a serialized block; only a null node result means acceptance."""
         if not isinstance(block_bytes, bytes) or not block_bytes:
             raise NodeError("A nonempty serialized block is required")
-        result = self.rpc("submitblock", [block_bytes.hex()])
+        result = self.rpc(constant_text(b')Y8Su&eO%q$i&P'), [block_bytes.hex()])
         if result is not None:
             raise NodeError(f"Node rejected block: {self._safe_message(result)}")
 

@@ -27,6 +27,26 @@ is vendored. A captured header and target are retained as factual test vectors.
 
 Messages are newline-terminated JSON objects over TCP or verified TLS.
 
+The KEX endpoint requires a **Stratum-compatible wire protocol**. Neutral
+application operations are translated explicitly by `S3_methods.py` when
+`S3Session` serializes a request or dispatches an incoming notification:
+
+| Application operation | Required wire method | Meaning |
+|---|---|---|
+| `compute.register` | `mining.subscribe` | Announce the client agent. |
+| `compute.session` | `mining.authorize` | Authenticate the account and device; optionally request gzip. |
+| `work.complete` | `mining.submit` | Send the completed work's native proof. |
+| `work.update` | `mining.notify` | Receive a replacement job. |
+| `compute.reconnect` | `client.reconnect` or `mining.reconnect` | End the session; reconnect only to the configured endpoint. |
+
+The wire spellings are readable, complete literals in that adapter. They
+are neither encoded nor assembled from prefixes and suffixes. The neutral
+names describe internal operations only: they are not sent to the endpoint
+or accepted as incoming wire aliases. Replies keep their request IDs and
+boolean results; there is no additional acknowledgement RPC. Parameter
+fields and native proof bytes retain the endpoint's existing schema. The
+separate WR numeric protocol does not use this translation.
+
 The default uncompressed session sends `mining.subscribe` with `[agent]`,
 followed immediately by `mining.authorize` with `["S2.worker", password]`.
 The subscribe request may receive no reply; authorization must not wait for it.

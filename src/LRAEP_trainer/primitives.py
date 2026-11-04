@@ -6,7 +6,8 @@ import struct
 
 from .CNN_3ekalb import CNN_3ekalb
 from .hashing import chunk_cv, parent_cv
-from .wire_constants import s6_noise_seed_prefix
+from .noise_domains import tensor_domain, certificate_salt
+from .fixed_constants import constant_buffer, constant_text
 
 MERKLE_LEAF_SIZE = 1024
 PENALTY_BASE_RANK = 128
@@ -40,10 +41,10 @@ class IncompleteBlockHeader:
     SERIALIZED_SIZE = 76
 
     def __post_init__(self):
-        for name in ('version', 'timestamp', 'nbits'):
+        for name in ('version', 'timestamp', constant_text(b'$;Hmo)B')):
             _unsigned(getattr(self, name), 32, name)
-        self.prev_block = _bytes(self.prev_block, 32, 'prev_block')
-        self.merkle_root = _bytes(self.merkle_root, 32, 'merkle_root')
+        self.prev_block = _bytes(self.prev_block, 32, constant_text(b'*VV$&_{Gb}#LN'))
+        self.merkle_root = _bytes(self.merkle_root, 32, constant_text(b'%EHym%fk58$jH+'))
 
     def to_bytes(self):
         self.__post_init__()
@@ -234,7 +235,7 @@ class MerkleTree:
         self.data = bytes(data)
         self.key = _bytes(key, 32, 'key')
         if not self.data:
-            raise ValueError('Merkle data must not be empty')
+            raise ValueError(constant_text(b'>cZ8`%fg4l#?!`!%F@)+hsns(hsDB&!phgv-T'))
         if len(self.data) <= MERKLE_LEAF_SIZE:
             self.layers = [[CNN_3ekalb(self.data, key=self.key).digest()]]
         else:
@@ -256,7 +257,7 @@ class MerkleTree:
         selected = sorted(set(leaf_indices))
         total = len(self.layers[0])
         if not selected or any(type(i) is not int or not 0 <= i < total for i in selected):
-            raise ValueError('Merkle leaf indices are out of range')
+            raise ValueError(constant_text(b'>cZ8`%fg4t!p6ae&dI~h#KP2v#?``y$kNk?$iauz#>v3K'))
         leaves = [self.data[i * MERKLE_LEAF_SIZE:(i + 1) * MERKLE_LEAF_SIZE].ljust(MERKLE_LEAF_SIZE, b'\0') for i in selected]
         current, siblings, width = set(selected), [], total
         for layer in self.layers[:-1]:
@@ -290,9 +291,9 @@ class MerkleProof:
 
     def sanity_check(self):
         if type(self.total_leaves) is not int or self.total_leaves <= 0:
-            raise ValueError('Merkle tree requires a positive leaf count')
+            raise ValueError(constant_text(b'>cZ8`%fg4#)xyGu)xy@&&eg)yhsKB3$kfi$&e6h$%fiONhs4Oz$<q'))
         if not self.leaf_indices or len(self.leaf_indices) != len(self.leaf_data) or self.leaf_indices != sorted(set(self.leaf_indices)) or any(type(i) is not int or not 0 <= i < self.total_leaves for i in self.leaf_indices):
-            raise ValueError('Merkle leaf indices must be sorted, unique and in range')
+            raise ValueError(constant_text(b'>cZ8`%fg4t!p6ae&dI~h#KP2v%F@)+hsDB&)X3G-!o!P)(#g)&(!z(v$-{@v$%oa($-u$'))
 
     def compute_root(self, key):
         try:
@@ -329,13 +330,13 @@ class MerkleProof:
 
     def extract_bytes(self, global_start, length):
         if type(global_start) is not int or type(length) is not int or global_start < 0 or length < 0:
-            raise ValueError('invalid Merkle extraction range')
+            raise ValueError(constant_text(b'&dJfn%g)1x>cZ8`%fg4k-_zB`#M92m$%oa($-u$'))
         chunks, end, position = dict(zip(self.leaf_indices, self.leaf_data)), global_start + length, global_start
         result = bytearray()
         while position < end:
             index, offset = divmod(position, MERKLE_LEAF_SIZE)
             if index not in chunks:
-                raise ValueError('Merkle leaves do not cover required matrix bytes')
+                raise ValueError(constant_text(b'>cZ8`%fg4t!p70U)Q7{!hsns(hs4Oy!qtb>!q(Ex)xyJv%Er^x&fkZ{-qXU='))
             size = min(MERKLE_LEAF_SIZE - offset, end - position)
             result.extend(chunks[index][offset:offset + size])
             position += size
@@ -361,7 +362,7 @@ class _Reader:
 
     def read(self, size):
         if size < 0 or self.position + size > len(self.data):
-            raise ValueError('truncated proof')
+            raise ValueError(constant_text(b')78?+#KzOY!-v<^$jHF'))
         start, self.position = self.position, self.position + size
         return self.data[start:self.position]
 
@@ -371,12 +372,12 @@ class _Reader:
     def vector(self, read, minimum_size):
         count = self.integer()
         if count > (len(self.data) - self.position) // minimum_size:
-            raise ValueError('invalid proof vector length')
+            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3bp#M8*ths(mrz|+q'))
         return [read() for _ in range(count)]
 
 
 def _pack_int(value):
-    return struct.pack('<Q', _unsigned(value, 64, 'proof integer'))
+    return struct.pack('<Q', _unsigned(value, 64, constant_text(b'*VV|#!H3St)55^Q)c')))
 
 
 def _pack_vec(values, pack):
@@ -408,24 +409,24 @@ class PlainProof:
 
     def to_base64(self):
         if self.moe is not None:
-            raise ValueError('MoE plain proofs are unavailable')
+            raise ValueError(constant_text(b'>d4}U*UQGv$%og~$jHIehsM>yhtkQ$(Z<fp#>LCR'))
         data = b''.join(_pack_int(value) for value in (self.m, self.n, self.k, self.noise_rank)) + _serialize_matrix(self.a) + _serialize_matrix(self.bt) + b'\0'
         return base64.b64encode(data).decode('ascii')
 
     @classmethod
     def from_base64(cls, data):
         if not isinstance(data, str) or len(data) > 24 << 20:
-            raise ValueError('plain proof must be a bounded base64 string')
+            raise ValueError(constant_text(b'*UQGv$%og~$jHHm%F@)+hsDB&#)rko(#gZZ!-vJj)WVUIht$*6&dI<'))
         try:
             reader = _Reader(base64.b64decode(data, validate=True))
             values = [reader.integer() for _ in range(4)]
             result = cls(*values, _deserialize_matrix(reader), _deserialize_matrix(reader))
             trailing = reader.data[reader.position:]
             if trailing not in (b'', b'\0'):
-                raise ValueError('unsupported or trailing plain proof data')
+                raise ValueError(constant_text(b'(#h1)*Vo9^)561t$km6_)yB@t&dI=s*UQGv$%og~$jHHm!^YFb'))
             return result
         except (ValueError, TypeError, struct.error):
-            raise ValueError('invalid plain proof encoding') from None
+            raise ValueError(constant_text(b'&dJfn%g)1x*UQGv$%og~$jHHm!pX$Q!_LXT')) from None
 
 
 @dataclass
@@ -438,7 +439,7 @@ class ZKProof:
 
 
 def nbits_to_difficulty(nbits):
-    _unsigned(nbits, 32, 'nbits')
+    _unsigned(nbits, 32, constant_text(b'$;Hmo)B'))
     exponent, mantissa = nbits >> 24, nbits & 0xFFFFFF
     if not exponent or not mantissa or mantissa & 0x800000:
         return 0
@@ -448,9 +449,9 @@ def nbits_to_difficulty(nbits):
 
 def check_cert_version_eligible(cert_version, plain_proof):
     if type(cert_version) is not int or cert_version not in (1, 2, 3):
-        raise ValueError('unsupported certificate version')
+        raise ValueError(constant_text(b'(#h1)*Vo9^)561t#KP6n&cV*a#?!)w(Zbc#&dA9'))
     if plain_proof.min_cert_version > cert_version:
-        raise ValueError('proof requires a later certificate version')
+        raise ValueError(constant_text(b'*VV|#!H3nt*3!<^!qkVxhs(y(!qtbw!qwBx!Oq0S)53?*!qwEy$jJ'))
 
 
 def _proof_digest(cert_version, header, proof):
@@ -458,10 +459,10 @@ def _proof_digest(cert_version, header, proof):
     from .wr_work import _uniform_rows, _permutation
     check_cert_version_eligible(cert_version, proof)
     if proof.moe is not None:
-        raise ValueError('MoE proofs are rejected by the dense-only rule')
+        raise ValueError(constant_text(b'>d4}U*VV|#!PJMw)xw9>!p*|O)561t#omY0&%%ep!pYRaipa^!-iOuF%fb'))
     rank, k = proof.noise_rank, proof.k
     if rank != 128 or type(k) is not int or not 2048 <= k <= 65536 or k % 64:
-        raise ValueError('unsupported proof rank or common dimension')
+        raise ValueError(constant_text(b'(#h1)*Vo9^)561t*VV|#!H3nx$;^ky)rZ8$%F4*ehr`aw!pYRm$jJ'))
     for name, dimension in (('m', proof.m), ('n', proof.n)):
         if type(dimension) is not int or not 1 <= dimension <= 1 << 24:
             raise ValueError(f'invalid proof dimension {name}')
@@ -469,36 +470,45 @@ def _proof_digest(cert_version, header, proof):
     for matrix, dimension in ((proof.a, proof.m), (proof.bt, proof.n)):
         rows = matrix.row_indices
         if not rows or rows != sorted(set(rows)) or any(type(i) is not int or not 0 <= i < dimension for i in rows):
-            raise ValueError('invalid proof matrix rows')
+            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3Gm)78%3ht<f?)B'))
         pattern = PeriodicPattern.from_list([i - rows[0] for i in rows])
         if not pattern.offset_is_valid(rows[0]):
-            raise ValueError('invalid proof pattern offset')
+            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3tz)6>G$$%n|n!PLUj'))
         if matrix.proof.total_leaves != (dimension * k + MERKLE_LEAF_SIZE - 1) // MERKLE_LEAF_SIZE:
-            raise ValueError('Merkle tree leaf count differs from declared dimensions')
+            raise ValueError(constant_text(b'>cZ8`%fg4#)xyGu%fiONhs4Oz$<v3!&cVUL)zpW<)yT?+!@|VN#?`{Zhr`aw!pYRm$jQ_'))
         signal = np.stack([np.frombuffer(matrix.proof.extract_bytes(i * k, k), dtype=np.int8) for i in rows])
         if (signal < -64).any() or (signal > 64).any():
-            raise ValueError('proof signal values must lie in [-64, 64]')
+            raise ValueError(constant_text(b'*VV|#!H3k&z{$qThtbB%(!$h-%F@)+hs(~whtA1|{ECs2i-(bu`T'))
         patterns.append(pattern)
         signals.append(signal)
     h, w = (pattern.size for pattern in patterns)
     if h % 2 or w % 2 or not 32 <= h * w <= 256 or (h + w) * k > 1 << 22:
-        raise ValueError('invalid proof tile shape')
+        raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3h%%fg4$&&Jon'))
     S1 = S1Configuration(k, rank, MMAType.Int7xInt7ToInt32, *patterns)
     key = CNN_3ekalb(header.to_bytes() + S1.to_bytes()).digest()
     if not proof.a.proof.verify(key) or not proof.bt.proof.verify(key):
-        raise ValueError('Merkle proof commitment does not match header and configuration')
+        raise ValueError(constant_text(b'>cZ8`%fg4()yT-fhs4Or%Fffu!pYNz!^pzahsns(hsws&#LtJ%!p6hG)rZE(!-vGk$-&OR($&V(&dA9'))
     hash_a, hash_b = proof.a.root, proof.bt.root
     if cert_version == 3:
-        salts = [CNN_3ekalb(s6_noise_seed_prefix() + label).digest() for label in (b'A', b'B')]
-        hash_a = CNN_3ekalb(hash_a + struct.pack('<I', proof.m) + bytes(28), key=salts[0]).digest()
-        hash_b = CNN_3ekalb(hash_b + struct.pack('<I', proof.n) + bytes(28), key=salts[1]).digest()
+        with constant_buffer(b'<^') as label:
+            salt = certificate_salt(CNN_3ekalb, label)
+        try:
+            hash_a = CNN_3ekalb(hash_a + struct.pack('<I', proof.m) + bytes(28), key=salt).digest()
+        finally:
+            del salt
+        with constant_buffer(b'<p') as label:
+            salt = certificate_salt(CNN_3ekalb, label)
+        try:
+            hash_b = CNN_3ekalb(hash_b + struct.pack('<I', proof.n) + bytes(28), key=salt).digest()
+        finally:
+            del salt
     seed_b = CNN_3ekalb(key + hash_b).digest()
     seed_a = CNN_3ekalb(seed_b + hash_a).digest()
-    labels = (b'A_tensor' + bytes(24), b'B_tensor' + bytes(24))
     noised = []
-    for matrix, signal, label, seed in zip((proof.a, proof.bt), signals, labels, (seed_a, seed_b)):
-        uniform = _uniform_rows(matrix.row_indices, label, seed)
-        first, second = _permutation(k, label, seed)
+    for is_b, matrix, signal, seed in zip((False, True), (proof.a, proof.bt), signals, (seed_a, seed_b)):
+        with tensor_domain(is_b) as label:
+            uniform = _uniform_rows(matrix.row_indices, label, seed)
+            first, second = _permutation(k, label, seed)
         noised.append((signal.astype(np.int16) + uniform[:, first] - uniform[:, second]).astype(np.int8).astype(np.int32))
     cumulative = np.zeros((h, w), dtype=np.int32)
     transcript = [0] * 16
@@ -519,8 +529,8 @@ def verify_plain_proof_for_cert_version(cert_version, block_header, plain_proof,
         target = min((1 << 256) - 1, base * factor)
         penalty = min((1 << 256) - 1, base * config.hash_tile_h * config.hash_tile_w * (config.common_dim // config.rank) * PENALTY_BASE_RANK)
         if int.from_bytes(digest, 'little') > min(target, penalty):
-            return False, 'proof digest does not meet difficulty target'
-        return True, 'S1 solution verified successfully'
+            return False, constant_text(b'*VV|#!H2`nz{1qihr`Ii)Q8E)(}&8!!qbPt&cVUX#L~;t-iOo1)xg5j')
+        return True, constant_text(b'^p=Oz$jj2x&dAA!(Zbcv!Op_Nht$%<#KP3n!P3ji-T')
     except (ValueError, TypeError, AttributeError, OverflowError, struct.error) as error:
         return False, str(error)
 
@@ -539,10 +549,10 @@ def verify_plain_proof_v3(block_header, plain_proof, nbits_override=None):
 
 def generate_proof_for_cert_version(cert_version, block_header, plain_proof):
     check_cert_version_eligible(cert_version, plain_proof)
-    raise RuntimeError('Local ZK certificate generation is unavailable; WR and plain S3 shares do not require it')
+    raise RuntimeError(constant_text(b'>&V2$%ZL5!hs46w)6T)p#KzOYhrq(g!qvvp&dAA!&eVs}$;Q#f&dbKd%fg(8@b!nr$-{@&%f`;hhxC+()X&D%!qkVu$cM?u(}&f<*3!<^!iUb&'))
 
 
 def verify_proof_for_cert_version(cert_version, block_header, proof):
     if cert_version not in (1, 2, 3):
-        raise ValueError('unsupported certificate version')
-    raise RuntimeError('Local ZK certificate verification is unavailable')
+        raise ValueError(constant_text(b'(#h1)*Vo9^)561t#KP6n&cV*a#?!)w(Zbc#&dA9'))
+    raise RuntimeError(constant_text(b'>&V2$%ZL5!hs46w)6T)p#KzOYhta~-&cV*a#?#Ko$%oF=htkQ$(Z<fp#>LCR'))

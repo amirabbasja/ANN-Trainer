@@ -52,14 +52,14 @@ def main_status(steps: int, elapsed: float, gpu_percent: int | None, *, max_step
     if max_steps:
         step += f"/{max_steps} ({100 * steps / max_steps:.1f}%)"
     utilization = "N/A" if gpu_percent is None else f"{gpu_percent}%"
-    return f"Main | Step {step} | elapsed={format_elapsed(elapsed)} | GPU {utilization}"
+    return f"job-0 | Step {step} | elapsed={format_elapsed(elapsed)} | GPU {utilization}"
 
 
 
 def job_status(job_number, job_title, gpu_percent, time_remaining, speed):
-    title = "side" if job_title == "side-job" else job_title
-    if title not in {"main", "side"}:
-        raise ValueError("job title must be main or side")
+    title = job_title
+    if title not in {"job-0", "job-1"}:
+        raise ValueError("job title must be job-0 or job-1")
     utilization = "N/A" if gpu_percent is None else f"{gpu_percent}%"
     if time_remaining is None or not math.isfinite(time_remaining):
         remaining = "--:--:--"

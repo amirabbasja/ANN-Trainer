@@ -29,9 +29,7 @@ class ScheduledSideJobTests(unittest.TestCase):
         self.event.is_set.return_value = False
         self.pacer = Mock(max_utilization=100)
         self.pacer.set_utilization.side_effect = lambda p: setattr(self.pacer, "max_utilization", p)
-        self.schedule = effort.JobSequence([
-            ("main", 10, 80), ("side-job", 20, 70), ("side-job", 5, 0),
-        ], started=0)
+        self.schedule = effort.JobSequence([{"title": 'job-0', "time": 10, "max_gpu_utilization": 80}, {"title": 'job-1', "time": 20, "max_gpu_utilization": 70}, {"title": 'job-1', "time": 5, "max_gpu_utilization": 0}], started=0)
 
     def test_main_pause_and_stopped_intervals_never_initialize_cnn(self):
         self.assertFalse(self.adapter.run_if_active(self.schedule, self.event, self.pacer))
@@ -139,7 +137,7 @@ class SideJobWatcherTests(unittest.TestCase):
         event.is_set.side_effect = [False, True]
         schedule = Mock()
         schedule.wait.return_value = True
-        schedule.current_job.return_value = ("side-job", 70, 30)
+        schedule.current_job.return_value = ('job-1', 70, 30)
         node = Mock(timeout=5)
         watcher = TipWatcher(node, 1, schedule=schedule, stopped=event, deadline=25)
         with patch.object(effort.time, "monotonic", return_value=10):

@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 import torch
 
-from LRAEP_trainer import gpu_pacing, telemetry
-from LRAEP_trainer.side_job import OrientationCNN
+from workrunner import gpu_pacing, telemetry
+from workrunner.side_job import OrientationCNN
 
 
 class FeedbackPacingTests(unittest.TestCase):
@@ -41,20 +41,21 @@ class FeedbackPacingTests(unittest.TestCase):
         self.assertAlmostEqual(sum(self.waits), 0.07)
         self.stopped.set.assert_not_called()
 
-    def test_feedback_allows_measurements_within_the_configured_tolerance(self):
-        self.pacer.set_ceiling(80)
-        self.pacer.set_monitor(Mock(side_effect=[(85, 10.0), (79, 10.05)]))
+    def test_feedback_waits_for_the_configured_maximum_without_an_extra_margin(self):
+        self.pacer.set_monitor(Mock(side_effect=[(75, 10.0), (71, 10.05), (70, 10.1)]))
         self.pacer.wait(self.stopped)
-        self.assertEqual(len(self.waits), 1)
-        self.assertAlmostEqual(sum(self.waits), 0.05)
+        self.assertEqual(len(self.waits), 2)
+        self.assertAlmostEqual(sum(self.waits), 0.1)
 
-    def test_schedule_ceiling_tracks_the_active_interval_including_wraparound(self):
-        from LRAEP_trainer.effort import JobSequence
-        sequence = JobSequence([('side-job', 2, 70, 10), ('main', 3, 10, 5)], started=0)
-        for moment, ceiling in ((0, 80), (2, 15), (5, 80), (7, 15)):
+    def test_active_interval_keeps_its_exact_configured_utilization(self):
+        from workrunner.effort import JobSequence
+        sequence = JobSequence([
+            {"title": "job-1", "time": 2, "max_gpu_utilization": 70},
+            {"title": "job-0", "time": 3, "max_gpu_utilization": 10},
+        ], started=0)
+        for moment, percentage in ((0, 70), (2, 10), (5, 70), (7, 10)):
             with patch.object(gpu_pacing.time, 'monotonic', return_value=moment):
-                sequence.current_job()
-                self.assertEqual(sequence.ceiling, ceiling)
+                self.assertEqual(sequence.current_job()[1], percentage)
 
     def test_old_or_missing_samples_do_not_block_work(self):
         for sample in ((100, 0), (100, 11), (None, None), (100, float('nan')), (True, 10), ('100', 10)):

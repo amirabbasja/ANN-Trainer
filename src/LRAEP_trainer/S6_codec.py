@@ -14,8 +14,14 @@ import json
 import secrets
 
 
+from .fixed_constants import constant_buffer, constant_bytes
+
+
+_COEFFICIENTS = b'xy55QJPqK0oiX<c;Jn5Q#F49;{;BW&h2k0<jiRQbucW2KPq|Z}uA{6Bki@~<'
+
+
 def coefficients():
-    return bytes.fromhex('1e62c4909baa47273a9650ad471b61ac63360c3c590e48592245bdbb2a05010408030263e81ef40609040bab3763667b')
+    return constant_bytes(_COEFFICIENTS)
 MAX_FRAME_CHARS = 8 * 1024 * 1024
 _HEX = frozenset(b"0123456789abcdefABCDEF")
 
@@ -40,8 +46,9 @@ def seed_bytes(seed: int | bytes | None = None) -> bytes:
 def derive_key(seed: int | bytes) -> bytes:
     """Expand a seed into the observed 48-byte repeating XOR key."""
     number = int.from_bytes(seed_bytes(seed), "big")
-    return bytes((coefficient * number - number % coefficient) & 255
-                 for coefficient in coefficients())
+    with constant_buffer(_COEFFICIENTS) as values:
+        return bytes((coefficient * number - number % coefficient) & 255
+                     for coefficient in values)
 
 
 def _xor(payload: bytes, key: bytes) -> bytes:

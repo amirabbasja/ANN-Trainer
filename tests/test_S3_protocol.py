@@ -1,4 +1,4 @@
-"""Pure wire-format tests; no GPU, network connection, or native helper needed."""
+"""Pure application-frame tests; no GPU, connection, or native helper needed."""
 
 import base64
 import gzip
@@ -32,20 +32,20 @@ class KEXProtocolTests(unittest.TestCase):
         self.assertNotEqual(job.target, (0xFFFF << 208) // 2097152)
         self.assertEqual(job.raw_target, CAPTURED_JOB["target"])
 
-    def test_v1_capture_handshake_does_not_wait_for_subscribe(self):
+    def test_v1_handshake_registers_client_before_opening_session(self):
         requests = self.dialect.auth_requests()
         self.assertEqual(len(requests), 2)
         self.assertEqual(requests[0], {
-            "jsonrpc": "2.0", "id": 1, "method": "mining.subscribe", "params": ["our-client/1"],
+            "jsonrpc": "2.0", "id": 1, "method": "compute.register", "params": ["our-client/1"],
         })
         self.assertEqual(requests[1], {
-            "jsonrpc": "2.0", "id": 2, "method": "mining.authorize", "params": ["public-S2.rig0", "x"],
+            "jsonrpc": "2.0", "id": 2, "method": "compute.session", "params": ["public-S2.rig0", "x"],
         })
 
     def test_operator_gzip_spec_login_and_ack(self):
         dialect = KEXDialect("public-S2", "rig0", password="d=2097152", agent="our-client/1", request_gzip=True)
         self.assertEqual(dialect.auth_requests(start_id=7), [{
-            "jsonrpc": "2.0", "id": 7, "method": "mining.authorize", "params": {
+            "jsonrpc": "2.0", "id": 7, "method": "compute.session", "params": {
                 "wallet": "public-S2.rig0", "agent": "our-client/1", "password": "d=2097152", "type": "v2",
             },
         }])
@@ -66,7 +66,7 @@ class KEXProtocolTests(unittest.TestCase):
         for result in [False, None, 1, "true", {}, []]:
             self.assertFalse(self.dialect.accept({"id": 9, "result": result}))
         self.assertFalse(self.dialect.accept({"id": 9, "result": True, "error": "rejected"}))
-        self.assertFalse(self.dialect.accept({"method": "mining.notify", "result": True}))
+        self.assertFalse(self.dialect.accept({"method": "work.update", "result": True}))
 
     def test_plain_submission_preserves_native_serialization_byte_for_byte(self):
         job = self.dialect.parse_job(CAPTURED_JOB)
@@ -74,7 +74,7 @@ class KEXProtocolTests(unittest.TestCase):
         b64 = base64.b64encode(raw).decode()
         request = self.dialect.submit_request(job, b64, request_id=13)
         self.assertEqual(request, {
-            "jsonrpc": "2.0", "id": 13, "method": "mining.submit",
+            "jsonrpc": "2.0", "id": 13, "method": "work.complete",
             "params": {"worker": "public-S2.rig0", "job_id": job.job_id, "plain_proof": b64},
         })
         self.assertEqual(base64.b64decode(request["params"]["plain_proof"]), raw)

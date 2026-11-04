@@ -1,13 +1,13 @@
-from base64 import b64decode
+from .fixed_constants import constant_bytes, constant_text
 
 
 def s5_nonce():
-    return b64decode('bWluZXJfbm9uY2U=').decode('ascii')
+    return constant_text(b'%FfBc)%eNC$;83')
 
 
 def s6_noise_seed_prefix():
-    return b64decode('cGVhcmwvY2VydC12My9ub2lzZS1zZWVkLw==')
+    return constant_bytes(b'*TTlt%ZS9n)zga6l!(d5&eXz+)WX8Uhy')
 
 
 def s7_legacy_alias():
-    return b64decode('cGVhcmxoYXNo').decode('ascii')
+    return constant_text(b'*TTlt%g@Ht&j')

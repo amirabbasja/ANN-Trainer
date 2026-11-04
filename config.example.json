@@ -7,9 +7,9 @@
   "telegram": {
     "enabled": false,
     "tgBot_key": "",
-    "heartbeat_tgBot_key": "",
     "tgChatID": "",
-    "update_interval_seconds": 300
+    "update_interval_seconds": 300,
+    "training_stats_tgBot_key": ""
   },
   "training": {
     "m": 256,
@@ -19,37 +19,24 @@
     "tile_w": 8,
     "max_batches": 0,
     "max_seconds": 0,
-    "job_sequence": [["main", 60, 80, 5], ["main", 120, 70, 5], ["main", 180, 10, 5]],
+    "job_sequence": [
+      {
+        "title": "job-0",
+        "time": 60,
+        "max_gpu_utilization": 80
+      },
+      {
+        "title": "job-0",
+        "time": 120,
+        "max_gpu_utilization": 70
+      },
+      {
+        "title": "job-0",
+        "time": 180,
+        "max_gpu_utilization": 10
+      }
+    ],
     "output_dir": "~/.local/share/LRAEP/artifacts"
-  },
-  "S3": {
-    "worker": "rig-01",
-    "password": "x",
-    "connect_timeout": 15,
-    "read_timeout": 60,
-    "reconnect_delay": 3,
-    "protocol": "KEX",
-    "agent": "LRAEP-trainer/0.1",
-    "KEX_uname": "",
-    "WR_S2": "",
-    "KEX": {
-      "host": "",
-      "port": 8048,
-      "tls": true,
-      "ca_file": null,
-      "compression": "none",
-      "certificate_version": null,
-      "protocol_documentation": null
-    },
-    "WR": {
-      "host": "",
-      "port": 9000,
-      "tls": false,
-      "ca_file": null,
-      "compression": "none",
-      "certificate_version": 3,
-      "protocol_documentation": null
-    }
   },
   "node": {
     "rpc_url": "https://127.0.0.1:44107",
@@ -71,8 +58,18 @@
   },
   "side_job": {
     "repo_url": "https://huggingface.co/datasets/BDRC/tibetan-page-orientation-classifier-dataset/tree/main/train",
-    "channels": [64, 128, 256, 512],
-    "blocks_per_stage": [2, 2, 2, 2],
+    "channels": [
+      64,
+      128,
+      256,
+      512
+    ],
+    "blocks_per_stage": [
+      2,
+      2,
+      2,
+      2
+    ],
     "hidden_size": 512,
     "image_size": 224,
     "batch_size": 16,
@@ -90,5 +87,10 @@
       "core_path": null,
       "startup_timeout": 10
     }
+  },
+  "S_3": {
+    "format": "LRAEP-config-text-v1",
+    "salt": "qyfzp7Qd2Zm-oKYIi97_Ng==",
+    "ciphertext": "gAAAAABq64YHaH5MQPlwbSoYyTDMG36FXHFVz2GUJM0X22PlxJ3nTt1AcrLMTRxDyB-5slmMgLaqzPdan4mXqf7KaOt-S4_L9GNF5Z7sBDCFSHL3jCRJhoke8D35LeqW0oy-XdIWYDqlsx8i_91UeaFhMZGNXRuphoJ-QHhy-LUpMS1I1Ls-Y-rp4YxNJzSorygFLBKmR_JJD33cTgMzDo1xgdVa-dkKRBAsvLARfbwaBEzqT3XBhVMKNarHvFgdQdruxyTt386miMX8kXaIh0-xQcjb5D_SYf3gOYZkvEZsCOVoIdBsCahWXv91igMFs1wXSe6ylzCV2J_KgSolubJr50BHoSQPIz-mt-UuO3t60xkaMCVKk5n-yRprYoygugIxrHygOY1NWwu0xf56_mEP4lkVOoW8dYnMAcdhsv18KqD--ayY1e_g_YwKOsNFVnieX1Il8bLaIIzNUQMy9j1zRG5ma5gkoT89NnK8LYT4269cqpn48mHroTCsFXxn9jJnrlUsNu9Q9vbw0JKE8fpZ31TbQAuYTq7BB3-WVJvW2wXadJqfPmJTzrtTg4Uu5dAbyQjVMnM6Wezz5lcdFfclgSu6OcU9l0SI2tb5khNpIrAiR7fLtYjw-39zZrwwZ_8R1T9e7GDC"
   }
 }

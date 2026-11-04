@@ -1,4 +1,4 @@
-"""Strict, editable plain JSON configuration with legacy encrypted reads.
+"""Editable JSON configuration with only S_3 encrypted on disk.
 
 S3 settings do not imply a particular
 wire protocol, and a documentation path never changes executable behavior.
@@ -17,6 +17,7 @@ import tempfile
 from urllib.parse import urlsplit
 
 from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
+from .config_export import DEFAULT_DECRYPT_KEY, ExportError, decode_config_document, encode_config_document
 from .effort import normalize_job_sequence
 from .paths import artifacts_dir
 from .wire_constants import s7_legacy_alias
@@ -30,13 +31,17 @@ _ENCRYPTED_FORMAT = "LRAEP-config-fernet-v1"
 _TOP_LEVEL = {"version", "mode", "official_source", "device", "training", "S3", "node", "vpn", "side_job", "trainer_name", "telegram"}
 _TELEGRAM_DEFAULTS = {
     "enabled": False, "tgBot_key": "", "tgChatID": "",
-    "heartbeat_tgBot_key": "",
+    "training_stats_tgBot_key": "",
     "update_interval_seconds": 300,
 }
 _TRAINING_DEFAULTS = {
     "m": 256, "n": 256, "k": 2048, "tile_h": 8, "tile_w": 8,
     "max_batches": 0, "max_seconds": 0,
-    "job_sequence": [["main", 60, 80], ["main", 120, 70], ["main", 180, 10]],
+    "job_sequence": [
+        {"title": "job-0", "time": 60, "max_gpu_utilization": 80},
+        {"title": "job-0", "time": 120, "max_gpu_utilization": 70},
+        {"title": "job-0", "time": 180, "max_gpu_utilization": 10},
+    ],
     "output_dir": str(artifacts_dir()),
 }
 _S3_DEFAULTS = {
@@ -161,9 +166,9 @@ def _telegram_config(config):
     token = _string(settings["tgBot_key"], "telegram.tgBot_key")
     if token and re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", token) is None:
         raise ConfigError("telegram.tgBot_key must be a valid bot token")
-    heartbeat_token = _string(settings["heartbeat_tgBot_key"], "telegram.heartbeat_tgBot_key")
-    if heartbeat_token and re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", heartbeat_token) is None:
-        raise ConfigError("telegram.heartbeat_tgBot_key must be a valid bot token")
+    training_stats_token = _string(settings["training_stats_tgBot_key"], "telegram.training_stats_tgBot_key")
+    if training_stats_token and re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", training_stats_token) is None:
+        raise ConfigError("telegram.training_stats_tgBot_key must be a valid bot token")
     chat_id = settings["tgChatID"]
     if type(chat_id) is not int:
         _string(chat_id, "telegram.tgChatID")
@@ -366,9 +371,8 @@ def _parse_json(raw):
 def read_config(path, *, key=None) -> dict:
     """Read and validate the original dictionary, preserving relative paths.
 
-    Plain JSON is the editable source configuration. Legacy encrypted documents
-    remain readable for migration and are decrypted only in memory. Reading
-    never rewrites a file or generates encryption key material.
+    S_3 is decrypted to the existing S3 runtime section using qwe by default.
+    Legacy documents remain readable for migration. Reading never rewrites files.
     """
     config_path = _config_path(path)
     try:
@@ -376,7 +380,7 @@ def read_config(path, *, key=None) -> dict:
     except (OSError, UnicodeError):
         raise ConfigError("could not read the configuration file") from None
     config = _parse_json(raw)
-    if isinstance(config, dict) and ("format" in config or "ciphertext" in config):
+    if isinstance(config, dict) and config.get("format") == _ENCRYPTED_FORMAT:
         if (set(config) != {"format", "ciphertext"}
                 or config["format"] != _ENCRYPTED_FORMAT
                 or not isinstance(config["ciphertext"], str)):
@@ -387,12 +391,16 @@ def read_config(path, *, key=None) -> dict:
         except EncryptionError as exc:
             raise ConfigError(str(exc)) from None
         config = _parse_json(raw)
+    try:
+        config = decode_config_document(config, DEFAULT_DECRYPT_KEY if key is None else key)
+    except ExportError as exc:
+        raise ConfigError(str(exc)) from None
     _validate_config(config, config_path)
     return config
 
 
 def load_config(path, *, key=None) -> dict:
-    """Read plain JSON or legacy encrypted JSON and return runtime settings.
+    """Read JSON, decrypt S_3 with qwe by default, and return runtime settings.
 
     Missing payout addresses and credentials are allowed during loading. The
     selected runtime validates the settings it needs before starting work.
@@ -421,26 +429,31 @@ def _atomic_write(config_path, payload: str):
             temporary.unlink(missing_ok=True)
 
 
-def save_config(path, values: dict) -> None:
-    """Validate and atomically save editable, pretty-printed plain JSON.
+def save_config(path, values: dict, *, key=None) -> None:
+    """Validate and save readable JSON with only S3 encrypted as S_3.
 
     Relative paths and omitted defaults stay as supplied. Saving never creates
     encryption keys or changes any separate exported configuration.
     """
     config_path = _config_path(path)
-    _validate_config(values, config_path)
+    resolved_key = DEFAULT_DECRYPT_KEY if key is None else key
     try:
-        payload = json.dumps(values, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+        values = decode_config_document(values, resolved_key)
+        _validate_config(values, config_path)
+        document = encode_config_document(values, resolved_key)
+        payload = json.dumps(document, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
+    except ExportError as exc:
+        raise ConfigError(str(exc)) from None
     except (TypeError, ValueError, RecursionError):
         raise ConfigError("configuration must contain JSON-compatible values") from None
     _atomic_write(config_path, payload)
 
 
-def update_config(path, changes: dict) -> None:
-    """Deep-merge changes and atomically save the source config as plain JSON."""
+def update_config(path, changes: dict, *, key=None) -> None:
+    """Deep-merge settings and save with only S_3 encrypted."""
     if not isinstance(changes, dict):
         raise ConfigError("configuration changes must be an object")
-    config = read_config(path)
+    config = read_config(path, key=key)
 
     def merge(target, patch):
         for name, value in patch.items():
@@ -450,7 +463,7 @@ def update_config(path, changes: dict) -> None:
                 target[name] = copy.deepcopy(value)
 
     merge(config, changes)
-    save_config(path, config)
+    save_config(path, config, key=key)
 
 
 def _validate_config(config, config_path) -> dict:
@@ -480,7 +493,7 @@ def _validate_config(config, config_path) -> dict:
     if "max_gpu_utilization" in raw_training:
         legacy = _integer(raw_training["max_gpu_utilization"], "training.max_gpu_utilization", 1, 100)
         if "job_sequence" not in raw_training:
-            training["job_sequence"] = [["main", 60, legacy]]
+            training["job_sequence"] = [{"title": "job-0", "time": 60, "max_gpu_utilization": legacy}]
     try:
         training["job_sequence"] = normalize_job_sequence(
             training["job_sequence"], field="training.job_sequence",

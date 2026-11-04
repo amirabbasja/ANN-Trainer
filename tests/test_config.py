@@ -28,7 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["device"], "cuda:0")
         self.assertEqual(result["official_source"], str(self.directory / "src/LRAEP_helpers"))
         self.assertEqual(result["training"]["output_dir"], str(artifacts_dir().resolve()))
-        self.assertEqual(result["training"]["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertEqual(result["training"]["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertNotIn("side_job_effort", result["training"])
         self.assertNotIn("max_gpu_utilization", result["training"])
         self.assertEqual(result["S3"]["host"], "")
@@ -48,24 +48,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
 
     def test_job_sequence_preserves_order_pause_exit_and_roles(self):
-        sequence = [["main", 0.5, 100], ["side-job", 2, 1], ["main", 1, 0], ["side-job", 0, -1]]
+        sequence = [{"title": 'job-0', "time": 0.5, "max_gpu_utilization": 100}, {"title": 'job-1', "time": 2, "max_gpu_utilization": 1}, {"title": 'job-0', "time": 1, "max_gpu_utilization": 0}, {"title": 'job-1', "time": 0, "max_gpu_utilization": -1}]
         original = copy.deepcopy(sequence)
         result = self.load({"version": 1, "training": {"job_sequence": sequence}})
         self.assertEqual(result["training"]["job_sequence"],
-                         [("main", 0.5, 100), ("side-job", 2, 1), ("main", 1, 0), ("side-job", 0, -1)])
+                         [{"title": 'job-0', "time": 0.5, "max_gpu_utilization": 100}, {"title": 'job-1', "time": 2, "max_gpu_utilization": 1}, {"title": 'job-0', "time": 1, "max_gpu_utilization": 0}, {"title": 'job-1', "time": 0, "max_gpu_utilization": -1}])
         self.assertEqual(sequence, original)
         self.assertNotIn("main_effort", result["training"])
         self.assertNotIn("side_job_effort", result["training"])
 
     def test_job_sequence_rejects_invalid_entries_without_echoing_values(self):
-        malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ["main", 1, 80],
-                     [[1, 80]], [["main"]], [["main", 1]], [["main", 1, 80, 2, 0]],
+        malformed = (None, True, "PRIVATE_SEQUENCE", {}, [], ['job-0', 1, 80],
+                     [[1, 80]], [['job-0']], [['job-0', 1]], [['job-0', 1, 80, 2, 0]],
                      [["MAIN", 1, 80]], [["Side-job", 1, 80]], [["PRIVATE_SEQUENCE", 1, 80]],
                      [[None, 1, 80]], [[True, 1, 80]], [[[], 1, 80]], [[{}, 1, 80]],
-                     [["main", 0, 80]], [["side-job", -1, 80]], [["main", True, 80]],
-                     [["main", "1", 80]], [["main", 1, -2]], [["side-job", 1, 101]],
-                     [["main", 1, True]], [["main", 1, 70.5]],
-                     [["main", 1, "PRIVATE_SEQUENCE"]], [["main", -1, -1]])
+                     [{"title": 'job-0', "time": 0, "max_gpu_utilization": 80}], [{"title": 'job-1', "time": -1, "max_gpu_utilization": 80}], [{"title": 'job-0', "time": True, "max_gpu_utilization": 80}],
+                     [{"title": 'job-0', "time": "1", "max_gpu_utilization": 80}], [{"title": 'job-0', "time": 1, "max_gpu_utilization": -2}], [{"title": 'job-1', "time": 1, "max_gpu_utilization": 101}],
+                     [{"title": 'job-0', "time": 1, "max_gpu_utilization": True}], [{"title": 'job-0', "time": 1, "max_gpu_utilization": 70.5}],
+                     [{"title": 'job-0', "time": 1, "max_gpu_utilization": "PRIVATE_SEQUENCE"}], [{"title": 'job-0', "time": -1, "max_gpu_utilization": -1}])
         for value in malformed:
             with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "job_sequence") as caught:
                 self.load({"version": 1, "training": {"job_sequence": value}})
@@ -73,7 +73,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_job_sequence_durations_must_be_finite_for_both_roles(self):
         for duration in (float("inf"), float("-inf"), float("nan")):
-            for role in ("main", "side-job"):
+            for role in ('job-0', 'job-1'):
                 with self.subTest(role=role, duration=duration), self.assertRaises(ConfigError):
                     self.load({"version": 1, "training": {"job_sequence": [[role, duration, 80]]}})
 
@@ -87,7 +87,7 @@ class ConfigTests(unittest.TestCase):
         for percent in (1, 70, 100):
             with self.subTest(percent=percent):
                 result = self.load({"version": 1, "training": {"max_gpu_utilization": percent}})
-                self.assertEqual(result["training"]["job_sequence"], [("main", 60, percent)])
+                self.assertEqual(result["training"]["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": percent}])
                 self.assertNotIn("max_gpu_utilization", result["training"])
         for value in (0, -1, 101, True, 80.5, "80", None):
             with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "training.max_gpu_utilization"):
@@ -95,22 +95,22 @@ class ConfigTests(unittest.TestCase):
 
     def test_explicit_job_sequence_takes_precedence_over_legacy_limit(self):
         result = self.load({"version": 1, "training": {
-            "job_sequence": [["main", 30, 40]], "max_gpu_utilization": 70,
+            "job_sequence": [{"title": 'job-0', "time": 30, "max_gpu_utilization": 40}], "max_gpu_utilization": 70,
         }})
-        self.assertEqual(result["training"]["job_sequence"], [("main", 30, 40)])
+        self.assertEqual(result["training"]["job_sequence"], [{"title": 'job-0', "time": 30, "max_gpu_utilization": 40}])
         with self.assertRaisesRegex(ConfigError, "training.max_gpu_utilization"):
-            self.load({"version": 1, "training": {"job_sequence": [["main", 30, 40]], "max_gpu_utilization": 101}})
+            self.load({"version": 1, "training": {"job_sequence": [{"title": 'job-0', "time": 30, "max_gpu_utilization": 40}], "max_gpu_utilization": 101}})
 
     def test_effort_defaults_are_independent_between_loads_and_export(self):
         result = self.load({"version": 1})
-        result["training"]["job_sequence"].append(("side-job", 1, 100))
+        result["training"]["job_sequence"].append({"title": "job-1", "time": 1, "max_gpu_utilization": 100})
         again = self.load({"version": 1})
-        self.assertEqual(again["training"]["job_sequence"], [("main", 60, 80), ("main", 120, 70), ("main", 180, 10)])
+        self.assertEqual(again["training"]["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertNotIn("side_job_effort", again["training"])
         exported = copy.deepcopy(DEFAULT_CONFIG["training"])
         try:
-            DEFAULT_CONFIG["training"]["job_sequence"][0][2] = 99
-            self.assertEqual(self.load({"version": 1})["training"]["job_sequence"][0], ("main", 60, 80))
+            DEFAULT_CONFIG["training"]["job_sequence"][0]["max_gpu_utilization"] = 99
+            self.assertEqual(self.load({"version": 1})["training"]["job_sequence"][0], {"title": "job-0", "time": 60, "max_gpu_utilization": 80})
         finally:
             DEFAULT_CONFIG["training"] = exported
 

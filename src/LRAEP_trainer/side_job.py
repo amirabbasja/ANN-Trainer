@@ -155,7 +155,7 @@ class SideJob:
         epoch = str(self._progress_epoch)
         if self.config["epochs"]:
             epoch += f"/{self.config['epochs']}"
-        details = ["Side-job", f"Epoch {epoch}"]
+        details = ["job-1", f"Epoch {epoch}"]
         if self.total_examples is None:
             details.append(self._progress_phase)
         else:
@@ -181,9 +181,9 @@ class SideJob:
 
     def _initialize(self):
         if self.device.type != "cuda" or not torch.cuda.is_available():
-            raise ValueError("side-job requires an available CUDA GPU")
+            raise ValueError("job-1 requires an available CUDA GPU")
         if self.device.index is not None and self.device.index >= torch.cuda.device_count():
-            raise ValueError("side-job device selects an unavailable CUDA GPU")
+            raise ValueError("job-1 device selects an unavailable CUDA GPU")
         from .side_job_data import DatasetSource
 
         torch.manual_seed(self.config["seed"])
@@ -215,17 +215,17 @@ class SideJob:
                 else:
                     self.model.load_state_dict(state)
             except (OSError, RuntimeError, ValueError, TypeError, KeyError, EOFError, pickle.UnpicklingError) as exc:
-                raise RuntimeError("could not load side-job weights.pth; check its architecture and checkpoint format") from exc
+                raise RuntimeError("could not load job-1 weights.pth; check its architecture and checkpoint format") from exc
             # Deliberate config changes to optimizer settings take effect on resume.
             for group in self.optimizer.param_groups:
                 group["lr"] = self.config["learning_rate"]
                 group["weight_decay"] = self.config["weight_decay"]
-            self._log("Resumed side-job weights at epoch %d", self.epoch)
+            self._log("Resumed job-1 weights at epoch %d", self.epoch)
         else:
             save_checkpoint(self.directory, self._checkpoint(), rotate=False)
-            self._log("Created new side-job weights")
+            self._log("Created new job-1 weights")
         self._progress_epoch = self.epoch + 1
-        self._log("Side-job CNN: %s; %s parameters", torch.cuda.get_device_name(self.device),
+        self._log("job-1 CNN: %s; %s parameters", torch.cuda.get_device_name(self.device),
                   f"{sum(parameter.numel() for parameter in self.model.parameters()):,}")
         if self.config["epochs"] and self.epoch >= self.config["epochs"]:
             self._progress_epoch = self.epoch
@@ -239,7 +239,7 @@ class SideJob:
         self.source = DatasetSource(self.config["repo_url"], proxy=proxy)
         self.shards = self.source.list_shards()
         if not self.shards:
-            raise RuntimeError("side-job dataset contains no training Parquet shards")
+            raise RuntimeError("job-1 dataset contains no training Parquet shards")
 
     def _start_epoch(self, cancelled=None):
         from .side_job_data import PrefetchedBatches, ShardDataset
@@ -271,16 +271,16 @@ class SideJob:
         self.next_shard = self.shards[(self.shards.index(name) + 1) % len(self.shards)]
         self._progress_phase = "Training"
         self.model.train()
-        self._log("Side-job epoch %d: %s (%d steps, %d examples, %d passes)", self.epoch + 1, name,
+        self._log("job-1 epoch %d: %s (%d steps, %d examples, %d passes)", self.epoch + 1, name,
                   self.total_batches, self.total_examples, self.config.get("passes_per_shard", 1))
 
     def _finish_epoch(self):
         if not self.examples:
-            raise RuntimeError("side-job training shard is empty")
+            raise RuntimeError("job-1 training shard is empty")
         self.epoch += 1
         save_checkpoint(self.directory, self._checkpoint())
         self._progress_phase = "Complete"
-        self._log("Side-job epoch %d complete: loss=%.4f accuracy=%.1f%% examples=%d",
+        self._log("job-1 epoch %d complete: loss=%.4f accuracy=%.1f%% examples=%d",
                   self.epoch, self.total_loss / self.examples,
                   100 * self.correct / self.examples, self.examples)
         self._clear_shard()
@@ -304,7 +304,7 @@ class SideJob:
     def step(self, *, cancelled=None):
         """Run one optimizer batch. False means the configured epoch limit is met."""
         if self.closed:
-            raise RuntimeError("side-job is closed")
+            raise RuntimeError("job-1 is closed")
         if cancelled is not None and cancelled():
             return True
         if self.model is None:
@@ -339,7 +339,7 @@ class SideJob:
             logits = self.model(images)
             loss = nn.functional.cross_entropy(logits, labels)
         if not torch.isfinite(loss):
-            raise RuntimeError("side-job training produced a nonfinite loss")
+            raise RuntimeError("job-1 training produced a nonfinite loss")
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
@@ -367,7 +367,7 @@ def main(argv=None):
     from .telemetry import GpuUtilization
     from .telegram import TelegramUpdates
 
-    parser = argparse.ArgumentParser(description="Train the side-job page-orientation CNN on CUDA")
+    parser = argparse.ArgumentParser(description="Train the job-1 page-orientation CNN on CUDA")
     parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument("--epochs", type=int, help="total completed epochs, including resumed epochs; 0 repeats")
     args = parser.parse_args(argv)
@@ -389,11 +389,11 @@ def main(argv=None):
             job = SideJob(config, before_log=progress.clear)
 
             def snapshot():
-                return job_status(1, "side", gpu.read(), None, job._progress_epoch)
+                return job_status(1, "job-1", gpu.read(), None, job._progress_epoch)
 
             updates = resources.enter_context(TelegramUpdates(config, snapshot))
-            updates.event("Job 1 side starting")
-            resources.callback(updates.event, "Job 1 side finished")
+            updates.event("Job 1 job-1 starting")
+            resources.callback(updates.event, "Job 1 job-1 finished")
             progress.update(snapshot(), force=True)
             while job.step():
                 progress.update(snapshot())

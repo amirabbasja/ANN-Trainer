@@ -3,72 +3,57 @@
 from contextlib import contextmanager
 import logging
 import math
-import random
 import threading
 import time
 
 
 def normalize_job_sequence(value, *, field="job_sequence"):
-    """Copy tagged intervals from JSON arrays or Python tuples without exposing values.
-
-    Positive effort and pause intervals require positive, finite seconds. An
-    exit entry accepts zero seconds too: reaching it exits immediately, so its
-    duration is never consumed.
-    """
-    if not isinstance(value, (list, tuple)):
-        raise ValueError(f"{field} must be a list of [kind, seconds, percentage, optional tolerance] entries")
+    """Copy job dictionaries after validating titles, seconds, and utilization."""
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be an array of job dictionaries")
     if not value:
         raise ValueError(f"{field} must contain at least one interval")
     entries = []
     total = 0.0
     for entry in value:
-        if not isinstance(entry, (list, tuple)) or len(entry) not in (3, 4):
-            raise ValueError(f"{field} intervals must contain kind, seconds, percentage and optional tolerance")
-        kind, seconds, percentage = entry[:3]
-        tolerance = entry[3] if len(entry) == 4 else 0
-        if type(tolerance) is not int or not 0 <= tolerance <= 100:
-            raise ValueError(f"{field} tolerance must be an integer between 0 and 100")
-        if type(kind) is not str or kind not in ("main", "side-job"):
-            raise ValueError(f'{field} kinds must be "main" or "side-job"')
+        if not isinstance(entry, dict) or set(entry) != {"title", "time", "max_gpu_utilization"}:
+            raise ValueError(f"{field} entries must contain exactly title, time, and max_gpu_utilization")
+        title = entry["title"]
+        seconds = entry["time"]
+        percentage = entry["max_gpu_utilization"]
+        if type(title) is not str or title not in ("job-0", "job-1"):
+            raise ValueError(f'{field} title must be "job-0" or "job-1"')
         if type(percentage) is not int or not -1 <= percentage <= 100:
-            raise ValueError(f"{field} percentages must be integers between -1 and 100")
+            raise ValueError(f"{field} max_gpu_utilization must be an integer between -1 and 100")
         try:
             finite = type(seconds) in (int, float) and math.isfinite(seconds)
         except OverflowError:
             finite = False
         if not finite or seconds < 0 or (seconds == 0 and percentage != -1):
-            raise ValueError(f"{field} seconds must be positive and finite (zero is allowed for exit)")
+            raise ValueError(f"{field} time must be positive and finite (zero is allowed for exit)")
         total += seconds
         if not math.isfinite(total):
             raise ValueError(f"{field} total duration must be finite")
-        entries.append(tuple(entry))
+        entries.append(dict(entry))
     return entries
 
 
 class JobSequence:
-    """Repeat intervals until stopped or the first exit entry is reached.
-
-    All positions use monotonic wall time, so pauses, pacing and reconnections
-    share the same timeline. The active kind selects S1 or CNN training.
-    """
+    """Repeat job-0 and job-1 intervals on one monotonic timeline."""
 
     def __init__(self, entries, *, started=None):
         self.entries = normalize_job_sequence(entries)
         self.started = time.monotonic() if started is None else started
-        self._total = sum(entry[1] for entry in self.entries)
-        self._sample_lock = threading.Lock()
-        self._sample_key = None
-        self._sample_percentage = None
+        self._total = sum(entry["time"] for entry in self.entries)
         self._exit_offset = None
         self._exit_kind = None
         elapsed = 0
         for entry in self.entries:
-            kind, seconds, percentage = entry[:3]
-            if percentage == -1:
+            if entry["max_gpu_utilization"] == -1:
                 self._exit_offset = elapsed
-                self._exit_kind = kind
+                self._exit_kind = entry["title"]
                 break
-            elapsed += seconds
+            elapsed += entry["time"]
 
     @property
     def exit_deadline(self):
@@ -82,56 +67,37 @@ class JobSequence:
         cycle, _ = divmod(elapsed, self._total)
         boundary = 0
         for entry in self.entries:
-            kind, seconds, percentage = entry[:3]
-            boundary += seconds
+            boundary += entry["time"]
             until = self.started + cycle * self._total + boundary
-            # Compare absolute timestamps: subtracting a large monotonic origin
-            # can otherwise leave a completed fractional interval active.
             if now < until:
-                return kind, self._target(entry, until, now), until
-        # Floating-point rounding at a cycle boundary belongs to the next cycle.
-        until = self.started + (cycle + 1) * self._total + self.entries[0][1]
-        return self.entries[0][0], self._target(self.entries[0], until, now), max(until, math.nextafter(now, math.inf))
-
-    def _target(self, entry, until, now):
-        """Hold a random duty-cycle target for five seconds within each interval."""
-        percentage = entry[2]
-        tolerance = entry[3] if len(entry) == 4 else 0
-        if percentage <= 0 or tolerance == 0:
-            return percentage
-        interval_start = until - entry[1]
-        key = (until, int(max(0, now - interval_start) // 5))
-        with self._sample_lock:
-            if key != self._sample_key:
-                self._sample_percentage = random.randint(
-                    max(1, percentage - tolerance), min(100, percentage + tolerance),
-                )
-                self._sample_key = key
-            return self._sample_percentage
+                return entry["title"], entry["max_gpu_utilization"], until
+        entry = self.entries[0]
+        until = self.started + (cycle + 1) * self._total + entry["time"]
+        return entry["title"], entry["max_gpu_utilization"], max(until, math.nextafter(now, math.inf))
 
     def current(self):
-        """Return the active percentage and its absolute end time."""
+        """Return the configured utilization and the interval's absolute end time."""
         _, percentage, boundary = self.current_job()
         return percentage, boundary
 
     def current_job(self):
-        """Return the active kind, percentage and absolute end time."""
+        """Return the active title, utilization, and absolute end time."""
         return self._current(time.monotonic())
 
     def position(self, now=None):
         now = time.monotonic() if now is None else now
-        kind, percentage, until = self._current(now)
+        title, percentage, until = self._current(now)
         if percentage == -1:
-            index = next(i for i, entry in enumerate(self.entries) if entry[2] == -1)
-            return index + 1, kind, percentage, until
+            index = next(i for i, entry in enumerate(self.entries) if entry["max_gpu_utilization"] == -1)
+            return index + 1, title, percentage, until
         elapsed = max(0, now - self.started)
         cycle = int(elapsed // self._total)
         boundary = self.started + cycle * self._total
         for index, entry in enumerate(self.entries):
-            boundary += entry[1]
+            boundary += entry["time"]
             if now < boundary:
-                return cycle * len(self.entries) + index + 1, kind, percentage, until
-        return (cycle + 1) * len(self.entries) + 1, kind, percentage, until
+                return cycle * len(self.entries) + index + 1, title, percentage, until
+        return (cycle + 1) * len(self.entries) + 1, title, percentage, until
 
     def ended(self):
         return self.current()[0] == -1
@@ -197,9 +163,9 @@ class ScheduledSideJob:
         self._previous_interval = None
 
     def run_if_active(self, schedule, stopped, pacer, *, deadline=None):
-        """Run at most one side-job batch; return whether this interval was side-job."""
+        """Run at most one job-1 batch; return whether this interval was job-1."""
         kind, percentage, boundary = schedule.current_job()
-        if kind != "side-job" or percentage <= 0 or stopped.is_set():
+        if kind != "job-1" or percentage <= 0 or stopped.is_set():
             return False
         until = boundary if deadline is None else min(boundary, deadline)
         if time.monotonic() >= until:
@@ -210,7 +176,7 @@ class ScheduledSideJob:
             if self.before_log is not None:
                 self.before_log()
             logging.getLogger("LRAEP_trainer").debug(
-                "Side-job effort GPU duty-cycle target: %d%%", percentage,
+                "job-1 effort GPU duty-cycle target: %d%%", percentage,
             )
             self._previous_interval = percentage, boundary
         if self.exhausted:
@@ -226,7 +192,7 @@ class ScheduledSideJob:
 
         def cancelled():
             return (stopped.is_set() or time.monotonic() >= until
-                    or schedule.current_job()[0] != "side-job"
+                    or schedule.current_job()[0] != "job-1"
                     or schedule.current()[0] <= 0)
 
         if self.on_progress is not None:

@@ -9,294 +9,126 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG
-from LRAEP_trainer.config_export import FORMAT, decode_config_document, read_open_text
 from LRAEP_trainer import config_transfer as transfer
+from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, save_config
+from LRAEP_trainer.config_export import decode_config_document
 
 
 class ConfigTransferTests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        self.directory = Path(directory.name)
-        self.source = self.directory / 'trainer' / 'config.json'
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.source = self.directory / "trainer" / "config.json"
         self.source.parent.mkdir()
-        self.destination = self.directory / 'WR' / 'config.json'
-        self.env_path = self.destination.parent / '.env'
-        self.text = '  متن رمز "quotes" \'single\' $HOME #literal\nsecond line 🌍  '
+        self.destination = self.directory / "WR" / "config.json"
         self.values = {
-            'version': 1,
-            'mode': 'solo',
-            'official_source': 'src/LRAEP_helpers',
-            'device': 'cuda:0',
-            'training': {
-                'job_sequence': [["main", 60, 80], ["side-job", 120, 70], ["main", 180, 10]],
-                'output_dir': 'results',
-                'max_batches': 2,
-            },
-            'S3': {
-                'protocol': 'KEX',
-                'KEX_uname': 'PRIVATE-KEX-IDENTITY',
-                'WR_S2': 'PRIVATE-WR-IDENTITY',
-                'worker': 'test-rig',
-                'password': 'PRIVATE-S3-PASSWORD',
-                'KEX': {'host': 'kex.example', 'port': 8048, 'tls': True},
-                'WR': {'host': 'wr.example', 'port': 9000, 'tls': False,
-                       'certificate_version': 3},
-            },
-            'node': {'username': 'PRIVATE-NODE-USER', 'password': 'PRIVATE-NODE-PASSWORD'},
-            'vpn': {'enabled': True, 'link': 'vless://PRIVATE-VPN-ID@vpn.example:443',
-                    'links_file': 'links.txt'},
+            "version": 1, "mode": "solo", "official_source": "src/LRAEP_helpers",
+            "training": {"max_batches": 2, "output_dir": "results"},
+            "S3": {"protocol": "KEX", "WR_S2": "PRIVATE-IDENTITY",
+                   "password": "PRIVATE-S3-PASSWORD",
+                   "WR": {"host": "wr.example", "port": 9000, "tls": False}},
+            "vpn": {"enabled": True, "link": "vless://fixture@example.invalid:443"},
+            "telegram": {"enabled": False, "tgBot_key": "123:VISIBLE_TOKEN"},
+            "side_job": {"repo_url": "https://huggingface.co/datasets/fixture/thesis"},
         }
-        self.save_source()
+        self.source.write_text(json.dumps(self.values))
 
-    def save_source(self):
-        self.source.write_text(json.dumps(self.values, ensure_ascii=False, indent=2) + '\n')
+    def expected(self):
+        values = copy.deepcopy(self.values)
+        values["mode"] = "S3"
+        values["S3"]["protocol"] = "WR"
+        values.setdefault("side_job", {}).setdefault("repo_url", DEFAULT_CONFIG["side_job"]["repo_url"])
+        return values
 
-    def exported_values(self):
-        expected = copy.deepcopy(self.values)
-        expected['mode'] = 'S3'
-        expected['S3']['protocol'] = 'WR'
-        expected.setdefault('side_job', {}).setdefault('repo_url', DEFAULT_CONFIG['side_job']['repo_url'])
-        return expected
-
-    def isolated_wr_load(self, *, expected_success=True):
-        wr_source = Path(__file__).resolve().parents[2] / 'LRAEP-WR-Trainer' / 'src'
-        if not (wr_source / 'LRAEP_trainer' / 'config.py').is_file():
-            self.skipTest('standalone WR checkout unavailable for interoperability test')
-        script = '''
-import json
-from pathlib import Path
-import sys
-import LRAEP_trainer.config as config
-assert Path(config.__file__).resolve().parent.parent == Path(sys.argv[2]).resolve()
-try:
-    raw = config.read_config(sys.argv[1])
-    runtime = config.load_config(sys.argv[1])
-    S3 = config.resolve_S3_settings(runtime['S3'])
-except config.ConfigError as error:
-    print(str(error))
-    raise SystemExit(1)
-print(json.dumps({'raw': raw, 'runtime': runtime, 'S3': S3}, ensure_ascii=False))
-'''
-        environment = dict(os.environ)
-        environment['PYTHONPATH'] = str(wr_source)
-        environment['open_text'] = 'WRONG-PROCESS-TEXT'
-        environment['OPEN_TEXT'] = 'WRONG-UPPERCASE-TEXT'
-        environment['LRAEP_CONFIG_KEY'] = 'WRONG-LEGACY-KEY'
-        result = subprocess.run([sys.executable, '-c', script, str(self.destination), str(wr_source)],
+    def test_default_export_encrypts_only_s3_and_loads_in_isolated_standalone(self):
+        before = self.source.read_bytes()
+        self.assertEqual(transfer.export_wr_config(self.source, self.destination), self.destination)
+        document = json.loads(self.destination.read_text())
+        expected = self.expected()
+        self.assertNotIn("S3", document)
+        self.assertEqual(decode_config_document(document), expected)
+        for name in expected.keys() - {"S3"}:
+            self.assertEqual(document[name], expected[name])
+        self.assertNotIn("PRIVATE-S3-PASSWORD", self.destination.read_text())
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(set(self.destination.parent.iterdir()), {self.destination})
+        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o600)
+        standalone_source = Path(__file__).resolve().parents[2] / "LRAEP-WR-Trainer" / "src"
+        if not (standalone_source / "workrunner" / "config.py").is_file():
+            self.skipTest("standalone checkout unavailable")
+        script = """
+import json, sys
+from workrunner.config import read_config, load_config, resolve_S3_settings
+raw = read_config(sys.argv[1])
+runtime = load_config(sys.argv[1])
+selected = resolve_S3_settings(runtime["S3"])
+assert selected["protocol"] == "WR" and selected["host"] == "wr.example"
+print(json.dumps(raw))
+"""
+        environment = dict(os.environ, PYTHONPATH=str(standalone_source),
+                           open_text="wrong", LRAEP_CONFIG_KEY="wrong")
+        result = subprocess.run([sys.executable, "-c", script, str(self.destination)],
                                 cwd=self.directory, env=environment, capture_output=True,
                                 text=True, timeout=20)
-        if expected_success:
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-            return json.loads(result.stdout)
-        self.assertNotEqual(result.returncode, 0)
-        return result
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), expected)
 
-    def test_plain_source_exports_to_private_encoded_wr_config_and_loads_in_wr_process(self):
-        source_before = self.source.read_bytes()
-        expected = self.exported_values()
-        returned = transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertEqual(returned, self.destination)
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertEqual(json.loads(self.source.read_text()), self.values)
+    def test_custom_output_key_and_encrypted_source_are_independent(self):
+        save_config(self.source, self.values, key="source key")
+        before = self.source.read_bytes()
+        transfer.export_wr_config(self.source, self.destination, source_key="source key", key="output key")
         document = json.loads(self.destination.read_text())
-        self.assertEqual(document['format'], FORMAT)
-        self.assertEqual(set(document), {'format', 'salt', 'ciphertext'})
-        self.assertEqual(decode_config_document(document, self.text), expected)
-        self.assertEqual(read_open_text(self.env_path), self.text)
-        for path in (self.destination, self.env_path):
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(set(self.destination.parent.iterdir()), {self.destination, self.env_path})
-        for secret in ('PRIVATE-WR-IDENTITY', 'PRIVATE-S3-PASSWORD', 'PRIVATE-VPN-ID',
-                       'PRIVATE-NODE-PASSWORD', self.text, 'job_sequence', 'WR_S2'):
-            self.assertNotIn(secret, self.destination.read_text())
-        loaded = self.isolated_wr_load()
-        self.assertEqual(loaded['raw'], expected)
-        self.assertEqual(loaded['runtime']['mode'], 'S3')
-        self.assertEqual(loaded['runtime']['training']['job_sequence'], self.values['training']['job_sequence'])
-        self.assertNotIn('side_job_effort', loaded['runtime']['training'])
-        self.assertEqual(loaded['S3']['protocol'], 'WR')
-        self.assertEqual(loaded['S3']['host'], 'wr.example')
-        self.assertEqual(loaded['S3']['port'], 9000)
-        self.assertEqual(loaded['S3']['WR_S2'], 'PRIVATE-WR-IDENTITY')
-        self.assertEqual(loaded['runtime']['official_source'], str(self.destination.parent / 'src/LRAEP_helpers'))
-        self.assertEqual(loaded['runtime']['training']['output_dir'], str(self.destination.parent / 'results'))
-        self.assertEqual(loaded['raw']['official_source'], 'src/LRAEP_helpers')
-        self.assertEqual(loaded['raw']['training']['output_dir'], 'results')
+        self.assertEqual(decode_config_document(document, "output key"), self.expected())
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertFalse((self.destination.parent / ".env").exists())
 
-    def test_export_retains_name_interval_and_encrypts_telegram_credentials(self):
-        self.values["trainer_name"] = "WR test trainer"
-        self.values["telegram"] = {
-            "enabled": True, "tgBot_key": "123:PRIVATE_TELEGRAM_TOKEN", "tgChatID": -123,
-            "heartbeat_tgBot_key": "456:PRIVATE_HEARTBEAT_TOKEN",
-            "update_interval_seconds": 42,
-        }
-        self.save_source()
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertNotIn("PRIVATE_TELEGRAM_TOKEN", self.destination.read_text())
-        self.assertNotIn("PRIVATE_HEARTBEAT_TOKEN", self.destination.read_text())
-        loaded = self.isolated_wr_load()
-        self.assertEqual(loaded["runtime"]["telegram"], self.values["telegram"])
-        self.assertEqual(loaded["runtime"]["trainer_name"], "WR test trainer")
-
-    def test_export_preserves_unrelated_env_assignments_and_comments(self):
+    def test_existing_dotenv_is_neither_read_nor_modified(self):
         self.destination.parent.mkdir()
-        self.env_path.write_text('# Keep comment\nUNRELATED="literal $HOME"\nopen_text="old"\nLAST=keep\n')
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        stored = self.env_path.read_text()
-        self.assertTrue(stored.startswith('# Keep comment\nUNRELATED="literal $HOME"\n'))
-        self.assertTrue(stored.endswith('LAST=keep\n'))
-        self.assertEqual(read_open_text(self.env_path), self.text)
-        self.assertNotIn('open_text="old"', stored)
+        env = self.destination.parent / ".env"
+        env.write_text("open_text=obsolete\nUNRELATED=keep\n")
+        before = env.read_bytes()
+        transfer.export_wr_config(self.source, self.destination)
+        self.assertEqual(env.read_bytes(), before)
+        self.assertEqual(decode_config_document(json.loads(self.destination.read_text())), self.expected())
 
-    def test_export_encrypts_side_job_and_preserves_source(self):
-        self.values['side_job'] = {
-            'repo_url': 'https://huggingface.co/datasets/private-owner/private-thesis/tree/main/train',
-            'channels': [32, 64], 'blocks_per_stage': [1, 2],
-            'vpn': {'enabled': True, 'link': 'ss://PRIVATE-SIDE_JOB-VPN',
-                    'core_path': 'bin/side-job-xray'},
-        }
-        self.save_source()
-        source_before = self.source.read_bytes()
-        expected = self.exported_values()
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        exported = decode_config_document(json.loads(self.destination.read_text()), self.text)
-        self.assertEqual(exported['side_job'], self.values['side_job'])
-        for secret in ('private-owner', 'private-thesis', 'PRIVATE-SIDE_JOB-VPN', 'repo_url'):
-            self.assertNotIn(secret, self.destination.read_text())
-        self.assertEqual(exported, expected)
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertEqual(json.loads(self.source.read_text()), self.values)
-        loaded = self.isolated_wr_load()
-        self.assertEqual(loaded['runtime']['side_job']['repo_url'], self.values['side_job']['repo_url'])
-        self.assertEqual(loaded['runtime']['side_job']['vpn']['core_path'],
-                         str(self.destination.parent / 'bin/side-job-xray'))
-        self.assertEqual(loaded['raw'], expected)
-
-    def test_export_does_not_hide_invalid_side_job_settings(self):
-        self.values['side_job'] = {'channels': [0, 128, 256, 512]}
-        self.save_source()
-        source_before = self.source.read_bytes()
-        with self.assertRaisesRegex(ConfigError, 'side_job.channels'):
-            transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertFalse(self.destination.exists())
-        self.assertFalse(self.env_path.exists())
-
-    def test_save_key_false_writes_no_env_and_does_not_modify_an_existing_env(self):
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text, save_key=False)
-        self.assertTrue(self.destination.is_file())
-        self.assertFalse(self.env_path.exists())
-        self.assertEqual(decode_config_document(json.loads(self.destination.read_text()), self.text),
-                         self.exported_values())
-        self.env_path.write_text('# old\nopen_text="existing"\n')
-        before = self.env_path.read_bytes()
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text, save_key=False)
-        self.assertEqual(self.env_path.read_bytes(), before)
-
-    def test_repeated_export_is_fresh_and_does_not_change_authoring_config(self):
-        source_before = self.source.read_bytes()
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        first = json.loads(self.destination.read_text())
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        second = json.loads(self.destination.read_text())
-        self.assertNotEqual(first['salt'], second['salt'])
-        self.assertNotEqual(first['ciphertext'], second['ciphertext'])
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertEqual(decode_config_document(second, self.text), self.exported_values())
-
-    def test_same_source_and_destination_or_env_destination_are_rejected_before_writing(self):
-        source_before = self.source.read_bytes()
-        for destination in (self.source, self.source.parent / '.env'):
-            with self.subTest(destination=destination.name), self.assertRaises(ConfigError):
-                transfer.export_wr_config(self.source, destination, open_text=self.text)
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertFalse((self.source.parent / '.env').exists())
-        alias = self.source.parent / 'alias.json'
-        alias.symlink_to(self.source)
-        with self.assertRaises(ConfigError):
-            transfer.export_wr_config(self.source, alias, open_text=self.text)
-        self.assertEqual(self.source.read_bytes(), source_before)
-
-    def test_preflight_requires_wr_endpoint_identity_and_enabled_vpn_without_creating_output(self):
-        cases = [
-            ('WR host', lambda values: values['S3']['WR'].update(host='')),
-            ('WR identity', lambda values: values['S3'].update(WR_S2='')),
-            ('VPN enabled', lambda values: values['vpn'].update(enabled=False)),
-            ('VPN link', lambda values: values['vpn'].update(link='')),
-        ]
-        original = copy.deepcopy(self.values)
-        for name, mutate in cases:
-            with self.subTest(case=name):
-                self.values = copy.deepcopy(original)
-                mutate(self.values)
-                self.save_source()
-                source_before = self.source.read_bytes()
-                with self.assertRaises((ConfigError, ValueError)) as caught:
-                    transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-                self.assertEqual(self.source.read_bytes(), source_before)
-                self.assertFalse(self.destination.exists())
-                self.assertFalse(self.env_path.exists())
-                self.assertNotIn('PRIVATE-', str(caught.exception))
-
-    def test_invalid_key_and_save_key_flag_fail_before_output_or_env_changes(self):
-        for arguments in ({'open_text': ''}, {'open_text': '  '},
-                          {'open_text': self.text, 'save_key': 'yes'},
-                          {'open_text': self.text, 'save_key': 1}):
-            with self.subTest(arguments=type(arguments.get('save_key')).__name__):
-                with self.assertRaises((ConfigError, ValueError)):
-                    transfer.export_wr_config(self.source, self.destination, **arguments)
-                self.assertFalse(self.destination.exists())
-                self.assertFalse(self.env_path.exists())
-
-    def test_env_write_failure_rolls_back_existing_export_exactly(self):
+    def test_invalid_key_or_runtime_settings_do_not_replace_export(self):
         self.destination.parent.mkdir()
-        original = b'{\r\n  "existing": "unchanged"\r\n}\r\n'
-        self.destination.write_bytes(original)
-        self.env_path.write_text('OTHER=keep\nopen_text="original"\n')
-        env_before = self.env_path.read_bytes()
-        with patch.object(transfer, 'write_open_text', side_effect=ValueError('PRIVATE-FAILURE')):
-            with self.assertRaisesRegex(ConfigError, 'rolled back') as caught:
-                transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertNotIn('PRIVATE-FAILURE', str(caught.exception))
-        self.assertEqual(self.destination.read_bytes(), original)
-        self.assertEqual(self.env_path.read_bytes(), env_before)
-        self.assertEqual(set(self.destination.parent.iterdir()), {self.destination, self.env_path})
+        self.destination.write_text("previous")
+        before = self.source.read_bytes()
+        for key in ("", "  ", 123):
+            with self.assertRaises(ConfigError):
+                transfer.export_wr_config(self.source, self.destination, key=key)
+            self.assertEqual(self.destination.read_text(), "previous")
+        for changes in ({"enabled": False}, {"enabled": True, "link": ""}):
+            values = copy.deepcopy(self.values)
+            values["vpn"] = changes
+            self.source.write_text(json.dumps(values))
+            with self.assertRaises(ConfigError):
+                transfer.export_wr_config(self.source, self.destination)
+            self.assertEqual(self.destination.read_text(), "previous")
+        self.source.write_bytes(before)
 
-    def test_env_encoding_failure_rolls_back_and_does_not_expose_passphrase(self):
+    def test_failed_atomic_write_preserves_source_and_destination(self):
         self.destination.parent.mkdir()
-        original = b'previous encoded document\r\n'
-        self.destination.write_bytes(original)
-        source_before = self.source.read_bytes()
-        error = UnicodeEncodeError('utf-8', self.text, 0, 1, 'PRIVATE-ENCODING-DETAILS')
-        with patch.object(transfer, 'write_open_text', side_effect=error):
-            with self.assertRaisesRegex(ConfigError, 'rolled back') as caught:
-                transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertNotIn(self.text, str(caught.exception))
-        self.assertNotIn('PRIVATE-ENCODING-DETAILS', str(caught.exception))
-        self.assertEqual(self.destination.read_bytes(), original)
-        self.assertEqual(self.source.read_bytes(), source_before)
-        self.assertFalse(self.env_path.exists())
+        self.destination.write_text("previous")
+        before = self.source.read_bytes()
+        with patch("LRAEP_trainer.config.os.replace", side_effect=OSError("PRIVATE-ERROR")):
+            with self.assertRaises(ConfigError):
+                transfer.export_wr_config(self.source, self.destination)
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(self.destination.read_text(), "previous")
         self.assertEqual(set(self.destination.parent.iterdir()), {self.destination})
 
-    def test_env_write_failure_removes_a_new_export(self):
-        source_before = self.source.read_bytes()
-        with patch.object(transfer, 'write_open_text', side_effect=OSError('PRIVATE-FAILURE')):
-            with self.assertRaisesRegex(ConfigError, 'rolled back'):
-                transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.assertFalse(self.destination.exists())
-        self.assertFalse(self.env_path.exists())
-        self.assertEqual(list(self.destination.parent.iterdir()), [])
-        self.assertEqual(self.source.read_bytes(), source_before)
-
-    def test_wrong_adjacent_file_text_fails_wr_load_without_environment_fallback(self):
-        transfer.export_wr_config(self.source, self.destination, open_text=self.text)
-        self.env_path.write_text('open_text="incorrect file value"\n')
-        result = self.isolated_wr_load(expected_success=False)
-        for secret in (self.text, 'incorrect file value', 'PRIVATE-S3-PASSWORD'):
-            self.assertNotIn(secret, result.stdout + result.stderr)
+    def test_export_rejects_source_alias_and_dotenv_destinations(self):
+        alias = self.source.parent / "alias.json"
+        alias.symlink_to(self.source)
+        before = self.source.read_bytes()
+        for destination in (self.source, alias, self.source.parent / ".env"):
+            with self.assertRaises(ConfigError):
+                transfer.export_wr_config(self.source, destination)
+        self.assertEqual(self.source.read_bytes(), before)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -9,10 +9,10 @@ panel, and it does not import or execute `train.py`.
 
 ## Repeating schedule
 
-The application decrypts its own `config.json` with `open_text` from the adjacent
-`.env` and follows that decoded `training.job_sequence`. It does not read the
-shared authoring config at runtime or use a schedule embedded in the notebook.
-Each new run reads the current config and key again.
+The application reads its own `config.json`, decrypts only `S_3` with the
+default key `qwe`, and follows the readable `training.job_sequence`. It does
+not read `.env`, the shared trainer config, or a schedule embedded in the
+notebook. Each new run reads the current config again.
 
 The sequence is a continuous cycle: after the final interval, it goes back to
 the first interval and repeats. The same CNN model, optimizer, and partial epoch
@@ -22,22 +22,26 @@ state survive across intervals and cycles. For example:
 "training": {
   "max_batches": 0,
   "max_seconds": 0,
-  "job_sequence": [["main", 600, 100], ["side-job", 120, 100]]
+  "job_sequence": [
+    {"title": "job-0", "time": 600, "max_gpu_utilization": 100},
+    {"title": "job-1", "time": 120, "max_gpu_utilization": 100}
+  ]
 },
 "side_job": {
   "epochs": 0
 }
 ```
 
-This mines for ten minutes, trains the CNN for two minutes, and repeats until
+This runs job-0 for ten minutes, trains job-1 for two minutes, and repeats until
 manually stopped. Zero time, batch, and epoch limits mean unlimited operation.
 Avoid `-1` exit entries for continuous training. A job percentage of `0` pauses
 for that interval's duration, then the sequence advances normally. The legacy
 explicit time, batch, epoch, and exit controls remain available for bounded runs.
 
 A percentage of `100` disables intentional GPU pacing; actual utilization still
-depends on workload and data loading. An optional fourth entry value sets the
-percentage-point tolerance. Intervals switch between batches; an in-flight CUDA
+depends on workload and data loading. Each dictionary has exactly `title`,
+`time` in seconds, and `max_gpu_utilization`; no tolerance is supported.
+Intervals switch between batches; an in-flight CUDA
 operation or network request can finish after its scheduled boundary. Temporary
 S3 transport failures follow the existing reconnect behavior.
 
@@ -45,9 +49,9 @@ For percentages below `100`, CNN execution is paced between CUDA operations,
 including forward, backward, and optimizer work. It rests after roughly 10 ms
 of accumulated operation time instead of running an entire large batch before
 resting. This preserves the configured batch size and model calculations.
-Fresh hardware readings above the active entry's upper bound also hold back
-new work for both jobs; for `70 ± 10`, that bound is `80`. The selected random
-target still controls the operation-time budget. Hardware readings refresh
+Fresh hardware readings above the configured `max_gpu_utilization` hold back
+new work for both jobs. The configured percentage also controls the operation-time
+budget, with no random sampling or additional margin. Hardware readings refresh
 about five times per second. Feedback waits respect interval boundaries and manual stopping;
 stale or unavailable telemetry uses time-based pacing instead.
 
@@ -81,20 +85,22 @@ load these changes and discard its previously loaded modules and state.
 
 ## Configuration and checkpoints
 
-Maintain configuration in `trainer/config.json` and export it from
-`trainer/config_manager.ipynb` to the standalone directory. The shared
-[`README`](../README.md) describes editing, export, and the decode text stored
-in the standalone `.env`. Documentation remains in `trainer`.
+Use `trainer/config_manager.ipynb` to edit and save
+`LRAEP-WR-Trainer/config.json` directly. Its update and replace helpers write
+that destination. The shared [`README`](../README.md) describes those helpers
+and the optional import from `trainer/config.json`.
 
-The encrypted standalone config includes `side_job` settings, the dataset
-repository URL, and the CNN's independent VPN settings. Decryption reads the
-lowercase `open_text` assignment from the adjacent `.env`, including when
-launched from another directory. Plain JSON configs are rejected. The standalone
-code has no dataset URL default; an active CNN interval requires
-`side_job.repo_url` in the encrypted config. Validation and dataset download
-errors omit repository values, and training logs omit repository and shard
-paths. Config and key files are ignored by git and written with owner-only
-permissions. Keep `.env` private because possession of it allows decryption.
+Only the `S_3` value is encrypted. Its default decryption key is `qwe`; no
+`.env`, key file, or startup prompt is required. All other settings, including
+`side_job`, the dataset URL, Telegram, and VPN, remain readable JSON. The
+loader returns decrypted connection settings as `S3` in memory. Use that
+section name when passing dictionaries to the config manager helpers.
+Existing plain configs remain readable for migration; the next save writes
+`S_3` encrypted. Older whole-document exports can be read with an explicit
+original key and saved in the new format. Config files stay ignored by git
+and are saved atomically with owner-only permissions.
+The standalone code has no dataset URL default; an active CNN interval
+requires `side_job.repo_url` in the config.
 The notebook setup installs missing general-purpose packages from requirements.
 
 Completed CNN epochs save checkpoints under `LRAEP-WR-Trainer/data/side-job/`,
@@ -117,3 +123,6 @@ and `trainer.run(root=None, login_only=False)`. Worker process controls and GPU
 memory release apply to that optional API; they are independent of the notebook's
 direct execution. Its process-control tests use local fixture workers without
 reading private config or contacting a live S3.
+
+Periodic Telegram training stats use `telegram.training_stats_tgBot_key`;
+job lifecycle events use `telegram.tgBot_key`. Both retain the configured chat ID.

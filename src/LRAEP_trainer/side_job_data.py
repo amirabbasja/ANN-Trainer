@@ -339,7 +339,7 @@ class ShardDataset(IterableDataset):
         try:
             import pyarrow.parquet as parquet
         except ImportError:
-            raise DatasetError("the side-job requires pyarrow; install the project requirements") from None
+            raise DatasetError("job-1 requires pyarrow; install the project requirements") from None
         try:
             with parquet.ParquetFile(self.path) as shard:
                 return shard.metadata.num_rows * self.passes
@@ -350,7 +350,7 @@ class ShardDataset(IterableDataset):
         try:
             import pyarrow.parquet as parquet
         except ImportError:
-            raise DatasetError("the side-job requires pyarrow; install the project requirements") from None
+            raise DatasetError("job-1 requires pyarrow; install the project requirements") from None
         worker = get_worker_info()
         if self.passes > 1 and worker is not None:
             raise DatasetError("cached dataset passes require a single-process DataLoader")

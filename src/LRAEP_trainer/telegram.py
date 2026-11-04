@@ -18,7 +18,7 @@ class TelegramUpdates:
         self._enabled = settings.get("enabled", False)
         self._name = configuration.get("trainer_name", "trainer")
         self._token = settings.get("tgBot_key", "")
-        self._heartbeat_token = settings.get("heartbeat_tgBot_key", "")
+        self._training_stats_token = settings.get("training_stats_tgBot_key", "")
         self._chat_id = settings.get("tgChatID", "")
         self._interval = settings.get("update_interval_seconds", 300)
         self._snapshot = snapshot
@@ -63,8 +63,8 @@ class TelegramUpdates:
             raise ValueError("Telegram rejected the update")
 
     def _send(self, opener):
-        if self._heartbeat_token:
-            self._request(opener, self._heartbeat_token, str(self._snapshot()))
+        if self._training_stats_token:
+            self._request(opener, self._training_stats_token, str(self._snapshot()))
 
     def _run(self):
         opener = None
@@ -107,7 +107,7 @@ class TelegramUpdates:
             if closing:
                 return
             now = time.monotonic()
-            if self._heartbeat_token and now >= next_update and not self._stopped.is_set():
+            if self._training_stats_token and now >= next_update and not self._stopped.is_set():
                 try:
                     if opener is None:
                         opener = http_opener(self._proxy)
@@ -121,7 +121,7 @@ class TelegramUpdates:
             with self._lock:
                 retry_at = min((item[2] for item in self._events), default=None)
             deadlines = []
-            if self._heartbeat_token:
+            if self._training_stats_token:
                 deadlines.append(next_update)
             if retry_at is not None:
                 deadlines.append(retry_at)

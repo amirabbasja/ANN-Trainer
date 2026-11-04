@@ -13,6 +13,7 @@ import math
 import re
 from typing import Any
 
+from .fixed_constants import constant_buffer, constant_bytes, constant_text
 from .S6_requests import build_submit_request
 from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 
@@ -20,12 +21,18 @@ from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 
+_HEADER_MASK = b'I*8O`wh#PAk==IbHLDoHRF5Nlu*n|gYxJlA+C{$8'
+
+
 def header_mask():
-    return bytes.fromhex('9d2f73c411a85be0367ad14e920cbf65f32884da176eb941cc530fa67de21974')
+    return constant_bytes(_HEADER_MASK)
+
+
+_WORK_PREFIX_MASK = b'>SuG>Sk;?fQ2qa${>xwQQn$)?cMaTnN;>NC%{4e(3{5T~Xp;raRu;cSVK7xBS8WP$<QFjXHwN3@4Md5~XtB)j0a5CAj<Y~R'
 
 
 def work_prefix_mask():
-    return bytes.fromhex('4dc0d47dff723cf8f75a583b596cf848f5106dd0d0aa7bdded9d4d566a929ffaabea8985cf34a26af1b118e2c697f283f0caadd643b0975390a17c79aae32e69cf166b57a6f64dd02914e7e4')
+    return constant_bytes(_WORK_PREFIX_MASK)
 
 
 class UnknownWRRequest(S3ProtocolError):
@@ -35,24 +42,23 @@ class UnknownWRRequest(S3ProtocolError):
 def _hex_bytes(value: Any, length: int, label: str) -> bytes:
     if (not isinstance(value, str) or len(value) != length * 2
             or _HEX.fullmatch(value) is None):
-        raise S3ProtocolError(f"S7 {label} must contain exactly {length} hexadecimal bytes")
+        raise S3ProtocolError(f"{constant_text(b'^pJ-')}{label} must contain exactly {length} hexadecimal bytes")
     return bytes.fromhex(value)
 
 
 def decode_notify_payload(value: str) -> bytes:
     """Recover the observed 76-byte block header from its 200-byte work blob."""
-    payload = _hex_bytes(value, 200, "notify payload")
-    prefix = work_prefix_mask()
-    mask = header_mask()
-    header = bytes(byte ^ prefix[index] ^ mask[index % 32]
-                   for index, byte in enumerate(payload[:76]))
+    payload = _hex_bytes(value, 200, constant_text(b'$;i{r!QO}0#@@@w#=`'))
+    with constant_buffer(_WORK_PREFIX_MASK) as prefix, constant_buffer(_HEADER_MASK) as mask:
+        header = bytes(byte ^ prefix[index] ^ mask[index % 32]
+                       for index, byte in enumerate(payload[:76]))
     # A syntactically valid work blob must also carry a valid compact target.
     nbits = int.from_bytes(header[72:76], "little")
     exponent, mantissa = nbits >> 24, nbits & 0x007FFFFF
     target = (mantissa >> (8 * (3 - exponent)) if exponent <= 3
               else mantissa << (8 * (exponent - 3)))
     if nbits & 0x00800000 or not 0 < target < 1 << 256:
-        raise S3ProtocolError("S7 decoded header has an invalid compact target")
+        raise S3ProtocolError(constant_text(b'^pJ<c!o<kK!o!Ep!p6hG)rZf<)Q85&htA2-#>>vbhs4Or*T%%thttN@z{1l'))
     return header
 
 
@@ -70,13 +76,13 @@ class WRJob(S3Job):
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.cert_version != 3 or self.height != 0:
-            raise S3ProtocolError("Only observed S7 generation 3 is supported")
+            raise S3ProtocolError(constant_text(b'=*i38hsed$!qw5j!-w>chrq(g!qvvp&dAA!l!wmLht$&7*T~h=!ov'))
         if not isinstance(self.notify_payload, bytes) or len(self.notify_payload) != 200:
-            raise S3ProtocolError("S7 notify payload must contain 200 bytes")
+            raise S3ProtocolError(constant_text(b'^pJ<i$kWcj-iO!5-pk0w!-vY!)YFH=$jQ^j&dG<BmzRgd-qXU='))
         if self.worker_nonce is not None and (
             not isinstance(self.worker_nonce, bytes) or len(self.worker_nonce) != 8
         ):
-            raise S3ProtocolError("S7 worker nonce must contain eight bytes")
+            raise S3ProtocolError(constant_text(b'^pJ<p$koik)rZN*$;85k%F@)+hs4Oq)5gxphr-Ul&(nv+-qXU='))
 
 
 @dataclass(frozen=True)
@@ -103,7 +109,7 @@ class WRShare:
                 tile_w=self.tile_w, sb=self.sb, a_rows=self.a_rows, b_cols=self.b_cols,
             )
         except (ValueError, TypeError) as error:
-            raise S3ProtocolError("Invalid S7 share fields") from error
+            raise S3ProtocolError(constant_text(b'?#a={%g)1x^pJ<t&&Jilhr!Om%fr+')) from error
 
 
 class WRDialect:
@@ -111,33 +117,33 @@ class WRDialect:
 
     def __init__(self, WR_S2: str, worker: str, agent: str = DEFAULT_AGENT) -> None:
         self.WR_S2 = _text(WR_S2, "WR_S2", 256)
-        self.worker = _text(worker, "worker", 128, allow_empty=True)
+        self.worker = _text(worker, constant_text(b'(8$%y!qo'), 128, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
         if any(character.isspace() for character in WR_S2 + worker):
-            raise S3ProtocolError("WR_S2 and worker must contain no whitespace")
+            raise S3ProtocolError(constant_text(b'@b&ogm50X3!-vqw)y%@xhsx5_(}%>!$<xNp$%o0vhtSW?)56r(#>Bz'))
 
     def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
         if type(start_id) is not int or not 0 <= start_id < 1 << 64:
-            raise S3ProtocolError("S7 request ID must be an unsigned 64-bit integer")
-        return [{"id": start_id, "method": "login", "params": [self.WR_S2, self.worker, self.agent]}]
+            raise S3ProtocolError(constant_text(b'^pJ<u!q(El)YFIV<A=)9)YFH>!iUDmhtkQ^&cMmS!-tWRip9>;htA2<!ob4S'))
+        return [{"id": start_id, "method": constant_text(b'%gDga$p'), "params": [self.WR_S2, self.worker, self.agent]}]
 
     @staticmethod
     def report_request(gpu_name: str, hashrate: float, request_id: int) -> dict[str, Any]:
         """Report one GPU's measured work rate in raw hash units per second."""
         if type(request_id) is not int or not 0 <= request_id < 1 << 64:
-            raise S3ProtocolError("S7 request ID must be an unsigned 64-bit integer")
+            raise S3ProtocolError(constant_text(b'^pJ<u!q(El)YFIV<A=)9)YFH>!iUDmhtkQ^&cMmS!-tWRip9>;htA2<!ob4S'))
         name = _text(gpu_name, "gpu_name", 256)
         if not name.strip() or not name.isprintable():
             raise S3ProtocolError("gpu_name must contain printable GPU identification")
         if isinstance(hashrate, bool) or not isinstance(hashrate, (int, float)):
-            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s")
+            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d'))
         try:
             rate = float(hashrate)
         except OverflowError:
-            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s") from None
+            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d')) from None
         if not math.isfinite(rate) or rate < 0:
-            raise S3ProtocolError("hashrate must be a nonnegative finite number in H/s")
-        return {"id": request_id, "method": "report_info", "params": [{"hashrate": rate, "name": name}]}
+            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d'))
+        return {"id": request_id, "method": constant_text(b')xy`v)zkRS$-&3'), "params": [{constant_text(b'&&Jfx)yC7p'): rate, "name": name}]}
 
     @staticmethod
     def accept(response: Mapping[str, Any]) -> bool:
@@ -157,55 +163,55 @@ class WRDialect:
         by the session; uncorrelated replies never authenticate or credit shares.
         """
         if isinstance(response, Mapping) and isinstance(response.get("method"), str):
-            raise UnknownWRRequest("Unknown S7 server method")
+            raise UnknownWRRequest(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZQ$)6dAm'))
         if not isinstance(response, Mapping) or set(response) - {"id", "status", "result", "error"}:
-            raise S3ProtocolError("Unknown S7 server message fields or method")
+            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZQ$)YQhn!iT}m!pp<dhsf23%EHsn$in'))
         request_id, status = response.get("id"), response.get("status")
         if (type(request_id) is not int or not -1 <= request_id < 1 << 64
                 or type(status) is not int or status not in (0, 1)):
-            raise S3ProtocolError("Unknown S7 response envelope")
+            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<u!qnHu$<)G!!pYIX%gEQl'))
         result = response.get("result")
         if request_id >= 0 and type(result) is bool:
             return "reply"
         if (request_id != -1 or status != 1 or response.get("error") is not None
                 or not isinstance(result, list) or not result):
-            raise S3ProtocolError("Unknown S7 server request or response shape")
-        if result[0] == "extranonce":
+            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZx>*3!b%(}&2_ht<N=*T~7#!iUt)#@E6'))
+        if result[0] == constant_text(b'!r#-?#>vRZ#KH'):
             if len(result) != 2:
-                raise S3ProtocolError("Unsupported S7 extranonce schema")
-            _hex_bytes(result[1], 8, "extranonce")
-            return "extranonce"
-        if result[0] == "notify":
+                raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
+            _hex_bytes(result[1], 8, constant_text(b'!r#-?#>vRZ#KH'))
+            return constant_text(b'!r#-?#>vRZ#KH')
+        if result[0] == constant_text(b'$;i{r!QK'):
             # Full job validation is performed by parse_job, including version.
             if len(result) != 5 or not all(isinstance(field, str) for field in result):
-                raise S3ProtocolError("Unsupported S7 notify schema")
-            return "notify"
+                raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<i$kWcj-iOr0&%(;a'))
+            return constant_text(b'$;i{r!QK')
         if isinstance(result[0], str):
-            raise UnknownWRRequest("Unknown S7 server notification")
-        raise S3ProtocolError("Malformed S7 notification name")
+            raise UnknownWRRequest(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZN*)6T)p#KzOk$jJ'))
+        raise S3ProtocolError(constant_text(b'>c-2#$koci!-w>chsns(&cV*a#?#Ko$%o0t%EA'))
 
     @staticmethod
     def parse_extranonce(result: list) -> bytes:
-        if not isinstance(result, list) or len(result) != 2 or result[0] != "extranonce":
-            raise S3ProtocolError("Unsupported S7 extranonce schema")
-        return _hex_bytes(result[1], 8, "extranonce")
+        if not isinstance(result, list) or len(result) != 2 or result[0] != constant_text(b'!r#-?#>vRZ#KH'):
+            raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
+        return _hex_bytes(result[1], 8, constant_text(b'!r#-?#>vRZ#KH'))
 
     @staticmethod
     def parse_job(result: list, configured_certificate_version: int | None = None,
                   worker_nonce: bytes | None = None) -> WRJob:
-        if (not isinstance(result, list) or len(result) != 5 or result[0] != "notify"
+        if (not isinstance(result, list) or len(result) != 5 or result[0] != constant_text(b'$;i{r!QK')
                 or not all(isinstance(field, str) for field in result)):
-            raise S3ProtocolError("Unsupported S7 notify schema")
+            raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<i$kWcj-iOr0&%(;a'))
         if result[4] != "3":
-            raise S3ProtocolError("Only observed S7 generation 3 is supported")
+            raise S3ProtocolError(constant_text(b'=*i38hsed$!qw5j!-w>chrq(g!qvvp&dAA!l!wmLht$&7*T~h=!ov'))
         if configured_certificate_version is not None and (
             type(configured_certificate_version) is not int or configured_certificate_version != 3
         ):
-            raise S3ProtocolError("S7 generation 3 requires certificate version 3")
-        payload = _hex_bytes(result[1], 200, "notify payload")
-        target_bytes = _hex_bytes(result[2], 32, "share target")
+            raise S3ProtocolError(constant_text(b'^pJ<Z!pXwb#?#Ko$%mAO)xy@&&eg)yhs46w)6T)p#KzOYhta~-)XvDshm-'))
+        payload = _hex_bytes(result[1], 200, constant_text(b'$;i{r!QO}0#@@@w#=`'))
+        target_bytes = _hex_bytes(result[2], 32, constant_text(b')X&D%!iUqw)xg5j'))
         return WRJob(
-            job_id=_text(result[3], "job_id", 128), header_bytes=decode_notify_payload(result[1]),
+            job_id=_text(result[3], constant_text(b'&B(?0&cg'), 128), header_bytes=decode_notify_payload(result[1]),
             # S7 transmits the uint256 in little-endian byte order,
             # unlike KEX's display-order hexadecimal target.
             height=0, cert_version=3, target=int.from_bytes(target_bytes, "little"),
@@ -216,9 +222,9 @@ class WRDialect:
     def submit_request(job: WRJob, share: WRShare, request_id: int,
                        negotiated_gzip: bool = False) -> dict[str, Any]:
         if not isinstance(job, WRJob) or not isinstance(share, WRShare):
-            raise S3ProtocolError("S7 submission requires its job and compact share")
+            raise S3ProtocolError(constant_text(b'^pJ<t(#6Wo)YQ(%$%oa#*3!<^!qkV()6|E}$i;`o$-{@l$jaBo#M6h=&&Jil'))
         if negotiated_gzip:
-            raise S3ProtocolError("S7 does not support KEX gzip proof submissions")
+            raise S3ProtocolError(constant_text(b'^pJ<c$imcz$;i`()Y8}2$ko$_?Bf52z}?Q*hu77}$iauy(#6Wo)YQ(%$<z'))
         if job.worker_nonce is None or share.worker_nonce != job.worker_nonce:
-            raise S3ProtocolError("S7 share worker nonce does not match its job")
+            raise S3ProtocolError(constant_text(b'^pJ<t&&JilhtSB?%)-@&$;ipX!iU4i!qkV!$kT_)#?!>lhtAW~ht0^v'))
         return share.request(request_id)

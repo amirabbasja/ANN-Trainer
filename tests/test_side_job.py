@@ -87,7 +87,7 @@ class ProgressTests(unittest.TestCase):
     def test_standalone_reports_epoch_rows_and_routes_lifecycle_and_progress(self):
         config = copy.deepcopy(DEFAULT_CONFIG)
         config["device"] = "cuda"
-        config["telegram"].update(enabled=True, tgBot_key="123:main", heartbeat_tgBot_key="456:progress")
+        config["telegram"].update(enabled=True, tgBot_key="123:main", training_stats_tgBot_key="456:progress")
         with patch("LRAEP_trainer.config.load_config", return_value=config), \
              patch("LRAEP_trainer.side_job.torch.cuda.current_device", return_value=2), \
              patch("LRAEP_trainer.side_job.SideJob") as factory, \
@@ -107,14 +107,14 @@ class ProgressTests(unittest.TestCase):
             monitor.return_value.__enter__.return_value.read.return_value = 40
             self.assertEqual(main([]), 0)
             self.assertEqual([call.args[0] for call in progress.update.call_args_list], [
-                "1 | side | 40% | --:--:-- | 1", "1 | side | 40% | --:--:-- | 1",
-                "1 | side | 40% | --:--:-- | 2", "1 | side | 40% | --:--:-- | 3",
+                "1 | job-1 | 40% | --:--:-- | 1", "1 | job-1 | 40% | --:--:-- | 1",
+                "1 | job-1 | 40% | --:--:-- | 2", "1 | job-1 | 40% | --:--:-- | 3",
             ])
             self.assertIs(telegram.call_args.args[0], config)
             self.assertEqual(telegram.call_args.args[1](), progress.update.call_args.args[0])
             updates = telegram.return_value.__enter__.return_value
             self.assertEqual([call.args[0] for call in updates.event.call_args_list],
-                             ["Job 1 side starting", "Job 1 side finished"])
+                             ["Job 1 job-1 starting", "Job 1 job-1 finished"])
             telegram.return_value.__exit__.assert_called_once()
             job.status.assert_not_called()
             self.assertIs(factory.call_args.kwargs["before_log"], progress.clear)
@@ -137,7 +137,7 @@ class ProgressTests(unittest.TestCase):
             monitor.return_value.__exit__.assert_called_once()
             updates = telegram.return_value.__enter__.return_value
             self.assertEqual([call.args[0] for call in updates.event.call_args_list],
-                             ["Job 1 side starting", "Job 1 side finished"])
+                             ["Job 1 job-1 starting", "Job 1 job-1 finished"])
             telegram.return_value.__exit__.assert_called_once()
 
 

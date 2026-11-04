@@ -2,13 +2,14 @@ import torch
 from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
 from LRAEP_gateway.comm.dataclasses import CommitmentHash
 from LRAEP_trainer.primitives import S1Configuration
-from LRAEP_trainer.wire_constants import s6_noise_seed_prefix
+from LRAEP_trainer.noise_domains import certificate_salt
+from LRAEP_trainer.fixed_constants import constant_buffer
 
 from .matrix_merkle_tree import MatrixMerkleTree
 
 # Domain-separation salts for the V3 (salted noise-seed) certificate derivation:
 def seed_salt(label):
-    return CNN_3ekalb(s6_noise_seed_prefix() + label).digest()
+    return certificate_salt(CNN_3ekalb, label)
 
 
 # root(32) || dim u32 LE(4) || zero padding(28) = one 64-byte BLAKE3 block.
@@ -21,12 +22,14 @@ def _bind_root(merkle_root: bytes, dim: int, salt: bytes) -> bytes:
 
 def bind_root_a(a_merkle_root: bytes, m: int) -> bytes:
     """V3 salting of A's Merkle root; commits the row count ``m``."""
-    return _bind_root(a_merkle_root, m, seed_salt(b'A'))
+    with constant_buffer(b'<^') as label:
+        return _bind_root(a_merkle_root, m, seed_salt(label))
 
 
 def bind_root_b(b_merkle_root: bytes, n: int) -> bytes:
     """V3 salting of B's Merkle root; commits the column count ``n``."""
-    return _bind_root(b_merkle_root, n, seed_salt(b'B'))
+    with constant_buffer(b'<p') as label:
+        return _bind_root(b_merkle_root, n, seed_salt(label))
 
 
 class CommitmentHasher:
