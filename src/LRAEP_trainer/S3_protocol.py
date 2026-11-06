@@ -32,7 +32,7 @@ _HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 
 def s2():
-    return constant_text(b'(8kNl!qW')
+    return constant_text('account')
 
 
 class S3ProtocolError(RuntimeError):

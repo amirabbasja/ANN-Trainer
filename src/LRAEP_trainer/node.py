@@ -5,7 +5,6 @@ from __future__ import annotations
 from .fixed_constants import constant_text
 
 import base64
-import json
 import math
 import ssl
 import threading
@@ -15,6 +14,7 @@ import urllib.request
 from typing import Any
 
 from . import network
+from .wire_io import WireError, WireLimitError, dumps_buffer, read_json_body
 
 
 class NodeError(RuntimeError):
@@ -106,51 +106,66 @@ class NodeClient:
         with self._id_lock:
             self._request_id += 1
             request_id = self._request_id
+        request = reply = payload = response = payload_context = None
         try:
-            payload = json.dumps(
-                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
-                allow_nan=False,
-            ).encode("utf-8")
-        except (TypeError, ValueError):
-            raise NodeError("RPC parameters cannot be encoded as JSON") from None
-
-        request = urllib.request.Request(
-            self.url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Authorization": self._authorization,
-            },
-            method="POST",
-        )
-        try:
-            with self._opener.open(request, timeout=self.timeout) as response:
-                raw = response.read(self.MAX_RESPONSE_BYTES + 1)
-        except urllib.error.HTTPError as exc:
-            raise NodeError(f"RPC HTTP error {exc.code}") from None
-        except (urllib.error.URLError, OSError, ValueError) as exc:
-            raise NodeError(f"RPC connection failed: {self._safe_message(exc)}") from None
-        if len(raw) > self.MAX_RESPONSE_BYTES:
-            raise NodeError("RPC response exceeds the size limit")
-        try:
-            reply = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise NodeError("RPC returned invalid JSON") from None
-        if not isinstance(reply, dict):
-            raise NodeError("RPC response must be an object")
-        if reply.get("id") != request_id or isinstance(reply.get("id"), bool):
-            raise NodeError("RPC response ID does not match the request")
-        if reply.get("error") is not None:
-            raise NodeError(f"Node RPC error: {self._safe_message(reply['error'])}")
-        if "result" not in reply:
-            raise NodeError("RPC response is missing its result")
-        return reply["result"]
+            try:
+                payload_context = dumps_buffer(
+                    {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+                    profile="rpc",
+                )
+                with payload_context as payload:
+                    request = urllib.request.Request(
+                        self.url,
+                        data=payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Content-Length": str(len(payload)),
+                            "Accept": "application/json",
+                            "Authorization": self._authorization,
+                        },
+                        method="POST",
+                    )
+                    try:
+                        response = self._opener.open(request, timeout=self.timeout)
+                    except urllib.error.HTTPError as exc:
+                        raise NodeError(f"RPC HTTP error {exc.code}") from None
+                    except (urllib.error.URLError, OSError, ValueError) as exc:
+                        raise NodeError(f"RPC connection failed: {self._safe_message(exc)}") from None
+                    finally:
+                        # urllib may retain the Request after returning. Detach
+                        # its view before the native request buffer is wiped.
+                        request.data = None
+            except (TypeError, ValueError):
+                raise NodeError("RPC parameters cannot be encoded as JSON") from None
+            # The outgoing native buffer is already wiped before the incoming
+            # body is read, including responses with long bodies.
+            try:
+                with response:
+                    reply = read_json_body(response, self.MAX_RESPONSE_BYTES, profile="rpc")
+            except WireLimitError:
+                raise NodeError("RPC response exceeds the size limit") from None
+            except WireError:
+                raise NodeError("RPC returned invalid JSON") from None
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                raise NodeError(f"RPC connection failed: {self._safe_message(exc)}") from None
+            if not isinstance(reply, dict):
+                raise NodeError("RPC response must be an object")
+            if reply.get("id") != request_id or isinstance(reply.get("id"), bool):
+                raise NodeError("RPC response ID does not match the request")
+            if reply.get("error") is not None:
+                raise NodeError(f"Node RPC error: {self._safe_message(reply['error'])}")
+            if "result" not in reply:
+                raise NodeError("RPC response is missing its result")
+            return reply["result"]
+        finally:
+            if request is not None:
+                request.data = None
+            del method, params, request, reply, payload, response, payload_context
 
     def raw_template(self) -> dict[str, Any]:
-        """Fetch a SegWit block template using S6's official request format."""
+        """Fetch a SegWit template, returning neutral Python field names."""
         result = self.rpc(
-            constant_text(b'z{1nT%gDsc)56Nv%f{2f'),
+            'template_request',
             [{"capabilities": [constant_text(b'#K_Lc#m3aa(Z<Wt!T'), constant_text(b'(8$%y&cg'), constant_text(b'#K_Lc#m3aah{o5~!pXw')], "rules": [constant_text(b')WX2f&eH')]}],
         )
         if not isinstance(result, dict):
@@ -171,10 +186,12 @@ class NodeClient:
             )
         except (ValueError, TypeError, KeyError) as exc:
             raise NodeError(f"Invalid block template: {self._safe_message(exc)}") from None
+        finally:
+            del raw
 
     def best_hash(self) -> str:
         """Return the current chain tip as a validated display-order hash."""
-        result = self.rpc(constant_text(b'z{1nT!qn5n%gDsc&&Jfx'))
+        result = self.rpc('tip_request')
         if not isinstance(result, str) or len(result) != 64:
             raise NodeError("Node returned an invalid best block hash")
         try:
@@ -187,7 +204,7 @@ class NodeClient:
         """Submit a serialized block; only a null node result means acceptance."""
         if not isinstance(block_bytes, bytes) or not block_bytes:
             raise NodeError("A nonempty serialized block is required")
-        result = self.rpc(constant_text(b')Y8Su&eO%q$i&P'), [block_bytes.hex()])
+        result = self.rpc('submit_record', [block_bytes.hex()])
         if result is not None:
             raise NodeError(f"Node rejected block: {self._safe_message(result)}")
 

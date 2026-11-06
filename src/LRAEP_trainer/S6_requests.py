@@ -1,7 +1,7 @@
 """S7 request fields verified with WR 0.51.8's offline serializer.
 
-This module needs no S5, native library, or network connection. It builds the
-JSON value only; framing/encoding and S1-result verification are separate.
+This module needs no S5 or network connection. It builds the JSON value with
+fixed field names from the native codec; framing and S1 verification are separate.
 Adapted from this workspace's independent wr-checker/tools/pearl_requests.py.
 Three actual accepted shares subsequently confirmed this serializer byte for
 byte. Serialization alone does not establish proof validity.
@@ -57,7 +57,7 @@ def build_submit_request(
             or not 0 <= request_id < (1 << 64)):
         raise ValueError("request_id must be an unsigned 64-bit integer")
     S5 = _nonce(S5_nonce, constant_text(b'^pg0=$jQXQ'))
-    worker = _nonce(worker_nonce, constant_text(b'(8$%y!qxc6$jQXQ'))
+    worker = _nonce(worker_nonce, constant_text('device_counter'))
     params = {
         constant_text(b'#`x99(9{'): [_i32(value, "a_rows index") for value in a_rows],
         constant_text(b'#rVX?%hU'): [_i32(value, "b_cols index") for value in b_cols],
@@ -72,6 +72,6 @@ def build_submit_request(
         constant_text(b')5gxr_{zw`!T'): 1,
         constant_text(b')6UDn_|E'): _i32(tile_h, constant_text(b')6UDn_|E')),
         constant_text(b')6UDn_|O'): _i32(tile_w, constant_text(b')6UDn_|O')),
-        constant_text(b'(8$%y!qxc6$jQXQ'): worker,
+        constant_text('device_counter'): worker,
     }
     return {"id": request_id, "method": constant_text(b')Y8Su&eH'), "params": [params]}

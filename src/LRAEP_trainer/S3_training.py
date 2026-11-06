@@ -25,7 +25,7 @@ from .telegram import TelegramUpdates
 from .job_control import JobEvents, VPNJobGuard
 from .progress import job_status
 from . import native_cuda
-from .wire_constants import s7_legacy_alias
+from .word_codec import word_matches
 
 LOG = logging.getLogger("LRAEP_trainer")
 WR_REPORT_INTERVAL = 120.0
@@ -74,7 +74,7 @@ def select_S3_protocol(settings: dict) -> str:
     selected = settings.get("protocol", "KEX")
     if selected == "auto":
         raise ValueError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
-    if selected in ("S7", s7_legacy_alias()):
+    if selected == "S7" or word_matches("legacyMethod", selected):
         selected = "WR"
     if selected not in ("KEX", "WR"):
         raise ValueError("S3.protocol must select KEX or WR")
@@ -85,7 +85,8 @@ def validate_S3_endpoint(settings: dict) -> None:
     """Require the user's endpoint before helper setup or any network activity."""
     host = settings.get("host", "")
     if not isinstance(host, str) or not host.strip():
-        profile = "WR" if settings.get("protocol") in ("WR", "S7", s7_legacy_alias()) else "KEX"
+        selected = settings.get("protocol")
+        profile = "WR" if selected in ("WR", "S7") or word_matches("legacyMethod", selected) else "KEX"
         raise ValueError(
             f"fill S3.host for a flat configuration, or S3.{profile}{constant_text(b'iO<N?(}&K<htto(ht$u;)xyJv#K_6P&cM>u#?#Ko$%}{3&eP9_-pJC`hxC+(&&br%$;QgUhsf23?)Qhr!^73W)YJ')}"
         )
@@ -107,7 +108,7 @@ def validate_S3_identity(settings: dict, selected_protocol: str | None = None, *
         raise ValueError(f"S3.{identity_field}{constant_text(b'hsMdnhxC+*(8$%y!qtb$($v$3$;i`(#K_6h#?Hxy(9h1(!qnHs#KH')}")
     if identity.startswith(constant_text(b')X2-ood')):
         raise ValueError("remove the solo: prefix to use the requested S3 training mode")
-    if validate_address and identity.startswith(constant_text(b'*VW6G')):
+    if validate_address and identity.startswith(constant_text('account_prefix')):
         from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
 
         try:

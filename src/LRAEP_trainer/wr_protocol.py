@@ -13,7 +13,7 @@ import math
 import re
 from typing import Any
 
-from .fixed_constants import constant_buffer, constant_bytes, constant_text
+from .fixed_constants import constant_ascii_matches, constant_buffer, constant_bytes, constant_text
 from .S6_requests import build_submit_request
 from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 
@@ -143,7 +143,7 @@ class WRDialect:
             raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d')) from None
         if not math.isfinite(rate) or rate < 0:
             raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d'))
-        return {"id": request_id, "method": constant_text(b')xy`v)zkRS$-&3'), "params": [{constant_text(b'&&Jfx)yC7p'): rate, "name": name}]}
+        return {"id": request_id, "method": constant_text(b')xy`v)zkRS$-&3'), "params": [{constant_text('prochPerSecond'): rate, "name": name}]}
 
     @staticmethod
     def accept(response: Mapping[str, Any]) -> bool:
@@ -176,11 +176,11 @@ class WRDialect:
         if (request_id != -1 or status != 1 or response.get("error") is not None
                 or not isinstance(result, list) or not result):
             raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZx>*3!b%(}&2_ht<N=*T~7#!iUt)#@E6'))
-        if result[0] == constant_text(b'!r#-?#>vRZ#KH'):
+        if constant_ascii_matches('extracounter', result[0]):
             if len(result) != 2:
                 raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
-            _hex_bytes(result[1], 8, constant_text(b'!r#-?#>vRZ#KH'))
-            return constant_text(b'!r#-?#>vRZ#KH')
+            _hex_bytes(result[1], 8, constant_text('extracounter'))
+            return result[0]
         if result[0] == constant_text(b'$;i{r!QK'):
             # Full job validation is performed by parse_job, including version.
             if len(result) != 5 or not all(isinstance(field, str) for field in result):
@@ -192,9 +192,9 @@ class WRDialect:
 
     @staticmethod
     def parse_extranonce(result: list) -> bytes:
-        if not isinstance(result, list) or len(result) != 2 or result[0] != constant_text(b'!r#-?#>vRZ#KH'):
+        if not isinstance(result, list) or len(result) != 2 or not constant_ascii_matches('extracounter', result[0]):
             raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
-        return _hex_bytes(result[1], 8, constant_text(b'!r#-?#>vRZ#KH'))
+        return _hex_bytes(result[1], 8, constant_text('extracounter'))
 
     @staticmethod
     def parse_job(result: list, configured_certificate_version: int | None = None,

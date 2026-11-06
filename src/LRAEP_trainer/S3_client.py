@@ -6,10 +6,9 @@ S6 proof generation are performed by the caller after authentication.
 
 from __future__ import annotations
 
-from .fixed_constants import constant_text
+from .fixed_constants import constant_text, neutral_protocol_text
 
 from dataclasses import dataclass, field
-import json
 import math
 import threading
 import time
@@ -63,17 +62,8 @@ def _seconds(value: float, *, allow_zero: bool = False) -> float:
     return seconds
 
 
-def _json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result = {}
-    for name, value in pairs:
-        if name in result:
-            raise ValueError("duplicate JSON field")
-        result[name] = value
-    return result
 
 
-def _reject_constant(value: str) -> None:
-    raise ValueError("non-finite JSON constant")
 
 
 class S3Session:
@@ -136,6 +126,7 @@ class S3Session:
         if self.stop_event.is_set() or self._closed_event.is_set():
             raise S3ConnectionError("S3 session is stopped")
 
+    @neutral_protocol_text()
     def open(self) -> S3Session:
         with self._condition:
             self._raise_failure()
@@ -210,52 +201,35 @@ class S3Session:
                 self._fail(S3ConnectionError("S3 session stopped"))
                 return
 
+    @neutral_protocol_text()
     def _send(self, message: dict[str, Any]) -> None:
-        encoded = None
         try:
             message = methods.stratum_request(message)
-            encoded = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
-            if len(encoded) > self.MAX_FRAME_BYTES:
-                raise S3ProtocolError("S3 request exceeds the frame size limit")
-            self.transport.send(encoded)
+            try:
+                self.transport.send_message(message, profile="s3", max_frame=self.MAX_FRAME_BYTES)
+            except (TypeError, ValueError, RecursionError):
+                raise S3ProtocolError("S3 request cannot be serialized within the frame limit") from None
         finally:
-            del message, encoded
+            del message
 
+    @neutral_protocol_text()
     def _read_loop(self) -> None:
-        buffered = bytearray()
         try:
             while not self._closed_event.is_set():
-                buffered.extend(self.transport.receive(65536))
-                while True:
-                    boundary = buffered.find(b"\n")
-                    if boundary < 0:
-                        if len(buffered) >= self.MAX_FRAME_BYTES:
-                            raise S3ProtocolError("S3 message exceeds the frame size limit")
-                        break
-                    if boundary + 1 > self.MAX_FRAME_BYTES:
-                        raise S3ProtocolError("S3 message exceeds the frame size limit")
-                    frame = bytes(buffered[:boundary])
-                    del buffered[:boundary + 1]
-                    if not frame.strip():
-                        continue
-                    try:
-                        response = json.loads(
-                            frame, object_pairs_hook=_json_object,
-                            parse_constant=_reject_constant,
-                        )
-                    except (ValueError, UnicodeError, RecursionError):
-                        raise S3ProtocolError("S3 sent malformed JSON") from None
-                    if not isinstance(response, dict):
-                        raise S3ProtocolError("S3 messages must be JSON objects")
-                    self._handle(response)
-                    if self._closed_event.is_set():
-                        return
+                try:
+                    response = self.transport.receive_message(profile="s3", max_frame=self.MAX_FRAME_BYTES)
+                except (ValueError, TypeError, UnicodeError, RecursionError):
+                    raise S3ProtocolError("S3 sent a malformed or oversized message") from None
+                try:
+                    if response is not None:
+                        self._handle(response)
+                finally:
+                    del response
         except S3ConnectionError as error:
             self._fail(error)
         except S3ProtocolError as error:
             self._fail(S3CompatibilityError(str(error)))
         except Exception:
-            # Unexpected transport/parser failures must also unblock waiters.
             self._fail(S3ConnectionError("S3 reader failed"))
 
     def _handle(self, response: dict[str, Any]) -> None:
@@ -325,6 +299,7 @@ class S3Session:
                 and snapshot.generation == self._generation and snapshot.job == self._job
             )
 
+    @neutral_protocol_text()
     def submit(self, snapshot: JobSnapshot, proof_b64: str, timeout: float | None = None) -> ShareResult:
         wait_seconds = _seconds(self.transport.read_timeout if timeout is None else timeout)
         with self._send_lock:

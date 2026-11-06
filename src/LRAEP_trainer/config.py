@@ -20,7 +20,7 @@ from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
 from .config_export import DEFAULT_DECRYPT_KEY, ExportError, decode_config_document, encode_config_document
 from .effort import normalize_job_sequence
 from .paths import artifacts_dir
-from .wire_constants import s7_legacy_alias
+from .word_codec import word_matches
 
 
 class ConfigError(RuntimeError):
@@ -284,9 +284,12 @@ def _documentation(value, directory, field="S3.protocol_documentation"):
 def _S3_protocol(value):
     if value == "auto":
         raise ConfigError("S3.protocol must explicitly select KEX or WR; automatic detection is unavailable")
-    if not isinstance(value, str) or value not in {"KEX", "WR", "S7", s7_legacy_alias()}:
-        raise ConfigError("S3.protocol must select KEX or WR")
-    return "WR" if value in {"S7", s7_legacy_alias()} else value
+    if isinstance(value, str):
+        if value in ("KEX", "WR"):
+            return value
+        if value == "S7" or word_matches("legacyMethod", value):
+            return "WR"
+    raise ConfigError("S3.protocol must select KEX or WR")
 
 
 def _validate_S3_connection(settings, section, directory):

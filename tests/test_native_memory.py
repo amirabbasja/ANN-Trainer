@@ -29,7 +29,9 @@ class _HostWords:
     def __init__(self, values):
         self.values = values
 
-    def to(self, destination):
+    def to(self, destination, *, non_blocking=False):
+        if non_blocking is not False:
+            raise AssertionError('host staging must remain alive through a blocking transfer')
         return _DeviceWords(self.values, destination)
 
 
@@ -38,7 +40,7 @@ class NativeWordLifetimeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.modules = [("shared", native_cuda)]
         source = (Path(__file__).resolve().parents[2] / "LRAEP-WR-Trainer"
-                  / "src" / "LRAEP_trainer" / "native_cuda.py")
+                  / "src" / "workrunner" / "native_cuda.py")
         if source.exists():
             spec = importlib.util.spec_from_file_location(
                 "LRAEP_trainer._standalone_native_memory", source,

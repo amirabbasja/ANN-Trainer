@@ -680,8 +680,202 @@ configuration keys, and CLI commands (for example, `pool` becomes `S3` and
 `WR_wallet` becomes `WR_S2`, and `--miner` becomes `--S5`). Existing README
 examples retain the original S1–S4 spellings; substitute those abbreviations
 when using them. S5–S7 examples use the renamed spellings; the longer S7 term
-is replaced before S6. Fixed protocol names and cryptographic domain bytes are
-stored as Base64 in `src/LRAEP_trainer/wire_constants.py` and decoded before
-use, preserving network and proof bytes. The previous S7 protocol alias also
-remains accepted through its decoded spelling. Upstream URLs, endpoint
-hostnames, source attribution, and license text retain their required spellings.
+is replaced before S6. Dynamic protocol names use the
+[native word codec and placeholder table](#native-word-codec) below. Legacy
+encoded fixed byte constants are also decoded in that compiled library,
+preserving network and proof bytes. The previous S7 protocol alias remains
+accepted through its decoded spelling. Upstream URLs, endpoint hostnames,
+source attribution, and license text retain their required spellings.
+
+## Native message buffers
+
+Pool sessions in both repositories use `wire_io.NativeChannel` for incoming
+and outgoing S3/WR messages. The author source is `native/wire_codec.cpp`;
+the standalone receives `libwire_codec.so` and the Python bridge, without the
+decoder C++ source. The native layer owns the receive, JSON token, serialization
+and WR framing buffers. It translates the listed protocol names to placeholders
+before Python parses the resulting neutral JSON. Sending performs the reverse
+translation in native memory. Message values are preserved; account addresses,
+job data and other values needed by Python are still ordinary Python data.
+
+The channel uses `recv_into` and `sendall` with scoped memory views of native
+buffers, including on TLS sockets. Native allocations are explicitly zeroed
+when discarded, resized or closed, including failure paths. Transport setup,
+TLS verification and SOCKS routing retain their existing behavior. The original
+raw transport and S6 codec APIs remain available for explicit compatibility use;
+they are not the production session JSON path.
+
+The trainer's node RPC client also reads response bodies into native buffers
+and sends scoped native request buffers. Its `raw_template()` returns neutral
+field names. RPC models retain neutral schemas with no decoded aliases.
+`Model.model_validate_wire(stream)` accepts a `readinto` stream;
+`with model.wire_buffer() as data:` exposes a scoped native view for sending.
+Default `model_validate_json()` also translates through native code. Explicit
+Pydantic alias/name policies and strict JSON options keep the compatibility
+parser to preserve their semantics. Prefer the scoped native wire-buffer API
+when sending a model. Explicit APIs returning
+wire dictionaries or strings, including `model_dump(by_alias=True)` and
+`model_dump_json()`, necessarily give the caller plaintext and do not promise
+physical erasure. Supplying an already decoded Python string or bytes to a
+parser cannot erase the caller's original allocation.
+
+This reduces ownership and lifetime of original protocol text; it does not
+provide host-level confidentiality. TLS, HTTP, Python and OS internals may hold
+other copies. Unknown fields and unrecognized data values pass through and can
+remain in Python. The host administrator can observe data while it is used.
+The change adds no GPU synchronization; a hashrate improvement or percentage
+cost requires a representative workload benchmark.
+
+Rebuild and distribute both native libraries and bridges with
+`python3 tools/build_word_codec.py`, then verify with
+`python3 tools/build_word_codec.py --check`. Restart running application or
+notebook processes to load the new modules and shared libraries.
+
+<!-- native-word-codec:start -->
+## Native word codec
+
+`native/word_codec.cpp` is the authoritative exact-word table. Python calls
+the compiled shared library through `src/LRAEP_trainer/word_codec.py`; the
+standalone receives the same Python bridge and compiled library, with no
+decoder C++ source or mapping documentation. The bridge performs no Python
+table lookup and has no Python decoding fallback.
+
+```python
+from LRAEP_trainer.word_codec import transform_word, word_buffer
+
+transform_word("legacyMethod", "decode")
+transform_word("pearlhash", "encode")
+transform_word("unlisted-word", "decode")
+with word_buffer("account") as temporary:
+    consume(temporary)
+```
+
+The corresponding standalone import is `workrunner.word_codec`.
+`decode_word` and `encode_word` are convenience functions. Matching is exact
+and case-sensitive in each direction: unknown words, empty strings, Unicode,
+and embedded NUL characters pass through unchanged. There is no substring
+replacement. An unsupported method raises `ValueError`, and a non-string word
+raises `TypeError`. The `walletnonce` row deliberately maps to `w_counter`, as
+requested; the distinct `device_counter` row preserves the existing wire field.
+
+### Placeholder table (decode direction)
+
+| Placeholder | Decoded value |
+| --- | --- |
+| `training` | `mining` |
+| `train` | `mine` |
+| `account` | `wallet` |
+| `account_id` | `wallet_address` |
+| `connectionRule` | `stratum` |
+| `p_goal` | `pearl` |
+| `legacyMethod` | `pearlhash` |
+| `newerMethod` | `kryptex` |
+| `prochPerSecond` | `hashrate` |
+| `epoch` | `hash` |
+| `extracounter` | `extranonce` |
+| `walletnonce` | `w_counter` |
+| `trainer_counter` | `miner_nonce` |
+| `device_counter` | `worker_nonce` |
+| `training.subscribe` | `mining.subscribe` |
+| `training.authorize` | `mining.authorize` |
+| `training.submit` | `mining.submit` |
+| `training.notify` | `mining.notify` |
+| `training.reconnect` | `mining.reconnect` |
+| `noise_seed_domain` | `pearl/cert-v3/noise-seed/` |
+| `account_prefix` | `prl1` |
+| `device_default` | `rig-01` |
+| `record_id` | `txid` |
+| `parent_digest` | `previousblockhash` |
+| `size_limit` | `vsizelimit` |
+| `records` | `transactions` |
+| `poll_id` | `longpollid` |
+| `counter_range` | `noncerange` |
+| `reward_metadata` | `coinbaseaux` |
+| `reward_amount` | `coinbasevalue` |
+| `default_attestation` | `default_witness_commitment` |
+| `required_version` | `requiredcertversion` |
+| `template_request` | `getblocktemplate` |
+| `tip_request` | `getbestblockhash` |
+| `submit_record` | `submitblock` |
+
+The first thirteen rows are the requested mappings. The remaining rows cover
+the existing device-counter field, full qualified wire methods, certificate
+domain, address prefix, default device name, RPC field names and the three
+node request methods. RPC fields are translated at the native network boundary;
+`rpc_fields.py` also supports explicit compatibility calls. Model metadata
+uses neutral field names with no decoded aliases, and Pydantic string caching
+is disabled. Existing S1–S7 source
+abbreviations remain identifiers; this table controls dynamic protocol text.
+The fixed field schema and protocol/proof bytes remain compatible.
+
+### Updating and distributing mappings
+
+1. Add or change a `make_entry("placeholder", "decoded value")` row in
+   `native/word_codec.cpp`. Both columns must remain unique. Use the placeholder
+   at the Python boundary where that exact protocol word is needed. For a new
+   network field or command, also select it in the appropriate `key_entry` or
+   `Parser::translation` profile in `native/wire_codec.cpp`. Profiles distinguish
+   RPC fields, pool fields, command names and ordinary string data; adding a
+   word-table entry alone does not rewrite arbitrary message values.
+2. Run `python3 tools/build_word_codec.py`. It validates the table, compiles the
+   word and wire libraries, regenerates this README table, and atomically installs identical
+   libraries and Python bridges in both repositories. This includes
+   `word_codec.py`, `wire_io.py` and `rpc_fields.py`. The default standalone
+   checkout is the sibling `LRAEP-WR-Trainer`; use `--standalone PATH` to choose
+   another checkout or `--local-only` for an author-only build.
+3. Run `python3 tools/build_word_codec.py --check` and the protocol/native tests.
+   The check detects stale README content, source fingerprints, differing
+   binaries, or differing Python bridges. Restart running trainer/notebook
+   processes to load a newly installed library; loaded libraries are not
+   hot-swapped in place.
+
+The current build targets the host's Linux architecture (`x86_64` or
+`aarch64`) and requires a C++17 compiler. The output is
+`src/LRAEP_trainer/bin/<platform>/libword_codec.so` and, when distributing,
+`src/workrunner/bin/<platform>/libword_codec.so`. The native message layer is
+installed alongside it as `libwire_codec.so`. Rebuild on each target
+architecture. No compiler or C++ decoder source is needed in the standalone
+at runtime. A missing or incompatible library produces an explicit error.
+
+### Buffer lifetime and protection limits
+
+Native static table values are stored in a compile-time encoded representation;
+there is no decoded global table or plaintext result cache. `word_buffer`
+decodes into a mutable buffer and explicitly overwrites it on normal and
+exception exits. `word_matches` compares ASCII protocol values with a scoped
+buffer. Legacy fixed binary tables and message constants use `fixed_buffer`,
+which performs their existing Base85/XOR transformation in the native library
+and clears its output after use.
+
+`transform_word`, `decode_word`, and `encode_word` return ordinary immutable
+Python strings. Callers must release those references after use; their physical
+bytes cannot be guaranteed erased, and serializers, sockets, exception text,
+or caller-retained objects may create copies. The framing-only
+`customEncoder`/`customDecoder` API remains unchanged for wire compatibility.
+Compilation and encoding provide obfuscation, not encryption or a security
+boundary against a host administrator. Embedded values can be recovered from
+the binary or observed while decoded. No speedup is claimed without a
+workload-specific benchmark.
+<!-- native-word-codec:end -->
+
+## CUDA temporary work buffers
+
+The native CUDA Python interface now scopes its privately allocated 32-byte
+work-key and target tensors in `_temporary_words`. After their last operation,
+cleanup overwrites each tensor on the same CUDA stream and synchronizes that
+stream before returning or propagating an error. The complete candidate-capacity
+retry loop stays inside this scope. Previously allocated keys are also cleared
+when a later allocation fails. `_words` clears its owned CPU staging array after
+the explicitly blocking host-to-device copy, including failure paths.
+
+Borrowed matrices, transcripts, returned results, and the caller's CPU key bytes
+and target integer are preserved. Those original job inputs remain available
+while the job needs them. The added stream synchronization can reduce overlap;
+no zero-overhead guarantee is made. If CUDA cannot perform cleanup, a successful
+operation becomes an explicit cleanup failure; an existing operation exception
+is preserved and receives a cleanup-failure note. Fatal CUDA context errors can
+prevent wiping.
+
+This cleanup covers owned tensor allocations and CPU staging. It does not erase
+fixed labels embedded in loaded CUDA instructions or guarantee clearing
+compiler-managed registers, local spills, or other copies outside these buffers.

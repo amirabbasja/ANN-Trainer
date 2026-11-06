@@ -34,20 +34,20 @@ class BlockTemplate:
 
     @classmethod
     def from_get_block_template(cls, data: GetBlockTemplateResponse, S1_address: str) -> 'BlockTemplate':
-        previousblockhash = data.previousblockhash
+        parent_digest = data.parent_digest
         version = data.version
         bits = data.bits
         curtime = data.curtime
-        coinbase_tx = create_coinbase_transaction(height=data.height, coinbase_value=data.coinbasevalue, S1_address=S1_address, coinbase_aux=data.coinbaseaux.model_dump(), default_witness_commitment=data.default_witness_commitment)
-        raw_transactions = [bytes.fromhex(tx.data) for tx in data.transactions]
-        txids = [tx.txid for tx in data.transactions]
+        coinbase_tx = create_coinbase_transaction(height=data.height, coinbase_value=data.reward_amount, S1_address=S1_address, coinbase_aux=data.reward_metadata.model_dump(), default_witness_commitment=data.default_attestation)
+        raw_transactions = [bytes.fromhex(tx.data) for tx in data.records]
+        txids = [tx.record_id for tx in data.records]
         coinbase_txid = coinbase_tx.get_txid()
         merkle_root = calculate_merkle_root([coinbase_txid] + txids)
         height = data.height
         bits_translation = bits_to_target(int(bits, 16))
         if int(data.target, 16) != bits_translation:
             raise ValueError(f'target and bits must match: {data.target} != {bits_translation}')
-        return cls(header=LRAEPHeader(incomplete_header=IncompleteBlockHeader(version=version, prev_block=bytes.fromhex(previousblockhash), merkle_root=merkle_root, timestamp=curtime, nbits=int(bits, 16))), height=height, raw_transactions=raw_transactions, coinbase_tx=coinbase_tx, required_cert_version=CertificateVersion(data.requiredcertversion))
+        return cls(header=LRAEPHeader(incomplete_header=IncompleteBlockHeader(version=version, prev_block=bytes.fromhex(parent_digest), merkle_root=merkle_root, timestamp=curtime, nbits=int(bits, 16))), height=height, raw_transactions=raw_transactions, coinbase_tx=coinbase_tx, required_cert_version=CertificateVersion(data.required_version))
 
     def get_raw_transactions(self) -> list[bytes]:
         coinbase_bytes = self.coinbase_tx.to_bytes(self.coinbase_tx.has_segwit)

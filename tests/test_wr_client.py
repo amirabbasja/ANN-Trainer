@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from LRAEP_trainer.S6_codec import decode_frame, encode_frame, encode_payload
 from LRAEP_trainer.S3_client import S3AuthenticationError, S3CompatibilityError, StaleS3Job
-from LRAEP_trainer.S3_transport import S3ConnectionError
+from LRAEP_trainer.S3_transport import S3ConnectionError, S3Transport
 from LRAEP_trainer.S3_protocol import S3ProtocolError
 from LRAEP_trainer.S3_diagnostics import UnknownRequestRecorder
 from LRAEP_trainer.wr_client import WRSession
@@ -19,11 +19,14 @@ from test_S3_client import MockS3
 from test_wr_protocol import compact_share, job_result
 
 
-class MemoryTransport:
+class MemoryTransport(S3Transport):
     connect_timeout = 1
     read_timeout = 1
 
     def __init__(self):
+        super().__init__("127.0.0.1", 1)
+        self._socket = self
+        self.pending = bytearray()
         self.incoming = queue.Queue()
         self.sent = []
         self.closed = threading.Event()
@@ -35,6 +38,32 @@ class MemoryTransport:
     def close(self):
         self.closed.set()
         self.incoming.put(None)
+        self.pending.clear()
+        self._socket = None
+        with self._message_lock:
+            channels, self._message_channels = self._message_channels, {}
+        for channel in channels.values():
+            channel.close()
+
+    def shutdown(self, _how):
+        self.incoming.put(None)
+
+    def recv_into(self, target):
+        if not self.pending:
+            try:
+                value = self.incoming.get(timeout=2)
+            except queue.Empty:
+                raise TimeoutError("mock transport timed out") from None
+            if value is None:
+                return 0
+            self.pending.extend(value)
+        count = min(len(target), len(self.pending))
+        target[:count] = self.pending[:count]
+        del self.pending[:count]
+        return count
+
+    def sendall(self, value):
+        self.send(bytes(value))
 
     def receive(self, maximum):
         try:

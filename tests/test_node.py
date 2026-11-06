@@ -20,10 +20,17 @@ class NodeClientTests(unittest.TestCase):
 
     @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_authenticated_request_and_template_shape(self, urlopen):
-        urlopen.return_value = self.reply({"height": 123})
+        captured = {}
+
+        def respond(request, **kwargs):
+            captured['body'] = json.loads(bytes(request.data))
+            return self.reply({"height": 123})
+
+        urlopen.side_effect = respond
         self.assertEqual(self.client.raw_template(), {"height": 123})
         request = urlopen.call_args.args[0]
-        body = json.loads(request.data)
+        body = captured['body']
+        self.assertIsNone(request.data)
         self.assertEqual(body["method"], "getblocktemplate")
         self.assertEqual(body["params"][0]["rules"], ["segwit"])
         self.assertIn("coinbase/append", body["params"][0]["capabilities"])
@@ -33,9 +40,16 @@ class NodeClientTests(unittest.TestCase):
 
     @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
     def test_null_submit_result_is_accepted(self, urlopen):
-        urlopen.return_value = self.reply(None)
+        captured = {}
+
+        def respond(request, **kwargs):
+            captured['body'] = json.loads(bytes(request.data))
+            return self.reply(None)
+
+        urlopen.side_effect = respond
         self.assertIsNone(self.client.submit(b"\x01\x02"))
-        body = json.loads(urlopen.call_args.args[0].data)
+        body = captured['body']
+        self.assertIsNone(urlopen.call_args.args[0].data)
         self.assertEqual(body["method"], "submitblock")
         self.assertEqual(body["params"], ["0102"])
 
@@ -101,6 +115,54 @@ class NodeClientTests(unittest.TestCase):
         urlopen.return_value = self.reply("z" * 64)
         with self.assertRaisesRegex(NodeError, "invalid best block hash"):
             self.client.best_hash()
+
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
+    def test_rpc_body_uses_readinto_and_returns_only_neutral_field_names(self, urlopen):
+        class ReadIntoOnly(io.BytesIO):
+            def read(self, *args):
+                raise AssertionError('original JSON must not be read into Python bytes')
+
+        urlopen.return_value = ReadIntoOnly(json.dumps({
+            'id': 1, 'error': None,
+            'result': {'previousblockhash': 'abc', 'transactions': [{'txid': '123'}]},
+        }).encode())
+        self.assertEqual(self.client.raw_template(), {
+            'parent_digest': 'abc', 'records': [{'record_id': '123'}],
+        })
+        self.assertIsNone(urlopen.call_args.args[0].data)
+
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
+    def test_native_request_view_is_detached_after_transport_error(self, urlopen):
+        views = []
+
+        def fail(request, **kwargs):
+            views.append(request.data)
+            self.assertIsInstance(request.data, memoryview)
+            self.assertEqual(int(request.get_header('Content-length')), len(request.data))
+            raise urllib.error.URLError('unavailable')
+
+        urlopen.side_effect = fail
+        with self.assertRaisesRegex(NodeError, 'connection failed'):
+            self.client.rpc('probe')
+        self.assertIsNone(urlopen.call_args.args[0].data)
+        with self.assertRaises(ValueError):
+            views[0].tobytes()
+
+    @patch("LRAEP_trainer.node.urllib.request.OpenerDirector.open")
+    def test_native_invalid_json_error_does_not_hold_original_reply(self, urlopen):
+        urlopen.return_value = io.BytesIO(b'{"previousblockhash": "private-response", broken}')
+        try:
+            self.client.rpc('probe')
+        except NodeError as error:
+            self.assertEqual(str(error), 'RPC returned invalid JSON')
+            traceback = error.__traceback__
+            while traceback is not None:
+                if traceback.tb_frame.f_code.co_name == 'rpc':
+                    for name in ('reply', 'request', 'payload', 'response', 'params', 'method'):
+                        self.assertNotIn(name, traceback.tb_frame.f_locals)
+                traceback = traceback.tb_next
+        else:
+            self.fail('invalid JSON unexpectedly accepted')
 
     def test_invalid_urls_do_not_echo_userinfo(self):
         for url in ["https://name:secret@host:44107", "ftp://host", "http://", "http://host:bad", "https://host/#fragment", "http://ho st"]:
