@@ -5,8 +5,8 @@ from unittest.mock import Mock, patch
 
 import torch
 
-from workrunner import gpu_pacing, telemetry
-from workrunner.side_job import OrientationCNN
+from workrunner import gpu_throttle, gpu_utilization
+from workrunner.aux_training import OrientationCNN
 
 
 class FeedbackPacingTests(unittest.TestCase):
@@ -22,10 +22,10 @@ class FeedbackPacingTests(unittest.TestCase):
             return False
 
         self.stopped.wait.side_effect = wait
-        timer = patch.object(gpu_pacing.time, 'monotonic', side_effect=lambda: self.clock.now)
+        timer = patch.object(gpu_throttle.time, 'monotonic', side_effect=lambda: self.clock.now)
         timer.start()
         self.addCleanup(timer.stop)
-        self.pacer = gpu_pacing.GpuPacer('cuda:0', 70)
+        self.pacer = gpu_throttle.GpuPacer('cuda:0', 70)
 
     def test_high_measured_load_waits_until_the_sample_is_below_target(self):
         self.pacer.set_monitor(Mock(side_effect=[(100, 10.0), (95, 10.05), (65, 10.1)]))
@@ -48,13 +48,13 @@ class FeedbackPacingTests(unittest.TestCase):
         self.assertAlmostEqual(sum(self.waits), 0.1)
 
     def test_active_interval_keeps_its_exact_configured_utilization(self):
-        from workrunner.effort import JobSequence
+        from workrunner.duty_cycle import JobSequence
         sequence = JobSequence([
             {"title": "job-1", "time": 2, "max_gpu_utilization": 70},
             {"title": "job-0", "time": 3, "max_gpu_utilization": 10},
         ], started=0)
         for moment, percentage in ((0, 70), (2, 10), (5, 70), (7, 10)):
-            with patch.object(gpu_pacing.time, 'monotonic', return_value=moment):
+            with patch.object(gpu_throttle.time, 'monotonic', return_value=moment):
                 self.assertEqual(sequence.current_job()[1], percentage)
 
     def test_old_or_missing_samples_do_not_block_work(self):
@@ -83,21 +83,21 @@ class FeedbackPacingTests(unittest.TestCase):
         with self.pacer.operations(self.stopped):
             self.clock.now += 10
             torch.zeros(2)
-        with patch.object(gpu_pacing.torch.cuda, 'synchronize'):
+        with patch.object(gpu_throttle.torch.cuda, 'synchronize'):
             self.pacer.finish()
         self.pacer.wait(self.stopped)
         self.assertEqual(sum(self.waits), 0)
 
     def test_sensor_publishes_timestamped_values_and_clears_failed_samples(self):
-        sensor = telemetry.GpuUtilization('cuda:0')
+        sensor = gpu_utilization.GpuUtilization('cuda:0')
         observed = []
 
         def waited(_seconds):
             observed.append(sensor.read_sample())
             return len(observed) == 2
 
-        with patch.object(telemetry, '_device_identifier', return_value='fixture'), \
-                patch.object(telemetry, '_query_gpu_utilization', side_effect=[80, None]), \
+        with patch.object(gpu_utilization, '_device_identifier', return_value='fixture'), \
+                patch.object(gpu_utilization, '_query_gpu_utilization', side_effect=[80, None]), \
                 patch.object(sensor._stopped, 'wait', side_effect=waited):
             sensor._run()
         self.assertEqual(observed, [(80, 10.0), (None, None)])
@@ -118,7 +118,7 @@ class OperationPacingGpuTests(unittest.TestCase):
         baseline_loss.backward()
         baseline_optimizer.step()
         torch.cuda.set_rng_state(rng)
-        pacer = gpu_pacing.GpuPacer('cuda:0', 70)
+        pacer = gpu_throttle.GpuPacer('cuda:0', 70)
         pacer._quantum = 0.0001
         stopped = Mock()
         stopped.is_set.return_value = False
@@ -137,10 +137,10 @@ class OperationPacingGpuTests(unittest.TestCase):
         self.assertTrue(any(call.args[0] > 0 for call in stopped.wait.call_args_list))
 
     def test_100_percent_operation_mode_adds_no_cuda_synchronization(self):
-        pacer = gpu_pacing.GpuPacer('cuda:0', 100)
+        pacer = gpu_throttle.GpuPacer('cuda:0', 100)
         stopped = Mock()
         value = torch.ones(2, device='cuda')
-        with patch.object(gpu_pacing.torch.cuda, 'synchronize') as synchronize:
+        with patch.object(gpu_throttle.torch.cuda, 'synchronize') as synchronize:
             pacer.begin()
             with pacer.operations(stopped):
                 result = value + 1

@@ -26,14 +26,12 @@ def _library():
     size = ctypes.c_size_t
     library.wr_codec_abi_version.argtypes = []
     library.wr_codec_abi_version.restype = ctypes.c_uint
-    if library.wr_codec_abi_version() != 1:
+    if library.wr_codec_abi_version() != 3:
         raise RuntimeError('unsupported native word codec ABI')
     library.wr_codec_source_id.argtypes = []
     library.wr_codec_source_id.restype = ctypes.c_char_p
     library.wr_codec_transform.argtypes = [pointer, size, ctypes.c_int, pointer, size, ctypes.POINTER(size)]
     library.wr_codec_transform.restype = ctypes.c_int
-    library.wr_codec_fixed_decode.argtypes = [pointer, size, pointer, size, ctypes.POINTER(size)]
-    library.wr_codec_fixed_decode.restype = ctypes.c_int
     library.wr_codec_wipe.argtypes = [pointer, size]
     library.wr_codec_wipe.restype = None
     return library
@@ -41,7 +39,7 @@ def _library():
 
 def _check(status):
     if status == 4:
-        raise ValueError('invalid encoded constant')
+        raise ValueError('unknown fixed constant')
     if status:
         raise RuntimeError('native word codec failed with status ' + str(status))
 
@@ -51,12 +49,8 @@ def _output_buffer(input_bytes, mode):
     library = _library()
     written = ctypes.c_size_t()
     pointer = ctypes.c_char_p(input_bytes)
-    arguments = [pointer, len(input_bytes)]
-    if mode is None:
-        operation = library.wr_codec_fixed_decode
-    else:
-        operation = library.wr_codec_transform
-        arguments.append(mode)
+    arguments = (pointer, len(input_bytes), mode)
+    operation = library.wr_codec_transform
     _check(operation(*arguments, None, 0, ctypes.byref(written)))
     value = bytearray(written.value)
     try:
@@ -110,9 +104,32 @@ def word_matches(placeholder: str, value: object) -> bool:
         )
 
 
+class FixedAlias(bytes):
+    """A named constant, distinct from a caller's original bytes."""
+
+    def __new__(cls, name: str):
+        return super().__new__(cls, name, 'ascii')
+
+
+def encode_fixed(original: bytes) -> FixedAlias:
+    """Find the alias for an exact text or binary constant."""
+    if not isinstance(original, bytes):
+        raise TypeError('fixed constant must be bytes')
+    with _output_buffer(original, 3) as alias:
+        return FixedAlias(alias.decode('ascii'))
+
+
 @contextmanager
-def fixed_buffer(encoded: bytes):
-    if not isinstance(encoded, bytes):
-        raise TypeError('encoded constant must be bytes')
-    with _output_buffer(encoded, None) as value:
+def fixed_buffer(original: bytes):
+    """Yield a mutable constant buffer and clear it on exit."""
+    if not isinstance(original, bytes):
+        raise TypeError('fixed constant must be bytes')
+    if isinstance(original, FixedAlias):
+        with _output_buffer(original, 2) as value:
+            yield value
+        return
+    value = bytearray(original)
+    try:
         yield value
+    finally:
+        value[:] = bytes(len(value))

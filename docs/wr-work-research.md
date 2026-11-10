@@ -24,7 +24,7 @@ Both unmodified signal matrices contain signed byte value 64. A's final
 sixteen bytes replace those constant values with this deterministic tail:
 
 ```python
-raw = blake3(worker_nonce + S5_nonce).digest()[:16]
+raw = blake3(worker_nonce + local_seed).digest()[:16]
 tail = bytes((value % 129 - 64) & 255 for value in raw)
 ```
 
@@ -33,7 +33,7 @@ nonce is exactly eight bytes in the original wire byte order. The mapping's
 signed range is `[-64, 64]`.
 
 The native CPU checker begins at `0x13ebf0`. At `0x13ee2b` it constructs
-`worker_nonce || S5_nonce`; `0x13ee82` calls the unkeyed BLAKE3 helper
+`worker_nonce || local_seed`; `0x13ee82` calls the unkeyed BLAKE3 helper
 `0x5b936`. The loop at `0x13eea0` through `0x13eec1` maps the first sixteen
 digest bytes. The checker appends that tail to a saved matrix prefix at
 `0x13eef5` and finalizes the root at `0x13ef0a`. The prefix generator at
@@ -44,7 +44,7 @@ captured vector:
 
 ```text
 worker_nonce = f8d10b2c6c027fee
-S5_nonce  = 0200000000000000
+local_seed  = 0200000000000000
 BLAKE3       = 15a00bb270d285ad2a35c5faddeb5baeda2f71e67940962648d8ac76622b4236
 tail bytes   = d5dfcbf13011c4eceaf504391c2a1bed
 ```

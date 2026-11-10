@@ -59,14 +59,14 @@ class NativeProtocolTests(unittest.TestCase):
         return a.contiguous(), b.contiguous()
 
     @staticmethod
-    def python_matches(transcripts, key, target):
+    def python_matches(transcripts, key, training_threshold):
         if reference_blake3 is None:
             raise unittest.SkipTest("optional independent hash reference unavailable")
         matches = []
         for row in range(transcripts.shape[0]):
             for col in range(transcripts.shape[1]):
                 digest = reference_blake3(transcripts[row, col].astype("<u4").tobytes(), key=key).digest()
-                if int.from_bytes(digest, "little") <= target:
+                if int.from_bytes(digest, "little") <= training_threshold:
                     matches.append((row, col, digest))
         return matches
 
@@ -107,28 +107,28 @@ class NativeProtocolTests(unittest.TestCase):
         actual_transcripts = self.native.transcripts_device(batch.a_noised, batch.b_noised_t)
         np.testing.assert_array_equal(actual_transcripts.cpu().numpy().view(np.uint32),
                                       expected_transcripts)
-        target = (1 << 255) - 1
-        expected = self.python_matches(expected_transcripts, batch.commitment.noise_seed_A, target)
-        actual = list(protocol.search_batch(batch, target, "cuda:0"))
+        training_threshold = (1 << 255) - 1
+        expected = self.python_matches(expected_transcripts, batch.commitment.noise_seed_A, training_threshold)
+        actual = list(protocol.search_batch(batch, training_threshold, "cuda:0"))
         self.assertEqual(actual, expected)
         self.assertIsNone(batch.a_tree._tree)
         self.assertIsNone(batch.b_tree._tree)
 
     def test_native_candidates_materialize_only_the_needed_official_proof_trees(self):
-        maximum_target = (1 << 256) - 1
+        maximum_training_threshold = (1 << 256) - 1
         for version in (1, 2, 3):
             with self.subTest(certificate_version=version):
                 with patch("S5_base.matrix_merkle_tree.MatrixMerkleTree",
                            wraps=self.tree_type) as construct:
                     batch = self.prepare(version, seed=117 + version)
-                    matches = list(protocol.search_batch(batch, maximum_target, "cuda:0"))
+                    matches = list(protocol.search_batch(batch, maximum_training_threshold, "cuda:0"))
                     self.assertEqual(len(matches), 256)
                     construct.assert_not_called()
                     self.assertIsNone(batch.a_tree._tree)
                     self.assertIsNone(batch.b_tree._tree)
                     row, col, digest = matches[0]
-                    proof, verified_digest = protocol.verified_S3_share(
-                        batch, self.header, version, row, col, digest, maximum_target,
+                    proof, verified_digest = protocol.verified_S3_submission(
+                        batch, self.header, version, row, col, digest, maximum_training_threshold,
                     )
                     self.assertEqual(verified_digest, digest)
                     self.assertEqual(construct.call_count, 2)
@@ -145,12 +145,12 @@ class NativeProtocolTests(unittest.TestCase):
 
     def test_corrupted_gpu_commitment_is_rejected_before_official_proof_creation(self):
         batch = self.prepare(seed=441)
-        maximum_target = (1 << 256) - 1
-        row, col, digest = next(protocol.search_batch(batch, maximum_target, "cuda:0"))
+        maximum_training_threshold = (1 << 256) - 1
+        row, col, digest = next(protocol.search_batch(batch, maximum_training_threshold, "cuda:0"))
         root = batch.a_tree.root
         batch.a_tree.root = bytes([root[0] ^ 1]) + root[1:]
         with self.assertRaisesRegex(RuntimeError, "GPU Merkle root differs"):
-            protocol.verified_S3_share(batch, self.header, 3, row, col, digest, maximum_target)
+            protocol.verified_S3_submission(batch, self.header, 3, row, col, digest, maximum_training_threshold)
         self.assertIsNone(batch.a_tree._tree)
         self.assertIsNone(batch.b_tree._tree)
 
@@ -159,16 +159,16 @@ class NativeProtocolTests(unittest.TestCase):
         words = rng.integers(0, 1 << 32, (5, 17, 16), dtype=np.uint32)
         transcripts = torch.from_numpy(words.view(np.int32)).to("cuda:0")
         key = bytes(range(32))
-        target = (1 << 256) - 1
-        actual = self.native.hash_candidates(transcripts, key, target, capacity=1)
+        training_threshold = (1 << 256) - 1
+        actual = self.native.hash_candidates(transcripts, key, training_threshold, capacity=1)
         self.assertEqual(len(actual), 85)
-        self.assertEqual(actual, self.python_matches(words, key, target))
+        self.assertEqual(actual, self.python_matches(words, key, training_threshold))
 
     def test_hash_wrapper_rejects_out_of_range_targets_before_kernel_launch(self):
         transcripts = torch.zeros((1, 1, 16), dtype=torch.int32, device="cuda:0")
-        for target in (-1, 1 << 256):
-            with self.subTest(target=target), self.assertRaises(ValueError):
-                self.native.hash_candidates(transcripts, bytes(32), target)
+        for training_threshold in (-1, 1 << 256):
+            with self.subTest(training_threshold=training_threshold), self.assertRaises(ValueError):
+                self.native.hash_candidates(transcripts, bytes(32), training_threshold)
 
 
 if __name__ == "__main__":

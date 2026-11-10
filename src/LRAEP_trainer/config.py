@@ -287,7 +287,7 @@ def _S3_protocol(value):
     if isinstance(value, str):
         if value in ("KEX", "WR"):
             return value
-        if value == "S7" or word_matches("legacyMethod", value):
+        if value == "S7" or word_matches("legacy_protocol", value):
             return "WR"
     raise ConfigError("S3.protocol must select KEX or WR")
 

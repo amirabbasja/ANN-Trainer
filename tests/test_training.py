@@ -35,7 +35,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         )
         self.template = SimpleNamespace(
             required_cert_version=3, header=SimpleNamespace(incomplete_header=self.header),
-            target=123, height=456,
+            training_threshold=123, height=456,
         )
         self.node = MagicMock()
         self.node.get_template.return_value = self.template
@@ -81,7 +81,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         )
         self.stack.enter_context(patch.object(cli, "TipWatcher", return_value=self.watcher))
         self.signals = self.stack.enter_context(patch.object(cli.signal, "signal"))
-        self.stack.enter_context(patch.object(cli, "adjusted_target", return_value=456))
+        self.stack.enter_context(patch.object(cli, "adjusted_training_threshold", return_value=456))
         self.prepare = self.stack.enter_context(
             patch.object(cli, "prepare_batch", return_value=self.batch)
         )

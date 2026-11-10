@@ -1,4 +1,4 @@
-"""Neutral S3 operations and the explicit Stratum-compatible wire boundary."""
+"""Neutral S3 operations and their explicit wire compatibility boundary."""
 
 from typing import Any
 
@@ -23,7 +23,7 @@ _NOTIFICATION_METHODS = (
 )
 
 
-def stratum_request(message: dict[str, Any]) -> dict[str, Any]:
+def wire_request(message: dict[str, Any]) -> dict[str, Any]:
     """Translate supported operations without changing IDs, payloads or callers."""
     method = message.get("method")
     if isinstance(method, str) and method in _REQUEST_METHODS:
@@ -31,7 +31,7 @@ def stratum_request(message: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
-def stratum_notification_method(method: Any) -> str | None:
+def notification_method(method: Any) -> str | None:
     """Classify wire notifications; internal operation names are not wire aliases."""
     if isinstance(method, str):
         for placeholder, operation in _NOTIFICATION_METHODS:

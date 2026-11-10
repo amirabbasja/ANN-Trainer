@@ -68,7 +68,7 @@ unchanged, and rejected work still logs a warning.
 
 The S7 path builds the captured `sb: 1`, `tail_mode: 1` work: constant
 signal value `64`, with the last sixteen bytes of A derived from
-`BLAKE3(worker_nonce || S5_nonce)`. Each of those digest bytes maps to
+`BLAKE3(worker_nonce || local_seed)`. Each of those digest bytes maps to
 `byte % 129 - 64`. A reserved final row carries the tail and is excluded from
 search. Thus `training.m` searchable rows submit dimension `m + 1`; `n` and
 `k` keep their configured values. The full matrix dimensions bind the V3

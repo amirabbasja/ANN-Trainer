@@ -8,11 +8,11 @@ import sys
 import unittest
 
 from LRAEP_trainer import S6_codec
-from LRAEP_trainer.S6_requests import build_submit_request
+from LRAEP_trainer.S6_requests import build_submission_request
 from LRAEP_trainer.S3_protocol import S3ProtocolError
-from LRAEP_trainer.wire_constants import s5_nonce
+from LRAEP_trainer.wire_constants import local_seed_field
 from LRAEP_trainer.wr_protocol import (
-    UnknownWRRequest, WRDialect, WRShare,
+    UnknownWRRequest, WRDialect, WRSubmission,
 )
 
 
@@ -23,7 +23,7 @@ def fixtures(name):
     return json.loads(
         (FIXTURES / ("wr_" + name + ".json")).read_text(),
         object_hook=lambda fields: {
-            s5_nonce() if key == "bWluZXJfbm9uY2U=" else key: value
+            local_seed_field() if key == "bWluZXJfbm9uY2U=" else key: value
             for key, value in fields.items()
         },
     )
@@ -36,8 +36,8 @@ def job_result():
 
 
 def compact_share(job):
-    return WRShare(
-        S5_nonce=bytes(8), worker_nonce=job.worker_nonce, m=16, n=16, k=64,
+    return WRSubmission(
+        local_seed=bytes(8), device_seed=job.device_seed, m=16, n=16, k=64,
         rank=128, tile_h=8, tile_w=8, a_rows=tuple(range(8)), b_cols=tuple(range(8)),
     )
 
@@ -77,8 +77,9 @@ class WRCodecTests(unittest.TestCase):
             request = fixture["request"]
             fields = {key: value for key, value in request["params"][0].items()
                       if key not in {"nonce", "tail_mode", "sb_p"}}
-            fields["S5_nonce"] = fields.pop(s5_nonce())
-            built = build_submit_request(request["id"], **fields)
+            fields["local_seed"] = fields.pop(local_seed_field())
+            fields["device_seed"] = fields.pop("worker_nonce")
+            built = build_submission_request(request["id"], **fields)
             self.assertEqual(built, request)
             self.assertEqual(S6_codec.encode_frame(built, bytes.fromhex(fixture["request_wire"][:8])),
                              fixture["request_wire"].encode() + b"\n")
@@ -144,15 +145,15 @@ class WRProtocolTests(unittest.TestCase):
     def test_three_recorded_jobs_recover_native_verified_headers(self):
         for fixture in fixtures("S6_jobs"):
             result = list(job_result())
-            result[1] = fixture["notify_payload_hex"]
-            job = self.dialect.parse_job(result, worker_nonce=bytes.fromhex("19df092c6c027fee"))
+            result[1] = fixture["update_payload_hex"]
+            job = self.dialect.parse_job(result, device_seed=bytes.fromhex("19df092c6c027fee"))
             self.assertEqual(job.header_bytes.hex(), fixture["header_hex"])
-            self.assertEqual(job.notify_payload.hex(), fixture["notify_payload_hex"])
-            self.assertEqual(job.target, 2 << 200)
-            self.assertEqual(job.target, int.from_bytes(bytes.fromhex(result[2]), "little"))
+            self.assertEqual(job.update_payload.hex(), fixture["update_payload_hex"])
+            self.assertEqual(job.training_threshold, 2 << 200)
+            self.assertEqual(job.training_threshold, int.from_bytes(bytes.fromhex(result[2]), "little"))
             self.assertEqual(job.cert_version, 3)
             self.assertEqual(job.height, 0)
-            self.assertEqual(job.worker_nonce.hex(), "19df092c6c027fee")
+            self.assertEqual(job.device_seed.hex(), "19df092c6c027fee")
 
     def test_unknown_commands_are_distinct_from_corrupt_known_jobs(self):
         for message in [{"method": "run", "params": ["example"]},
@@ -181,18 +182,18 @@ class WRProtocolTests(unittest.TestCase):
                 self.dialect.parse_job(job_result(), certificate)
 
     def test_share_nonce_must_match_job_and_gzip_is_never_used(self):
-        job = self.dialect.parse_job(job_result(), worker_nonce=bytes.fromhex("19df092c6c027fee"))
+        job = self.dialect.parse_job(job_result(), device_seed=bytes.fromhex("19df092c6c027fee"))
         share = compact_share(job)
-        request = self.dialect.submit_request(job, share, 7)
+        request = self.dialect.submission_request(job, share, 7)
         self.assertEqual(request["method"], "submit")
-        self.assertEqual(request["params"][0]["worker_nonce"], job.worker_nonce.hex())
-        self.assertEqual(request["params"][0][s5_nonce()], "00" * 8)
+        self.assertEqual(request["params"][0]["worker_nonce"], job.device_seed.hex())
+        self.assertEqual(request["params"][0][local_seed_field()], "00" * 8)
         self.assertNotIn("plain_proof", request["params"][0])
-        for incompatible in [replace(share, worker_nonce=b"x" * 8), "base64-proof"]:
+        for incompatible in [replace(share, device_seed=b"x" * 8), "base64-proof"]:
             with self.assertRaises(S3ProtocolError):
-                self.dialect.submit_request(job, incompatible, 7)
+                self.dialect.submission_request(job, incompatible, 7)
         with self.assertRaises(S3ProtocolError):
-            self.dialect.submit_request(job, share, 7, True)
+            self.dialect.submission_request(job, share, 7, True)
 
 
 if __name__ == "__main__":

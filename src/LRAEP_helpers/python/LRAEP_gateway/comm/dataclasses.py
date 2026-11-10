@@ -3,12 +3,12 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 import torch
 from LRAEP_trainer.transactions import Transaction
-from LRAEP_gateway.blockchain_utils.blockchain_utils import bits_to_target, calculate_merkle_root, create_coinbase_transaction
+from LRAEP_gateway.blockchain_utils.blockchain_utils import bits_to_training_threshold, calculate_merkle_root, create_coinbase_transaction
 from LRAEP_gateway.blockchain_utils.LRAEP_header import LRAEPHeader
 from LRAEP_gateway.blockchain_utils.zk_certificate import CertificateVersion
 from LRAEP_gateway.comm.S1_configuration import S1Configuration, MoEConfig, LRAEPS1ConfigurationFactory
 from LRAEP_gateway.rpc_types import GetBlockTemplateResponse
-from LRAEP_trainer.primitives import PENALTY_BASE_RANK, IncompleteBlockHeader, penalized_target_bound
+from LRAEP_trainer.primitives import TRAINING_BASE_RANK, IncompleteBlockHeader, scaled_training_threshold
 
 def get_bytes(data: str | bytes) -> bytes:
     if isinstance(data, str):
@@ -44,7 +44,7 @@ class BlockTemplate:
         coinbase_txid = coinbase_tx.get_txid()
         merkle_root = calculate_merkle_root([coinbase_txid] + txids)
         height = data.height
-        bits_translation = bits_to_target(int(bits, 16))
+        bits_translation = bits_to_training_threshold(int(bits, 16))
         if int(data.target, 16) != bits_translation:
             raise ValueError(f'target and bits must match: {data.target} != {bits_translation}')
         return cls(header=LRAEPHeader(incomplete_header=IncompleteBlockHeader(version=version, prev_block=bytes.fromhex(parent_digest), merkle_root=merkle_root, timestamp=curtime, nbits=int(bits, 16))), height=height, raw_transactions=raw_transactions, coinbase_tx=coinbase_tx, required_cert_version=CertificateVersion(data.required_version))
@@ -55,11 +55,11 @@ class BlockTemplate:
 
     @property
     def bits(self) -> int:
-        return self.header.target_bits
+        return self.header.training_threshold_bits
 
     @property
-    def target(self) -> int:
-        return bits_to_target(self.bits)
+    def training_threshold(self) -> int:
+        return bits_to_training_threshold(self.bits)
 
 @dataclass
 class CommitmentHash:
@@ -105,26 +105,26 @@ class OpenedBlockInfo:
 @dataclass
 class S1Job:
     incomplete_header_bytes: bytes
-    target: int
+    training_threshold: int
     cert_version: CertificateVersion
 
     def to_dict(self) -> dict[str, Any]:
-        return {'incomplete_header_bytes': b64_encode(self.incomplete_header_bytes), 'target': self.target, 'cert_version': int(self.cert_version)}
+        return {'incomplete_header_bytes': b64_encode(self.incomplete_header_bytes), 'target': self.training_threshold, 'cert_version': int(self.cert_version)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> 'S1Job':
-        return cls(incomplete_header_bytes=b64_decode(data['incomplete_header_bytes']), target=data['target'], cert_version=CertificateVersion(data['cert_version']))
+        return cls(incomplete_header_bytes=b64_decode(data['incomplete_header_bytes']), training_threshold=data['target'], cert_version=CertificateVersion(data['cert_version']))
 
     @classmethod
     def from_template(cls, template: BlockTemplate) -> 'S1Job':
-        return cls(incomplete_header_bytes=template.header.serialize_without_proof_commitment(), target=template.target, cert_version=template.required_cert_version)
+        return cls(incomplete_header_bytes=template.header.serialize_without_proof_commitment(), training_threshold=template.training_threshold, cert_version=template.required_cert_version)
 
-    def adjust_target(self, S1_config: S1Configuration) -> int:
-        if S1_config.rank < PENALTY_BASE_RANK:
-            raise ValueError(f'noise rank {S1_config.rank} is below the minimum {PENALTY_BASE_RANK}; blocks would be rejected by consensus')
-        bound = penalized_target_bound(self.target, S1_config)
+    def adjust_training_threshold(self, S1_config: S1Configuration) -> int:
+        if S1_config.rank < TRAINING_BASE_RANK:
+            raise ValueError(f'noise rank {S1_config.rank} is below the minimum {TRAINING_BASE_RANK}; blocks would be rejected by consensus')
+        bound = scaled_training_threshold(self.training_threshold, S1_config)
         if bound is None:
-            raise ValueError(f'no penalized target for self.target={self.target!r} at rank {S1_config.rank}: degenerate config or target too easy')
+            raise ValueError(f'no scaled training threshold for self.training_threshold={self.training_threshold!r} at rank {S1_config.rank}: degenerate config or training threshold too large')
         return bound
 
 class S1PausedError(Exception):

@@ -373,7 +373,7 @@ class DirectRuntimeProfileTests(unittest.TestCase):
             self.configuration["S3"]["protocol"] = S5
             with self.subTest(S5=S5), \
                     patch.object(worker, "load_official_helpers"), \
-                    patch.object(worker, "S3_share_target", return_value=1), \
+                    patch.object(worker, "S3_training_threshold", return_value=1), \
                     patch.dict(sys.modules, {"LRAEP_trainer.primitives": native}), \
                     patch.object(LRAEP_trainer, "primitives", native, create=True), \
                     patch(target, return_value=session) as factory:

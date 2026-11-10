@@ -20,7 +20,7 @@ from .gpu import TrainingCancelled, gpu_transcripts
 from .gpu_pacing import GpuPacer
 from .effort import JobSequence, ScheduledSideJob, normalize_job_sequence
 from .node import NodeClient, NodeError, build_block
-from .protocol import (TrainingConfig, adjusted_target, load_official_helpers,
+from .protocol import (TrainingConfig, adjusted_training_threshold, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
 from . import native_cuda
 from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
@@ -107,7 +107,7 @@ def self_test(args) -> int:
         version=1, prev_block=bytes(32), merkle_root=bytes(32),
         timestamp=0, nbits=0x1E7FFFFF,
     )
-    base_target = 0x7FFFFF << (8 * (0x1E - 3))
+    base_training_threshold = 0x7FFFFF << (8 * (0x1E - 3))
     rng = np.random.default_rng(20261025)
     for version in (1, 2, 3):
         batch = prepare_batch(header, version, cfg, rng, device=args.device, gpu_signals=True,
@@ -127,8 +127,8 @@ def self_test(args) -> int:
         expected = np.array(official[0][0].data, dtype=np.uint32)
         if not np.array_equal(transcripts[0, 0], expected):
             raise RuntimeError(f"V{version} GPU transcript differs from official reference")
-        target = adjusted_target(base_target, cfg)
-        row, col, _ = next(matching_tiles(transcripts, batch.commitment.noise_seed_A, target))
+        training_threshold = adjusted_training_threshold(base_training_threshold, cfg)
+        row, col, _ = next(matching_tiles(transcripts, batch.commitment.noise_seed_A, training_threshold))
         proof = batch.plain_proof(row, col)
         valid, message = pm.verify_plain_proof_for_cert_version(version, header, proof)
         if not valid:
@@ -273,7 +273,7 @@ def train(args) -> int:
                         raise ValueError(f"unsupported certificate version {cert}; update official helpers")
                     header = template.header.incomplete_header
                     parent = bytes(header.prev_block).hex()
-                    target = adjusted_target(template.target, cfg)
+                    training_threshold = adjusted_training_threshold(template.training_threshold, cfg)
                     expires = time.monotonic() + args.refresh_interval
                     log(logging.DEBUG, "Training height=%d certificate=V%d shape=%dx%dx%d",
                         template.height, cert, cfg.m, cfg.n, cfg.k)
@@ -321,7 +321,7 @@ def train(args) -> int:
                                 pacer.wait(stopped, deadline=stage_deadline(boundary))
                             continue
                         try:
-                            matches = search_batch(batch, target, args.device, cancelled)
+                            matches = search_batch(batch, training_threshold, args.device, cancelled)
                         except TrainingCancelled:
                             pacer.finish(cancelled=True)
                             if not vpn_guard.check():

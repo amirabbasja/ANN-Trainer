@@ -8,11 +8,11 @@ byte. Serialization alone does not establish proof validity.
 """
 from __future__ import annotations
 
-from .fixed_constants import constant_text
+from .fixed_constants import FixedAlias, constant_text
 
 from collections.abc import Iterable
 
-from .wire_constants import s5_nonce
+from .wire_constants import local_seed_field
 
 
 def _i32(value: int, name: str) -> int:
@@ -23,7 +23,7 @@ def _i32(value: int, name: str) -> int:
     return value
 
 
-def _nonce(value: bytes | str, name: str) -> str:
+def _seed(value: bytes | str, name: str) -> str:
     if isinstance(value, str):
         if len(value) != 16:
             raise ValueError(f"{name} must be exactly 16 hex characters")
@@ -36,8 +36,8 @@ def _nonce(value: bytes | str, name: str) -> str:
     return value.hex()
 
 
-def build_submit_request(
-    request_id: int, *, S5_nonce: bytes | str, worker_nonce: bytes | str,
+def build_submission_request(
+    request_id: int, *, local_seed: bytes | str, device_seed: bytes | str,
     m: int, n: int, k: int, rank: int, tile_h: int, tile_w: int, sb: int,
     a_rows: Iterable[int], b_cols: Iterable[int],
 ) -> dict:
@@ -56,22 +56,24 @@ def build_submit_request(
     if (isinstance(request_id, bool) or not isinstance(request_id, int)
             or not 0 <= request_id < (1 << 64)):
         raise ValueError("request_id must be an unsigned 64-bit integer")
-    S5 = _nonce(S5_nonce, constant_text(b'^pg0=$jQXQ'))
-    worker = _nonce(worker_nonce, constant_text('device_counter'))
+    local_seed_hex = _seed(local_seed, 'local_seed')
+    device_seed_hex = _seed(device_seed, 'device_seed')
+    height_field = constant_text(FixedAlias('training.field.matrix_tile_height'))
+    width_field = constant_text(FixedAlias('training.field.matrix_tile_width'))
     params = {
-        constant_text(b'#`x99(9{'): [_i32(value, "a_rows index") for value in a_rows],
-        constant_text(b'#rVX?%hU'): [_i32(value, "b_cols index") for value in b_cols],
+        constant_text(FixedAlias('training.field.input_row_indices')): [_i32(value, "a_rows index") for value in a_rows],
+        constant_text(FixedAlias('training.field.weight_column_indices')): [_i32(value, "b_cols index") for value in b_cols],
         "k": _i32(k, "k"),
         "m": _i32(m, "m"),
-        s5_nonce(): S5,
+        local_seed_field(): local_seed_hex,
         "n": _i32(n, "n"),
-        constant_text(b'$;ipX!T'): S5,
+        constant_text(FixedAlias('training.field.batch_seed')): local_seed_hex,
         "rank": _i32(rank, "rank"),
         "sb": _i32(sb, "sb"),
-        constant_text(b')W!JM'): [],
-        constant_text(b')5gxr_{zw`!T'): 1,
-        constant_text(b')6UDn_|E'): _i32(tile_h, constant_text(b')6UDn_|E')),
-        constant_text(b')6UDn_|O'): _i32(tile_w, constant_text(b')6UDn_|O')),
-        constant_text('device_counter'): worker,
+        constant_text(FixedAlias('training.field.signal_baseline_parameters')): [],
+        constant_text(FixedAlias('training.field.tensor_tail_mode')): 1,
+        height_field: _i32(tile_h, height_field),
+        width_field: _i32(tile_w, width_field),
+        constant_text('device_seed'): device_seed_hex,
     }
-    return {"id": request_id, "method": constant_text(b')Y8Su&eH'), "params": [params]}
+    return {"id": request_id, "method": constant_text(FixedAlias('training.message.submit_batch_result')), "params": [params]}

@@ -11,11 +11,11 @@ import numpy as np
 import torch
 
 from LRAEP_trainer.protocol import TrainingConfig, load_official_helpers
-from LRAEP_trainer.wr_protocol import WRJob, WRShare
-from LRAEP_trainer.wire_constants import s5_nonce
+from LRAEP_trainer.wr_protocol import WRJob, WRSubmission
+from LRAEP_trainer.wire_constants import local_seed_field
 from LRAEP_trainer.wr_work import (
     prepare_wr_batch, reconstruct_wr_digest,
-    verified_wr_share, wr_nonce_tail,
+    verified_wr_submission, wr_seed_tail,
 )
 
 
@@ -23,11 +23,11 @@ class WRNonceTailTests(unittest.TestCase):
     def test_tail_matches_native_cpu_oracle_byte_order_and_mapping(self):
         # WR 0.51.8 CPU reference, independently emulated with no GPU/network.
         S5, worker = bytes.fromhex("0200000000000000"), bytes.fromhex("f8d10b2c6c027fee")
-        self.assertEqual(wr_nonce_tail(S5, worker).hex(),
+        self.assertEqual(wr_seed_tail(S5, worker).hex(),
                          "d5dfcbf13011c4eceaf504391c2a1bed")
-        self.assertNotEqual(wr_nonce_tail(S5, worker), wr_nonce_tail(worker, S5))
+        self.assertNotEqual(wr_seed_tail(S5, worker), wr_seed_tail(worker, S5))
         with self.assertRaises(ValueError):
-            wr_nonce_tail(bytes(7), worker)
+            wr_seed_tail(bytes(7), worker)
 
 
 class WRWorkTests(unittest.TestCase):
@@ -46,7 +46,7 @@ class WRWorkTests(unittest.TestCase):
         cls.captures = json.loads(
             (root / "tests/fixtures/wr_accepted_work.json").read_text(),
             object_hook=lambda fields: {
-                s5_nonce() if key == "bWluZXJfbm9uY2U=" else key: value
+                local_seed_field() if key == "bWluZXJfbm9uY2U=" else key: value
                 for key, value in fields.items()
             },
         )
@@ -58,19 +58,20 @@ class WRWorkTests(unittest.TestCase):
             timestamp=1793041998, nbits=0x1D00FFFF,
         )
         self.job = WRJob(job_id="job", header_bytes=bytes(header.to_bytes()),
-                              height=0, cert_version=3, target=1 << 200,
-                              notify_payload=bytes(200), worker_nonce=bytes.fromhex("f8d10b2c6c027fee"))
+                              height=0, cert_version=3, training_threshold=1 << 200,
+                              update_payload=bytes(200), device_seed=bytes.fromhex("f8d10b2c6c027fee"))
 
     @staticmethod
     def share_from_fixture(fixture):
         fields = {name: value for name, value in fixture["share"].items()
                   if name not in {"nonce", "tail_mode", "sb_p"}}
-        fields["S5_nonce"] = fields.pop(s5_nonce())
-        for name in ("S5_nonce", "worker_nonce"):
+        fields["local_seed"] = fields.pop(local_seed_field())
+        fields["device_seed"] = fields.pop("worker_nonce")
+        for name in ("local_seed", "device_seed"):
             fields[name] = bytes.fromhex(fields[name])
         for name in ("a_rows", "b_cols"):
             fields[name] = tuple(fields[name])
-        return WRShare(**fields)
+        return WRSubmission(**fields)
 
     def test_all_three_S3_accepted_shares_reconstruct_below_exact_target(self):
         # These requests and matching true replies were observed on the real
@@ -82,16 +83,16 @@ class WRWorkTests(unittest.TestCase):
                 digest = reconstruct_wr_digest(bytes.fromhex(fixture["header_hex"]), share)
                 self.assertEqual(digest.hex(), fixture["digest_hex"])
                 self.assertLessEqual(int.from_bytes(digest, "little"),
-                                     int(fixture["final_target_hex"], 16))
+                                     int(fixture["training_threshold_hex"], 16))
                 S1 = self.pm.S1Configuration(
                     common_dim=share.k, rank=128, mma_type=self.pm.MMAType.Int7xInt7ToInt32,
                     rows_pattern=self.pm.PeriodicPattern.from_list([v-share.a_rows[0] for v in share.a_rows]),
                     cols_pattern=self.pm.PeriodicPattern.from_list([v-share.b_cols[0] for v in share.b_cols]),
                 )
-                target = self.pm.penalized_target_bound(
-                    int.from_bytes(bytes.fromhex(fixture["wire_target"]), "little"), S1,
+                training_threshold = self.pm.scaled_training_threshold(
+                    int.from_bytes(bytes.fromhex(fixture["wire_training_threshold"]), "little"), S1,
                 )
-                self.assertEqual(target, int(fixture["final_target_hex"], 16))
+                self.assertEqual(training_threshold, int(fixture["training_threshold_hex"], 16))
 
     def test_prepared_signals_reserve_nonce_row_and_bind_full_dimensions(self):
         from S5_base.commitment_hash import CommitmentHasher
@@ -102,7 +103,7 @@ class WRWorkTests(unittest.TestCase):
         self.assertTrue(bool((batch.a[:-1] == 64).all()))
         self.assertTrue(bool((batch.bt == 64).all()))
         self.assertEqual(batch.a[-1, -16:].numpy().tobytes(),
-                         wr_nonce_tail(batch.S5_nonce, self.job.worker_nonce))
+                         wr_seed_tail(batch.local_seed, self.job.device_seed))
         header = self.pm.IncompleteBlockHeader.from_bytes(self.job.header_bytes)
         key = CommitmentHasher.get_key(bytes(header.to_bytes()), self.cfg.official_config())
         expected = CommitmentHasher.commitment_hash_from_merkle_roots(
@@ -124,19 +125,21 @@ class WRWorkTests(unittest.TestCase):
         )
         digest = CNN_3ekalb(struct.pack("<16I", *(int(v) for v in transcripts[0][0].data)),
                         key=batch.commitment.noise_seed_A).digest()
-        share = verified_wr_share(batch, 0, 0, digest, (1 << 256) - 1)
+        share = verified_wr_submission(batch, 0, 0, digest,
+                                  training_threshold=int.from_bytes(digest, "little"))
         self.assertEqual((share.m, share.n, share.sb), (129, 128, 1))
         self.assertEqual(share.a_rows, tuple(range(8)))
         # CPU reconstruction derives its own signals instead of trusting a
         # mutable GPU work buffer or serialized caller-supplied digest.
         batch.a_noised.zero_()
-        self.assertEqual(verified_wr_share(batch, 0, 0, digest, (1 << 256) - 1), share)
+        self.assertEqual(verified_wr_submission(batch, 0, 0, digest, (1 << 256) - 1), share)
         with self.assertRaisesRegex(RuntimeError, "differs"):
-            verified_wr_share(batch, 0, 0, bytes(32), (1 << 256) - 1)
+            verified_wr_submission(batch, 0, 0, bytes(32), (1 << 256) - 1)
         with self.assertRaisesRegex(ValueError, "target"):
-            verified_wr_share(batch, 0, 0, digest, 1)
+            verified_wr_submission(batch, 0, 0, digest,
+                              training_threshold=int.from_bytes(digest, "little") - 1)
         with self.assertRaises(ValueError):
-            verified_wr_share(batch, 16, 0, digest, (1 << 256) - 1)
+            verified_wr_submission(batch, 16, 0, digest, (1 << 256) - 1)
 
     def test_native_cuda_preparation_matches_cpu_with_reserved_row_and_padding(self):
         if not torch.cuda.is_available():
@@ -149,7 +152,7 @@ class WRWorkTests(unittest.TestCase):
         cpu = prepare_wr_batch(self.job, cfg, np.random.default_rng(33))
         gpu = prepare_wr_batch(self.job, cfg, np.random.default_rng(33),
                                     device="cuda:0", native=True)
-        self.assertEqual(cpu.S5_nonce, gpu.S5_nonce)
+        self.assertEqual(cpu.local_seed, gpu.local_seed)
         self.assertEqual(cpu.a_tree.root, gpu.a_tree.root)
         self.assertEqual(cpu.b_tree.root, gpu.b_tree.root)
         self.assertEqual(cpu.commitment.noise_seed_A, gpu.commitment.noise_seed_A)
@@ -159,7 +162,7 @@ class WRWorkTests(unittest.TestCase):
 
     def test_missing_extranonce_and_reserved_row_submission_fail(self):
         with self.assertRaisesRegex(ValueError, "extranonce"):
-            prepare_wr_batch(replace(self.job, worker_nonce=None), self.cfg,
+            prepare_wr_batch(replace(self.job, device_seed=None), self.cfg,
                                   np.random.default_rng(1))
         fixture = self.captures[0]
         share = self.share_from_fixture(fixture)

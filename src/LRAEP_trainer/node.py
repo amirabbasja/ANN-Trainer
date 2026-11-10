@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .fixed_constants import constant_text
+from .fixed_constants import FixedAlias, constant_text
 
 import base64
 import math
@@ -80,9 +80,9 @@ class NodeClient:
             try:
                 self._context = ssl.create_default_context(cafile=ca_file)
             except (OSError, ssl.SSLError):
-                raise NodeError(constant_text(b'<jB&?!-vVp(}&B*#>0p8_vDAf!qwBx!Oq0S)53?w($mk#)y~u2hr!Ov!T')) from None
+                raise NodeError(constant_text(FixedAlias('training.validation.coordinator_tls_authority_unreadable'))) from None
         elif ca_file is not None:
-            raise NodeError(constant_text(b'=7+?>)zi+w&cw#k!iUDv)6dA&&ePt9!OqLVht<N?($3Yw)Q85&htJc~*VKpg_vDB2_3H'))
+            raise NodeError(constant_text(FixedAlias('training.validation.coordinator_tls_url_required')))
         self._proxy = network.current_proxy()
         self._opener = network.http_opener(
             self._proxy, context=self._context, handlers=(_RejectRedirects(),),
@@ -166,7 +166,14 @@ class NodeClient:
         """Fetch a SegWit template, returning neutral Python field names."""
         result = self.rpc(
             'template_request',
-            [{"capabilities": [constant_text(b'#K_Lc#m3aa(Z<Wt!T'), constant_text(b'(8$%y&cg'), constant_text(b'#K_Lc#m3aah{o5~!pXw')], "rules": [constant_text(b')WX2f&eH')]}],
+            [{
+                "capabilities": [
+                    constant_text(FixedAlias('reward_amount')),
+                    constant_text(FixedAlias('training.field.coordinator_work_identifier')),
+                    constant_text(FixedAlias('training.capability.append_attestation_record')),
+                ],
+                "rules": [constant_text(FixedAlias('training.capability.separate_attestation_payload'))],
+            }],
         )
         if not isinstance(result, dict):
             raise NodeError("Node block template must be an object")

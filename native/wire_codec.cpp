@@ -5,6 +5,7 @@
 #include <atomic>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <new>
@@ -89,8 +90,8 @@ bool key_entry(const Entry& entry, int profile) {
             || is("poll_id") || is("counter_range") || is("reward_metadata")
             || is("reward_amount") || is("default_attestation") || is("required_version");
     }
-    return is("account") || is("account_id") || is("trainer_counter")
-        || is("device_counter") || is("extracounter") || is("prochPerSecond");
+    return is("account") || is("local_seed") || is("device_seed")
+        || is("server_seed") || is("training_rate");
 }
 
 enum Context { plain, method, result_array, result_first };
@@ -200,8 +201,9 @@ struct Parser {
                     || (length == 13 && std::memcmp(name, "submit_record", 13) == 0);
             }
             if (!key && context == result_first && profile == 2) {
-                permitted = entry.placeholder_size == 12
-                    && std::memcmp(entry.placeholder.data(), "extracounter", 12) == 0;
+                constexpr char server_seed[] = "server_seed";
+                permitted = entry.placeholder_size == sizeof(server_seed) - 1
+                    && std::memcmp(entry.placeholder.data(), server_seed, sizeof(server_seed) - 1) == 0;
             }
             // matches(..., encode=true) matches the actual value on inbound.
             if (permitted && matches(entry, value.data, value.size, !outgoing)) return &entry;
@@ -211,10 +213,8 @@ struct Parser {
     void replace(Buffer& value, const Entry* entry) {
         if (!entry) return;
         value.clear();
-        const auto count = outgoing ? entry->value_size : entry->placeholder_size;
-        value.reserve(count);
-        for (std::size_t i = 0; i < count; ++i)
-            value.put(outgoing ? value_byte(*entry, i) : entry->placeholder[i]);
+        if (outgoing) value.append(entry->value.data(), entry->value_size);
+        else value.append(entry->placeholder.data(), entry->placeholder_size);
     }
     void quoted(const Buffer& value) {
         constexpr unsigned char hex[] = "0123456789abcdef";
@@ -339,18 +339,9 @@ struct Parser {
     void run() { value(0); whitespace(); if (position != size) throw invalid; }
 };
 
-constexpr unsigned char kEncodedCoefficients[] = "xy55QJPqK0oiX<c;Jn5Q#F49;{;BW&h2k0<jiRQbucW2KPq|Z}uA{6Bki@~<";
-
 void key(std::uint32_t seed, Buffer& result) {
-    Buffer coefficients;
-    coefficients.reserve(48);
-    std::size_t count = 0;
-    if (wr_codec_fixed_decode(kEncodedCoefficients, sizeof(kEncodedCoefficients) - 1,
-            coefficients.data, coefficients.capacity, &count) || count != 48) throw invalid;
-    coefficients.size = count;
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto coefficient = coefficients.data[i];
-        if (!coefficient) throw invalid;
+    for (std::size_t i = 0; i < kFrameCoefficients.value_size; ++i) {
+        const auto coefficient = kFrameCoefficients.value[i];
         result.put(static_cast<unsigned char>(static_cast<std::uint64_t>(coefficient) * seed - seed % coefficient));
     }
 }
@@ -374,7 +365,7 @@ void unframe(const unsigned char* data, std::size_t count, Buffer& payload) {
         if (i < 8) {
             seed = (seed << 8) | byte;
             if (i == 6) key(seed, repeating);
-        } else payload.put(byte ^ repeating.data[(i / 2 - 4) % 48]);
+        } else payload.put(byte ^ repeating.data[(i / 2 - 4) % kFrameCoefficients.value_size]);
     }
     wipe(reinterpret_cast<unsigned char*>(&seed), sizeof(seed));
 }
@@ -386,7 +377,7 @@ void frame(const Buffer& payload, std::uint32_t seed, Buffer& output) {
     for (int i = 3; i >= 0; --i) emit(static_cast<unsigned char>(seed >> (i * 8)));
     for (std::size_t i = 0; i <= payload.size; ++i) {
         const auto value = i < payload.size ? payload.data[i] : static_cast<unsigned char>('\n');
-        emit(value ^ repeating.data[i % 48]);
+        emit(value ^ repeating.data[i % kFrameCoefficients.value_size]);
     }
     output.put('\n');
     wipe(reinterpret_cast<unsigned char*>(&seed), sizeof(seed));

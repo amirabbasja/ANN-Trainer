@@ -29,7 +29,7 @@ class NativeHashingTests(unittest.TestCase):
         cls.hash_candidates.restype = ctypes.c_int
         cls.device = torch.device("cuda:0")
 
-    def hash(self, transcripts, key, target, capacity=None, stream=None):
+    def hash(self, transcripts, key, training_threshold, capacity=None, stream=None):
         count = transcripts.shape[0]
         if capacity is None:
             capacity = count
@@ -38,7 +38,7 @@ class NativeHashingTests(unittest.TestCase):
             messages = torch.from_numpy(np.ascontiguousarray(transcripts, dtype=np.uint32)).to(self.device)
             key_words = torch.from_numpy(np.frombuffer(key, dtype="<u4").copy()).to(self.device)
             target_words = torch.from_numpy(
-                np.frombuffer(target.to_bytes(32, "little"), dtype="<u4").copy()
+                np.frombuffer(training_threshold.to_bytes(32, "little"), dtype="<u4").copy()
             ).to(self.device)
             # Guard rows remain untouched even when every tile matches and
             # the returned total exceeds the available output capacity.
@@ -64,13 +64,13 @@ class NativeHashingTests(unittest.TestCase):
         return found, observed
 
     @staticmethod
-    def reference(transcripts, key, target):
+    def reference(transcripts, key, training_threshold):
         if reference_blake3 is None:
             raise unittest.SkipTest("optional independent hash reference unavailable")
         result = {}
         for index, words in enumerate(transcripts):
             digest = reference_blake3(words.astype("<u4").tobytes(), key=key).digest()
-            if int.from_bytes(digest, "little") <= target:
+            if int.from_bytes(digest, "little") <= training_threshold:
                 result[index] = digest
         return result
 
@@ -80,19 +80,19 @@ class NativeHashingTests(unittest.TestCase):
             with self.subTest(count=count):
                 messages = rng.integers(0, 1 << 32, (count, 16), dtype=np.uint32)
                 key = rng.bytes(32)
-                target = (1 << 256) - 1
-                total, actual = self.hash(messages, key, target)
+                training_threshold = (1 << 256) - 1
+                total, actual = self.hash(messages, key, training_threshold)
                 self.assertEqual(total, count)
-                self.assertEqual(actual, self.reference(messages, key, target))
+                self.assertEqual(actual, self.reference(messages, key, training_threshold))
 
     def test_target_filters_all_digest_words_in_little_endian_order(self):
         rng = np.random.default_rng(538)
         messages = rng.integers(0, 1 << 32, (257, 16), dtype=np.uint32)
         key = rng.bytes(32)
-        for target in (0, (1 << 128) - 1, (1 << 255) + 12345):
-            with self.subTest(target_bits=target.bit_length()):
-                total, actual = self.hash(messages, key, target)
-                expected = self.reference(messages, key, target)
+        for training_threshold in (0, (1 << 128) - 1, (1 << 255) + 12345):
+            with self.subTest(training_threshold_bits=training_threshold.bit_length()):
+                total, actual = self.hash(messages, key, training_threshold)
+                expected = self.reference(messages, key, training_threshold)
                 self.assertEqual(total, len(expected))
                 self.assertEqual(actual, expected)
 

@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, call, patch
 from LRAEP_trainer.config import DEFAULT_CONFIG
 import LRAEP_trainer
 from LRAEP_trainer import gpu_pacing, S3_training as worker
-from LRAEP_trainer.S3_client import JobSnapshot, S3AuthenticationError, ShareResult
+from LRAEP_trainer.S3_client import JobSnapshot, S3AuthenticationError, SubmissionResult
 from LRAEP_trainer.S3_protocol import S3Job
 from LRAEP_trainer.protocol import TrainingConfig
 from LRAEP_trainer.wire_constants import s7_legacy_alias
@@ -40,7 +40,7 @@ class S3LoopTests(unittest.TestCase):
         self.session.negotiated_gzip = False
         self.session.wait_job.return_value = self.snapshot
         self.session.is_current.return_value = True
-        self.session.submit.return_value = ShareResult(True, None)
+        self.session.submit.return_value = SubmissionResult(True, None)
         self.factory = self.stack.enter_context(
             patch("LRAEP_trainer.S3_client.S3Session", return_value=self.session)
         )
@@ -53,7 +53,7 @@ class S3LoopTests(unittest.TestCase):
         self.monitor.return_value.start.return_value.read.return_value = 42
         self.progress = self.stack.enter_context(patch.object(worker, "LiveProgress"))
         self.stack.enter_context(patch.object(worker.native_cuda, "available", return_value=False))
-        self.stack.enter_context(patch.object(worker, "S3_share_target", return_value=5678))
+        self.stack.enter_context(patch.object(worker, "S3_training_threshold", return_value=5678))
         self.prepare = self.stack.enter_context(patch.object(worker, "prepare_batch"))
         self.search = self.stack.enter_context(
             patch.object(worker, "search_batch", return_value=iter([(0, 0, bytes(32))]))
@@ -61,7 +61,7 @@ class S3LoopTests(unittest.TestCase):
         self.proof = MagicMock()
         self.proof.to_base64.return_value = "cHJvb2Y="
         self.verify = self.stack.enter_context(
-            patch.object(worker, "verified_S3_share", return_value=(self.proof, bytes(32)))
+            patch.object(worker, "verified_S3_submission", return_value=(self.proof, bytes(32)))
         )
         self.header = SimpleNamespace(nbits=0x1D00FFFF)
         native = ModuleType("LRAEP_trainer.primitives")
@@ -139,7 +139,7 @@ class S3LoopTests(unittest.TestCase):
             cnn.return_value._progress_epoch = 1
             with patch.object(worker, "prepare_batch", prepare), \
                     patch.object(worker, "search_batch", search), \
-                    patch.object(worker, "verified_S3_share", verify), \
+                    patch.object(worker, "verified_S3_submission", verify), \
                     patch.object(worker, "_release_work") as release:
                 self.assertEqual(worker.run_S3_training(self.configuration), 0)
                 self.assertGreaterEqual(release.call_count, 2)
@@ -241,7 +241,7 @@ class S3LoopTests(unittest.TestCase):
     def test_gpu_pacing_runs_between_batches_after_share_submission(self):
         self.configuration["training"].update(max_batches=2, job_sequence=[{"title": 'job-0', "time": 60, "max_gpu_utilization": 60}])
         order = []
-        self.session.submit.side_effect = lambda *_: (order.append("submit"), ShareResult(True, None))[1]
+        self.session.submit.side_effect = lambda *_: (order.append("submit"), SubmissionResult(True, None))[1]
         self.search.side_effect = lambda *_: (order.append("search"), iter([(0, 0, bytes(32))]))[1]
         with patch.object(worker, "GpuPacer") as pacer:
             pacer.return_value.max_utilization = 100
@@ -636,7 +636,7 @@ class S3LoopTests(unittest.TestCase):
         pacer.return_value.wait.assert_called_once()
 
     def test_rejection_is_not_logged_as_accepted(self):
-        self.session.submit.return_value = ShareResult(False, "low difficulty")
+        self.session.submit.return_value = SubmissionResult(False, "low difficulty")
         with self.assertLogs(worker.LOG, level="DEBUG") as messages:
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
         output = " ".join(messages.output)
@@ -777,10 +777,10 @@ class LocalGPUIntegrationTests(unittest.TestCase):
             timestamp=1234, nbits=0x1D00FFFF,
         )
         factor = 8 * 8 * k
-        base_target = (2**256 - 1) // factor
+        base_training_threshold = (2**256 - 1) // factor
         job = {"header": bytes(header.to_bytes()).hex(), "height": 130000,
                "job_id": "local-gpu-job", "cert_version": 3,
-               "target": f"{base_target:064x}"}
+               "target": f"{base_training_threshold:064x}"}
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.addCleanup(listener.close)
         listener.bind(("127.0.0.1", 0))

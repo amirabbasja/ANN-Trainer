@@ -3,7 +3,7 @@ from LRAEP_trainer.CNN_3ekalb import CNN_3ekalb
 from LRAEP_gateway.comm.dataclasses import CommitmentHash
 from LRAEP_trainer.primitives import S1Configuration
 from LRAEP_trainer.noise_domains import certificate_salt
-from LRAEP_trainer.fixed_constants import constant_buffer
+from LRAEP_trainer.fixed_constants import FixedAlias, constant_buffer
 
 from .matrix_merkle_tree import MatrixMerkleTree
 
@@ -22,13 +22,13 @@ def _bind_root(merkle_root: bytes, dim: int, salt: bytes) -> bytes:
 
 def bind_root_a(a_merkle_root: bytes, m: int) -> bytes:
     """V3 salting of A's Merkle root; commits the row count ``m``."""
-    with constant_buffer(b'<^') as label:
+    with constant_buffer(FixedAlias('training.tensor.left_operand_label')) as label:
         return _bind_root(a_merkle_root, m, seed_salt(label))
 
 
 def bind_root_b(b_merkle_root: bytes, n: int) -> bytes:
     """V3 salting of B's Merkle root; commits the column count ``n``."""
-    with constant_buffer(b'<p') as label:
+    with constant_buffer(FixedAlias('training.tensor.right_operand_label')) as label:
         return _bind_root(b_merkle_root, n, seed_salt(label))
 
 

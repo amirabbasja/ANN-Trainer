@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from LRAEP_trainer.config import DEFAULT_CONFIG
+from workrunner.config import DEFAULT_CONFIG, save_config
 
 
 class EntrypointEffortTests(unittest.TestCase):
@@ -24,19 +24,20 @@ class EntrypointEffortTests(unittest.TestCase):
         original_path = sys.path[:]
         self.addCleanup(lambda: sys.path.__setitem__(slice(None), original_path))
         self.stack.enter_context(patch.dict(os.environ))
-        self.temporary = self.stack.enter_context(tempfile.TemporaryDirectory())
+        self.temporary = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.config_path = self.temporary / "config.json"
         self.config = copy.deepcopy(DEFAULT_CONFIG)
         self.config["S3"].update(protocol="WR", host="S3.example", WR_S2="test-S2")
         self.config["vpn"].update(enabled=True, link="vless://dummy@example.invalid:443")
-        self.stack.enter_context(patch("LRAEP_trainer.config.load_config", return_value=self.config))
-        self.vpn = self.stack.enter_context(patch("LRAEP_trainer.vpn.ManagedVPN"))
-        self.routed = self.stack.enter_context(patch("LRAEP_trainer.network.routed"))
-        self.helpers = self.stack.enter_context(patch("LRAEP_trainer.protocol.load_official_helpers"))
+        self.vpn = self.stack.enter_context(patch("workrunner.vpn.ManagedVPN"))
+        self.routed = self.stack.enter_context(patch("workrunner.socks_proxy.routed"))
+        self.helpers = self.stack.enter_context(patch("workrunner.S3_training.load_official_helpers"))
         self.cuda = self.stack.enter_context(patch("torch.cuda.is_available", return_value=False))
-        self.worker = self.stack.enter_context(patch("LRAEP_trainer.S3_training.run_S3_training", return_value=0))
+        self.worker = self.stack.enter_context(patch("workrunner.S3_training.run_S3_training", return_value=0))
 
     def test_immediate_exit_skips_vpn_helpers_cuda_and_worker(self):
         self.config["training"]["job_sequence"] = [{"title": 'job-1', "time": 0, "max_gpu_utilization": -1}]
+        save_config(self.config_path, self.config)
         self.assertEqual(self.entrypoint.run(self.temporary), 0)
         self.vpn.assert_not_called()
         self.helpers.assert_not_called()
@@ -45,8 +46,11 @@ class EntrypointEffortTests(unittest.TestCase):
 
     def test_pause_schedule_is_delegated_before_backend_initialization(self):
         self.config["training"]["job_sequence"] = [{"title": 'job-0', "time": 60, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 80}]
+        save_config(self.config_path, self.config)
         self.assertEqual(self.entrypoint.run(self.temporary), 0)
         self.worker.assert_called_once()
+        self.assertEqual(self.worker.call_args.kwargs["login_config"], self.config_path)
+        self.assertEqual(self.worker.call_args.args[0]["S3"]["WR_S2"], "")
         self.assertEqual(self.worker.call_args.args[0]["training"]["job_sequence"],
                          [{"title": 'job-0', "time": 60, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 60, "max_gpu_utilization": 80}])
         self.helpers.assert_not_called()

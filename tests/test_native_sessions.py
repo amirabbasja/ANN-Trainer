@@ -47,11 +47,11 @@ class NativeSessionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'test'):
             with neutral_protocol_text():
                 self.assertEqual(constant_text('account'), 'account')
-                self.assertTrue(constant_ascii_matches('extracounter', 'extracounter'))
-                self.assertFalse(constant_ascii_matches('extracounter', 'extranonce'))
+                self.assertTrue(constant_ascii_matches('server_seed', 'server_seed'))
+                self.assertFalse(constant_ascii_matches('server_seed', 'extranonce'))
                 raise RuntimeError('test')
         self.assertEqual(constant_text('account'), 'wallet')
-        self.assertTrue(constant_ascii_matches('extracounter', 'extranonce'))
+        self.assertTrue(constant_ascii_matches('server_seed', 'extranonce'))
 
     def test_s3_and_wr_sessions_use_native_socket_buffers(self):
         for session_type, profile in ((S3Session, 's3'), (WRSession, 'wr')):
@@ -85,12 +85,12 @@ class NativeSessionTests(unittest.TestCase):
                             incoming = b'{"method":"mining.notify","params":{"wallet":"value","hash":"unchanged"}}\n'
                             expected = {'method': 'training.notify', 'params': {'account': 'value', 'hash': 'unchanged'}}
                         else:
-                            outgoing = {'id': 7, 'method': 'report_info', 'params': [{'prochPerSecond': 3.5}]}
+                            outgoing = {'id': 7, 'method': 'report_info', 'params': [{'training_rate': 3.5}]}
                             session._send(outgoing)
                             raw = peer.recv(4096)
                             self.assertEqual(decode_frame(raw), {'id': 7, 'method': 'report_info', 'params': [{'hashrate': 3.5}]})
                             incoming = encode_frame({'id': -1, 'status': 1, 'result': ['extranonce', '0011223344556677']}, 7)
-                            expected = {'id': -1, 'status': 1, 'result': ['extracounter', '0011223344556677']}
+                            expected = {'id': -1, 'status': 1, 'result': ['server_seed', '0011223344556677']}
                         # The native channel must retain and combine fragments itself.
                         peer.sendall(incoming[:5])
                         peer.sendall(incoming[5:])

@@ -9,8 +9,8 @@ import torch
 
 from LRAEP_trainer.gpu import gpu_transcripts
 from LRAEP_trainer.protocol import (
-    TrainingConfig, load_official_helpers, matching_tiles, S3_share_target,
-    prepare_batch, verified_S3_share,
+    TrainingConfig, load_official_helpers, matching_tiles, S3_training_threshold,
+    prepare_batch, verified_S3_submission,
 )
 
 try:
@@ -19,32 +19,32 @@ except ImportError:
     pm = None
 
 
-class S3TargetTests(unittest.TestCase):
+class S3TrainingThresholdTests(unittest.TestCase):
     def test_configuration_rejects_proof_input_larger_than_consensus_limit(self):
         with self.assertRaisesRegex(ValueError, "4 MiB"):
             TrainingConfig(k=32384, tile_h=128, tile_w=2)
         self.assertEqual(TrainingConfig(k=32256, tile_h=128, tile_w=2).k, 32256)
 
-    def test_final_target_is_exact_and_does_not_require_compact_representation(self):
+    def test_training_threshold_is_exact_and_does_not_require_compact_representation(self):
         # Keep low significant bits that Bitcoin compact encoding cannot store.
-        target = (1 << 225) + 123456789
-        self.assertEqual(S3_share_target(target, TrainingConfig(), "final"), target)
+        training_threshold = (1 << 225) + 123456789
+        self.assertEqual(S3_training_threshold(training_threshold, TrainingConfig(), "final"), training_threshold)
 
     def test_invalid_targets_and_target_kinds_are_rejected(self):
-        for target in (True, False, 0, -1, 2**256, 1.5, "ff"):
-            with self.subTest(target=target), self.assertRaises(ValueError):
-                S3_share_target(target, TrainingConfig(), "final")
+        for training_threshold in (True, False, 0, -1, 2**256, 1.5, "ff"):
+            with self.subTest(training_threshold=training_threshold), self.assertRaises(ValueError):
+                S3_training_threshold(training_threshold, TrainingConfig(), "final")
         with self.assertRaisesRegex(ValueError, "kind"):
-            S3_share_target(123, TrainingConfig(), "automatic")
+            S3_training_threshold(123, TrainingConfig(), "automatic")
 
     @unittest.skipIf(pm is None, "official native helper unavailable")
-    def test_base_target_scaling_preserves_existing_overflow_rejection(self):
+    def test_base_training_threshold_scaling_preserves_existing_overflow_rejection(self):
         config = TrainingConfig()
         factor = config.tile_h * config.tile_w * config.k
-        self.assertEqual(S3_share_target(1234567, config), 1234567 * factor)
+        self.assertEqual(S3_training_threshold(1234567, config), 1234567 * factor)
         maximum_base = (2**256 - 1) // factor
         with self.assertRaisesRegex(ValueError, "overflows"):
-            S3_share_target(maximum_base + 1, config, "base")
+            S3_training_threshold(maximum_base + 1, config, "base")
 
 
 class OfficialS3ShareTests(unittest.TestCase):
@@ -70,7 +70,7 @@ class OfficialS3ShareTests(unittest.TestCase):
         cls.config = TrainingConfig(m=128, n=128)
         cls.maximum = 2**256 - 1
         cls.examples = {}
-        block_target = (0xFFFF << (8 * (0x1D - 3))) * (
+        batch_training_threshold = (0xFFFF << (8 * (0x1D - 3))) * (
             cls.config.tile_h * cls.config.tile_w * cls.config.k
         )
         for version in (1, 2, 3):
@@ -87,7 +87,7 @@ class OfficialS3ShareTests(unittest.TestCase):
             for row, col, digest in matching_tiles(
                 transcripts, batch.commitment.noise_seed_A, cls.maximum,
             ):
-                if int.from_bytes(digest, "little") > block_target:
+                if int.from_bytes(digest, "little") > batch_training_threshold:
                     cls.examples[version] = (batch, header, row, col, digest)
                     break
             else:
@@ -97,7 +97,7 @@ class OfficialS3ShareTests(unittest.TestCase):
         for version, (batch, header, row, col, digest) in self.examples.items():
             with self.subTest(certificate_version=version):
                 before = bytes(header.to_bytes())
-                proof, verified_digest = verified_S3_share(
+                proof, verified_digest = verified_S3_submission(
                     batch, header, version, row, col, digest, self.maximum,
                 )
                 self.assertEqual(verified_digest, digest)
@@ -110,24 +110,24 @@ class OfficialS3ShareTests(unittest.TestCase):
         batch, header, row, col, digest = self.examples[3]
         tampered = bytes([digest[0] ^ 1]) + digest[1:]
         with self.assertRaisesRegex(RuntimeError, "CPU reference"):
-            verified_S3_share(batch, header, 3, row, col, tampered, self.maximum)
+            verified_S3_submission(batch, header, 3, row, col, tampered, self.maximum)
 
     def test_exact_target_boundary_is_inclusive_and_one_below_rejects(self):
         batch, header, row, col, digest = self.examples[3]
-        target = int.from_bytes(digest, "little")
-        _, verified = verified_S3_share(batch, header, 3, row, col, digest, target)
+        training_threshold = int.from_bytes(digest, "little")
+        _, verified = verified_S3_submission(batch, header, 3, row, col, digest, training_threshold)
         self.assertEqual(verified, digest)
         with self.assertRaisesRegex(ValueError, "exact S3 target"):
-            verified_S3_share(batch, header, 3, row, col, digest, target - 1)
+            verified_S3_submission(batch, header, 3, row, col, digest, training_threshold - 1)
 
     def test_unsupported_certificate_and_malformed_digests_are_rejected(self):
         batch, header, row, col, digest = self.examples[3]
         for version in (0, 4, True):
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, "certificate"):
-                verified_S3_share(batch, header, version, row, col, digest, self.maximum)
+                verified_S3_submission(batch, header, version, row, col, digest, self.maximum)
         for invalid in (b"short", digest + b"extra", digest.hex()):
             with self.subTest(digest_type=type(invalid)), self.assertRaisesRegex(ValueError, "32 bytes"):
-                verified_S3_share(batch, header, 3, row, col, invalid, self.maximum)
+                verified_S3_submission(batch, header, 3, row, col, invalid, self.maximum)
 
     def test_different_header_fails_native_commitment_verification(self):
         batch, _, row, col, digest = self.examples[3]
@@ -136,7 +136,7 @@ class OfficialS3ShareTests(unittest.TestCase):
             timestamp=123, nbits=0x207FFFFF,
         )
         with self.assertRaisesRegex(RuntimeError, "official verification"):
-            verified_S3_share(batch, wrong_header, 3, row, col, digest, self.maximum)
+            verified_S3_submission(batch, wrong_header, 3, row, col, digest, self.maximum)
 
 
 if __name__ == "__main__":

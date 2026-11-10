@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from LRAEP_trainer.protocol import TrainingConfig, adjusted_target, matching_tiles
+from LRAEP_trainer.protocol import TrainingConfig, adjusted_training_threshold, matching_tiles
 
 
 class TranscriptTargetTests(unittest.TestCase):
@@ -34,11 +34,11 @@ class TranscriptTargetTests(unittest.TestCase):
     def test_target_scaling_and_overflow(self):
         config = TrainingConfig()
         factor = config.tile_h * config.tile_w * config.k
-        self.assertEqual(adjusted_target(123456, config), 123456 * factor)
+        self.assertEqual(adjusted_training_threshold(123456, config), 123456 * factor)
         maximum_base = (2**256 - 1) // factor
-        self.assertEqual(adjusted_target(maximum_base, config), maximum_base * factor)
+        self.assertEqual(adjusted_training_threshold(maximum_base, config), maximum_base * factor)
         with self.assertRaises(ValueError):
-            adjusted_target(maximum_base + 1, config)
+            adjusted_training_threshold(maximum_base + 1, config)
 
 
 if __name__ == "__main__":

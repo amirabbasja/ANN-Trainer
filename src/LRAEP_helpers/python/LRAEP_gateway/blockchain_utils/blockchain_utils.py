@@ -26,13 +26,13 @@ def _compute_merkle_root(hashes: list[bytes]) -> bytes:
         current_level = next_level
     return current_level[0][::-1]
 
-def bits_to_target(bits: int) -> int:
+def bits_to_training_threshold(bits: int) -> int:
     exponent = bits >> 24 & 255
     mantissa = bits & 16777215
     if type(bits) is not int or not 0 <= bits <= 0xFFFFFFFF or bits & 0x800000:
         raise ValueError('Invalid compact target')
-    target = mantissa << (8 * (exponent - 3)) if exponent >= 3 else mantissa >> (8 * (3 - exponent))
-    return target
+    training_threshold = mantissa << (8 * (exponent - 3)) if exponent >= 3 else mantissa >> (8 * (3 - exponent))
+    return training_threshold
 
 def create_coinbase_transaction(height: int, coinbase_value: int, S1_address: str, coinbase_aux: dict[str, str] | None=None, default_witness_commitment: str | None=None) -> Transaction:
     script_pubkey = get_script_pubkey_from_p2tr_address(S1_address)

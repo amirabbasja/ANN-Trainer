@@ -55,8 +55,8 @@ budget, with no random sampling or additional margin. Hardware readings refresh
 about five times per second. Feedback waits respect interval boundaries and manual stopping;
 stale or unavailable telemetry uses time-based pacing instead.
 
-The target regulates average busy time. Hardware utilization samples remain
-raw and may briefly exceed the target because an already-running operation
+The utilization setting regulates average busy time. Hardware utilization samples remain
+raw and may briefly exceed the setting because an already-running operation
 cannot be paused. This is not a driver-enforced instantaneous utilization cap.
 
 ## Stopping and kernel memory

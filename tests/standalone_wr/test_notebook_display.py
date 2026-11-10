@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 
-from LRAEP_trainer.config import DEFAULT_CONFIG, save_config
+from workrunner.config import DEFAULT_CONFIG, save_config
 
 
 ROOT = Path(__file__).resolve().parents[3] / 'LRAEP-WR-Trainer'
@@ -25,6 +25,7 @@ class NotebookDisplayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             (directory / 'src').symlink_to(ROOT / 'src', target_is_directory=True)
+            (directory / 'train.py').symlink_to(ROOT / 'train.py')
             go = directory / 'go'
             config = copy.deepcopy(DEFAULT_CONFIG)
             config['S3'].update(protocol='WR', host='fixture.example', WR_S2='fixture-S2')
@@ -44,9 +45,11 @@ class NotebookDisplayTests(unittest.TestCase):
                     'from pathlib import Path\n'
                     'from unittest.mock import patch\n'
                     f"exec({''.join(notebook['cells'][0]['source'])!r}, globals())\n"
-                    'from LRAEP_trainer.S3_training import _signal_stop\n'
-                    'def exercise(configuration):\n'
-                    "    assert configuration['training']['job_sequence'] == [('side-job', 2, 100), ('main', 1, 100)]\n"
+                    'from workrunner.S3_training import _signal_stop\n'
+                    'def exercise(configuration, *, login_config):\n'
+                    f"    assert configuration['training']['job_sequence'] == {config['training']['job_sequence']!r}\n"
+                    "    assert login_config == ROOT / 'config.json'\n"
+                    "    assert configuration['S3']['WR_S2'] == ''\n"
                     '    stopped = threading.Event()\n'
                     '    with _signal_stop(stopped):\n'
                     "        print('Side-job | Epoch 1 | Step 1/3', flush=True)\n"
@@ -57,10 +60,11 @@ class NotebookDisplayTests(unittest.TestCase):
                     "            print('Side-job | Epoch 1 | Step 2/3 (66.7%) | GPU 80%', flush=True)\n"
                     "            print('Fixture epoch complete', flush=True)\n"
                     '    return 0\n'
-                    "with patch('LRAEP_trainer.vpn.ManagedVPN') as vpn, patch('LRAEP_trainer.network.routed') as route, patch('LRAEP_trainer.S3_training.run_S3_training', side_effect=exercise):\n"
+                    "with patch('workrunner.vpn.ManagedVPN') as vpn, patch('workrunner.socks_proxy.routed') as route, patch('workrunner.S3_training.run_S3_training', side_effect=exercise):\n"
                     f"    exec({''.join(notebook['cells'][-1]['source'])!r}, globals())\n"
                     '    assert vpn.return_value.__exit__.called\n'
                     '    assert route.return_value.__exit__.called\n'
+                    '    assert exit_code == 0\n'
                     "    print('Fixture resources closed', flush=True)\n"
                 )
                 message_id = client.execute(source)
@@ -108,7 +112,6 @@ class NotebookDisplayTests(unittest.TestCase):
                 else:
                     self.fail('training cell did not finish cleaning up after stopping')
                 output = ''.join(chunks)
-                self.assertIn('Training stopped (exit code 0).', output)
                 self.assertIn('Fixture resources closed', output)
                 if not interrupt:
                     self.assertIn('Step 2/3', output)

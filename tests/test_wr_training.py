@@ -14,7 +14,7 @@ from LRAEP_trainer.config import DEFAULT_CONFIG
 from LRAEP_trainer import native_cuda, S3_training as worker
 from LRAEP_trainer.S6_codec import decode_frame, encode_frame
 from LRAEP_trainer.protocol import load_official_helpers
-from LRAEP_trainer.wire_constants import s5_nonce
+from LRAEP_trainer.wire_constants import local_seed_field
 
 from test_wr_protocol import job_result
 
@@ -45,8 +45,8 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         # Make every correctly computed GPU ticket eligible; the client still
         # executes its real arithmetic and independent candidate verification.
         factor = 8 * 8 * configuration["training"]["k"]
-        target = ((1 << 256) - 1) // factor
-        notify[2] = target.to_bytes(32, "little").hex()
+        training_threshold = ((1 << 256) - 1) // factor
+        notify[2] = training_threshold.to_bytes(32, "little").hex()
         notify[3] = "local-gpu-job"
         extranonce = "19df092c6c027fee"
         observed, errors = {"reports": [], "request_ids": []}, []
@@ -92,13 +92,13 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                             share = request["params"][0]
                             self.assertEqual(set(share), {
                                 "m", "n", "k", "rank", "tile_h", "tile_w", "sb", "sb_p", "tail_mode",
-                                "a_rows", "b_cols", s5_nonce(), "worker_nonce", "nonce",
+                                "a_rows", "b_cols", local_seed_field(), "worker_nonce", "nonce",
                             })
                             self.assertEqual((share["m"], share["n"], share["k"]), (129, 128, 2048))
                             self.assertEqual((share["rank"], share["tile_h"], share["tile_w"]), (128, 8, 8))
                             self.assertEqual(share["worker_nonce"], extranonce)
-                            self.assertEqual(len(bytes.fromhex(share[s5_nonce()])), 8)
-                            self.assertEqual(share["nonce"], share[s5_nonce()])
+                            self.assertEqual(len(bytes.fromhex(share[local_seed_field()])), 8)
+                            self.assertEqual(share["nonce"], share[local_seed_field()])
                             self.assertEqual((share["sb"], share["sb_p"], share["tail_mode"]), (1, [], 1))
                             self.assertEqual(len(share["a_rows"]), 8)
                             self.assertEqual(len(share["b_cols"]), 8)
@@ -111,7 +111,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         server = threading.Thread(target=serve, daemon=True)
         server.start()
         original_search = worker.search_batch
-        original_rate = worker.S3_hashrate
+        original_rate = worker.S3_training_rate
         rate_measurements = []
 
         def measured_rate(stats, cfg, elapsed):
@@ -127,7 +127,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
             try:
                 with patch.object(worker.native_cuda, "available", return_value=native), \
                         patch.object(worker, "search_batch", side_effect=one_candidate), \
-                        patch.object(worker, "S3_hashrate", side_effect=measured_rate), \
+                        patch.object(worker, "S3_training_rate", side_effect=measured_rate), \
                         self.assertLogs(worker.LOG, level="DEBUG") as messages:
                     result = worker.run_S3_training(configuration)
             finally:

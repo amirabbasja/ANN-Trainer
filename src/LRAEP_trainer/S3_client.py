@@ -6,7 +6,7 @@ S6 proof generation are performed by the caller after authentication.
 
 from __future__ import annotations
 
-from .fixed_constants import constant_text, neutral_protocol_text
+from .fixed_constants import FixedAlias, constant_text, neutral_protocol_text
 
 from dataclasses import dataclass, field
 import math
@@ -38,7 +38,7 @@ class JobSnapshot:
 
 
 @dataclass(frozen=True)
-class ShareResult:
+class SubmissionResult:
     accepted: bool
     error: str | None = None
 
@@ -109,7 +109,8 @@ class S3Session:
     def _create_dialect(self) -> KEXDialect:
         """Select this session's identity without reading another S3's field."""
         return KEXDialect(
-            KEX_uname=self.settings.get("KEX_uname", ""), worker=self.settings.get(constant_text(b'(8$%y!qo'), ""),
+            KEX_uname=self.settings.get("KEX_uname", ""),
+            worker=self.settings.get(constant_text(FixedAlias('training.field.training_worker')), ""),
             password=self.settings.get("password", "x"),
             agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
             request_gzip=self.settings.get("compression", "none") == "gzip",
@@ -204,7 +205,7 @@ class S3Session:
     @neutral_protocol_text()
     def _send(self, message: dict[str, Any]) -> None:
         try:
-            message = methods.stratum_request(message)
+            message = methods.wire_request(message)
             try:
                 self.transport.send_message(message, profile="s3", max_frame=self.MAX_FRAME_BYTES)
             except (TypeError, ValueError, RecursionError):
@@ -237,10 +238,10 @@ class S3Session:
             if self._closed_event.is_set():
                 return
         method = response.get("method")
-        notification = methods.stratum_notification_method(method)
+        notification = methods.notification_method(method)
         if notification == methods.WORK_UPDATE:
             job = self.dialect.parse_job(
-                response.get("params"), self.settings.get(constant_text(b'#KP6n&cV*a#?!+1(Zbc#&dA9'))
+                response.get("params"), self.settings.get(constant_text(FixedAlias('training.field.attestation_version')))
             )
             with self._condition:
                 if self._closed_event.is_set():
@@ -300,7 +301,7 @@ class S3Session:
             )
 
     @neutral_protocol_text()
-    def submit(self, snapshot: JobSnapshot, proof_b64: str, timeout: float | None = None) -> ShareResult:
+    def submit(self, snapshot: JobSnapshot, proof_b64: str, timeout: float | None = None) -> SubmissionResult:
         wait_seconds = _seconds(self.transport.read_timeout if timeout is None else timeout)
         with self._send_lock:
             with self._condition:
@@ -314,7 +315,7 @@ class S3Session:
                 negotiated = self._negotiated_gzip
             # Compression may be expensive; keep it outside the state lock so
             # new notify messages can immediately invalidate the old job.
-            request = self.dialect.submit_request(snapshot.job, proof_b64, request_id, negotiated)
+            request = self.dialect.submission_request(snapshot.job, proof_b64, request_id, negotiated)
             try:
                 pending = _Pending()
                 with self._condition:
@@ -327,14 +328,18 @@ class S3Session:
                 except (S3ConnectionError, S3ProtocolError):
                     with self._condition:
                         self._pending.pop(request_id, None)
-                    self._fail(S3ConnectionError(constant_text(b'^puCx&&Jilht$H!!-v7f&db8X')))
+                    self._fail(S3ConnectionError(
+                        constant_text(FixedAlias('training.validation.coordinator_submission_send_failed')),
+                    ))
                     raise
             finally:
                 del request
         if not pending.event.wait(wait_seconds):
             with self._condition:
                 self._pending.pop(request_id, None)
-            error = S3ConnectionError(constant_text(b'^puCx&&JilhsMOr$;i;l!o$GA%EHOhhttl=!o!Ei($f'))
+            error = S3ConnectionError(
+                constant_text(FixedAlias('training.validation.coordinator_submission_acknowledgement_timeout')),
+            )
             self._fail(error)
             raise error
         with self._condition:
@@ -342,8 +347,8 @@ class S3Session:
         if pending.error is not None:
             raise pending.error
         if pending.response is None:
-            raise S3ConnectionError(constant_text(b'^puCh%gEHi!-vJf!N}FZhsMOr$;i;l!o$GM$-sxx&%%e)&&Jil'))
+            raise S3ConnectionError(constant_text(FixedAlias('training.validation.coordinator_closed_before_acknowledgement')))
         if self.dialect.accept(pending.response):
-            return ShareResult(True)
+            return SubmissionResult(True)
         # Do not echo untrusted S3 text, credentials, or proof data to logs.
-        return ShareResult(False, constant_text(b'^puCy!p*|O)561t)X&D%!T'))
+        return SubmissionResult(False, constant_text(FixedAlias('training.validation.coordinator_submission_rejected')))

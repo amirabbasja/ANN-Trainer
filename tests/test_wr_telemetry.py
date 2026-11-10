@@ -43,7 +43,7 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.stack.enter_context(patch.object(worker.torch.cuda, 'is_available', return_value=True))
         self.stack.enter_context(patch.object(worker.torch.cuda, 'get_device_name', return_value='selected GPU'))
         self.stack.enter_context(patch.object(worker.native_cuda, 'available', return_value=False))
-        self.stack.enter_context(patch.object(worker, 'S3_share_target', return_value=1))
+        self.stack.enter_context(patch.object(worker, 'S3_training_threshold', return_value=1))
         self.prepare = self.stack.enter_context(patch('LRAEP_trainer.wr_work.prepare_wr_batch'))
         self.stack.enter_context(patch.object(worker, 'prepare_batch'))
         self.search = self.stack.enter_context(patch.object(worker, 'search_batch', side_effect=self.complete_search))
@@ -55,8 +55,8 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(sys.modules, {'LRAEP_trainer.primitives': native}))
         self.stack.enter_context(patch.object(LRAEP_trainer, 'primitives', native, create=True))
 
-    def report(self, gpu_name, hashrate):
-        self.reports.append((self.now, gpu_name, hashrate))
+    def report(self, gpu_name, training_rate):
+        self.reports.append((self.now, gpu_name, training_rate))
         return len(self.reports)
 
     def complete_search(self, *_):
@@ -150,21 +150,21 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.session.report_info.assert_not_called()
 
 
-class S3HashrateUnitTests(unittest.TestCase):
+class S3TrainingRateUnitTests(unittest.TestCase):
     def test_raw_hs_and_diagnostic_units_use_completed_mac_count(self):
         config = TrainingConfig(m=4096, n=4096, k=16384)
         stats = worker.S3TrainingStats(batches=15, accepted=0)
         expected = 15 * 4096 * 4096 * 16384
-        self.assertEqual(worker.S3_hashrate(stats, config, 1.0), expected)
-        self.assertEqual(worker.format_hashrate(expected), '4.12 TH/s')
+        self.assertEqual(worker.S3_training_rate(stats, config, 1.0), expected)
+        self.assertEqual(worker.format_training_rate(expected), '4.12 TH/s')
         stats.accepted = 100
-        self.assertEqual(worker.S3_hashrate(stats, config, 1.0), expected)
+        self.assertEqual(worker.S3_training_rate(stats, config, 1.0), expected)
 
     def test_zero_work_and_short_elapsed_values_stay_finite(self):
         config = TrainingConfig(m=128, n=128, k=2048)
-        self.assertEqual(worker.S3_hashrate(worker.S3TrainingStats(), config, 0), 0)
+        self.assertEqual(worker.S3_training_rate(worker.S3TrainingStats(), config, 0), 0)
         work = 128 * 128 * 2048
-        self.assertEqual(worker.S3_hashrate(worker.S3TrainingStats(batches=1), config, 0), work / 0.001)
+        self.assertEqual(worker.S3_training_rate(worker.S3TrainingStats(batches=1), config, 0), work / 0.001)
 
 
 if __name__ == '__main__':

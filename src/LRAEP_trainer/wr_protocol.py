@@ -13,22 +13,22 @@ import math
 import re
 from typing import Any
 
-from .fixed_constants import constant_ascii_matches, constant_buffer, constant_bytes, constant_text
-from .S6_requests import build_submit_request
+from .fixed_constants import FixedAlias, constant_ascii_matches, constant_buffer, constant_bytes, constant_text
+from .S6_requests import build_submission_request
 from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
 
 
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
 
 
-_HEADER_MASK = b'I*8O`wh#PAk==IbHLDoHRF5Nlu*n|gYxJlA+C{$8'
+_HEADER_MASK = FixedAlias('training.format.batch_header_mask')
 
 
 def header_mask():
     return constant_bytes(_HEADER_MASK)
 
 
-_WORK_PREFIX_MASK = b'>SuG>Sk;?fQ2qa${>xwQQn$)?cMaTnN;>NC%{4e(3{5T~Xp;raRu;cSVK7xBS8WP$<QFjXHwN3@4Md5~XtB)j0a5CAj<Y~R'
+_WORK_PREFIX_MASK = FixedAlias('training.format.batch_update_prefix_mask')
 
 
 def work_prefix_mask():
@@ -42,55 +42,56 @@ class UnknownWRRequest(S3ProtocolError):
 def _hex_bytes(value: Any, length: int, label: str) -> bytes:
     if (not isinstance(value, str) or len(value) != length * 2
             or _HEX.fullmatch(value) is None):
-        raise S3ProtocolError(f"{constant_text(b'^pJ-')}{label} must contain exactly {length} hexadecimal bytes")
+        prefix = constant_text(FixedAlias('training.label.legacy_batch_protocol_prefix'))
+        raise S3ProtocolError(f"{prefix}{label} must contain exactly {length} hexadecimal bytes")
     return bytes.fromhex(value)
 
 
-def decode_notify_payload(value: str) -> bytes:
+def decode_update_payload(value: str) -> bytes:
     """Recover the observed 76-byte block header from its 200-byte work blob."""
-    payload = _hex_bytes(value, 200, constant_text(b'$;i{r!QO}0#@@@w#=`'))
+    payload = _hex_bytes(value, 200, constant_text(FixedAlias('training.label.batch_update_payload')))
     with constant_buffer(_WORK_PREFIX_MASK) as prefix, constant_buffer(_HEADER_MASK) as mask:
         header = bytes(byte ^ prefix[index] ^ mask[index % 32]
                        for index, byte in enumerate(payload[:76]))
-    # A syntactically valid work blob must also carry a valid compact target.
+    # A valid training payload must also carry a valid compact training threshold.
     nbits = int.from_bytes(header[72:76], "little")
     exponent, mantissa = nbits >> 24, nbits & 0x007FFFFF
-    target = (mantissa >> (8 * (3 - exponent)) if exponent <= 3
-              else mantissa << (8 * (exponent - 3)))
-    if nbits & 0x00800000 or not 0 < target < 1 << 256:
-        raise S3ProtocolError(constant_text(b'^pJ<c!o<kK!o!Ep!p6hG)rZf<)Q85&htA2-#>>vbhs4Or*T%%thttN@z{1l'))
+    training_threshold = (mantissa >> (8 * (3 - exponent)) if exponent <= 3
+                          else mantissa << (8 * (exponent - 3)))
+    if nbits & 0x00800000 or not 0 < training_threshold < 1 << 256:
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_header_compact_bound_invalid')))
     return header
 
 
 @dataclass(frozen=True)
 class WRJob(S3Job):
-    """Version-3 work, with S3 extranonce bound to this job snapshot.
+    """Version-3 training work with its server-issued device seed.
 
     The wire has no height. ``height=0`` is a compatibility placeholder for
     the common training interface, never a height inferred from generation.
     """
 
-    notify_payload: bytes = b""
-    worker_nonce: bytes | None = None
+    update_payload: bytes = b""
+    device_seed: bytes | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.cert_version != 3 or self.height != 0:
-            raise S3ProtocolError(constant_text(b'=*i38hsed$!qw5j!-w>chrq(g!qvvp&dAA!l!wmLht$&7*T~h=!ov'))
-        if not isinstance(self.notify_payload, bytes) or len(self.notify_payload) != 200:
-            raise S3ProtocolError(constant_text(b'^pJ<i$kWcj-iO!5-pk0w!-vY!)YFH=$jQ^j&dG<BmzRgd-qXU='))
-        if self.worker_nonce is not None and (
-            not isinstance(self.worker_nonce, bytes) or len(self.worker_nonce) != 8
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_generation_unsupported')))
+        if not isinstance(self.update_payload, bytes) or len(self.update_payload) != 200:
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_update_payload_length')))
+        if self.device_seed is not None and (
+            not isinstance(self.device_seed, bytes) or len(self.device_seed) != 8
         ):
-            raise S3ProtocolError(constant_text(b'^pJ<p$koik)rZN*$;85k%F@)+hs4Oq)5gxphr-Ul&(nv+-qXU='))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_device_seed_length')))
 
 
 @dataclass(frozen=True)
-class WRShare:
+class WRSubmission:
     """Compact reconstruction witness, rather than a KEX base64 proof."""
 
-    S5_nonce: bytes
-    worker_nonce: bytes
+    local_seed: bytes
+    device_seed: bytes
     m: int
     n: int
     k: int
@@ -103,13 +104,13 @@ class WRShare:
 
     def request(self, request_id: int) -> dict[str, Any]:
         try:
-            return build_submit_request(
-                request_id, S5_nonce=self.S5_nonce, worker_nonce=self.worker_nonce,
+            return build_submission_request(
+                request_id, local_seed=self.local_seed, device_seed=self.device_seed,
                 m=self.m, n=self.n, k=self.k, rank=self.rank, tile_h=self.tile_h,
                 tile_w=self.tile_w, sb=self.sb, a_rows=self.a_rows, b_cols=self.b_cols,
             )
         except (ValueError, TypeError) as error:
-            raise S3ProtocolError(constant_text(b'?#a={%g)1x^pJ<t&&Jilhr!Om%fr+')) from error
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_submission_fields_invalid'))) from error
 
 
 class WRDialect:
@@ -117,33 +118,41 @@ class WRDialect:
 
     def __init__(self, WR_S2: str, worker: str, agent: str = DEFAULT_AGENT) -> None:
         self.WR_S2 = _text(WR_S2, "WR_S2", 256)
-        self.worker = _text(worker, constant_text(b'(8$%y!qo'), 128, allow_empty=True)
+        self.worker = _text(worker, constant_text(FixedAlias('training.field.training_worker')), 128, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
         if any(character.isspace() for character in WR_S2 + worker):
-            raise S3ProtocolError(constant_text(b'@b&ogm50X3!-vqw)y%@xhsx5_(}%>!$<xNp$%o0vhtSW?)56r(#>Bz'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_account_identity_whitespace')))
 
     def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
         if type(start_id) is not int or not 0 <= start_id < 1 << 64:
-            raise S3ProtocolError(constant_text(b'^pJ<u!q(El)YFIV<A=)9)YFH>!iUDmhtkQ^&cMmS!-tWRip9>;htA2<!ob4S'))
-        return [{"id": start_id, "method": constant_text(b'%gDga$p'), "params": [self.WR_S2, self.worker, self.agent]}]
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_request_identifier_range')))
+        return [{
+            "id": start_id,
+            "method": constant_text(FixedAlias('training.message.open_session')),
+            "params": [self.WR_S2, self.worker, self.agent],
+        }]
 
     @staticmethod
-    def report_request(gpu_name: str, hashrate: float, request_id: int) -> dict[str, Any]:
+    def report_request(gpu_name: str, training_rate: float, request_id: int) -> dict[str, Any]:
         """Report one GPU's measured work rate in raw hash units per second."""
         if type(request_id) is not int or not 0 <= request_id < 1 << 64:
-            raise S3ProtocolError(constant_text(b'^pJ<u!q(El)YFIV<A=)9)YFH>!iUDmhtkQ^&cMmS!-tWRip9>;htA2<!ob4S'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_request_identifier_range')))
         name = _text(gpu_name, "gpu_name", 256)
         if not name.strip() or not name.isprintable():
             raise S3ProtocolError("gpu_name must contain printable GPU identification")
-        if isinstance(hashrate, bool) or not isinstance(hashrate, (int, float)):
-            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d'))
+        if isinstance(training_rate, bool) or not isinstance(training_rate, (int, float)):
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.accelerator_throughput_range')))
         try:
-            rate = float(hashrate)
+            rate = float(training_rate)
         except OverflowError:
-            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d')) from None
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.accelerator_throughput_range'))) from None
         if not math.isfinite(rate) or rate < 0:
-            raise S3ProtocolError(constant_text(b'&&Jfx)yC7phsx5_(}%^vhsKA=$jQmVz{b<g(ZYwp&dJWx!iUMy%EiLfhtA1|?}*d'))
-        return {"id": request_id, "method": constant_text(b')xy`v)zkRS$-&3'), "params": [{constant_text('prochPerSecond'): rate, "name": name}]}
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.accelerator_throughput_range')))
+        return {
+            "id": request_id,
+            "method": constant_text(FixedAlias('training.message.accelerator_metrics')),
+            "params": [{constant_text('training_rate'): rate, "name": name}],
+        }
 
     @staticmethod
     def accept(response: Mapping[str, Any]) -> bool:
@@ -157,74 +166,76 @@ class WRDialect:
 
     @staticmethod
     def classify(response: Mapping[str, Any]) -> str:
-        """Return reply/extranonce/notify, raising on unknown server requests.
+        """Classify replies, server seed updates and batch updates.
 
         Boolean replies may reject a correlated request. Their IDs are checked
-        by the session; uncorrelated replies never authenticate or credit shares.
+        by the session; uncorrelated replies never authenticate or credit results.
         """
         if isinstance(response, Mapping) and isinstance(response.get("method"), str):
-            raise UnknownWRRequest(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZQ$)6dAm'))
+            raise UnknownWRRequest(constant_text(FixedAlias('training.validation.batch_server_method_unknown')))
         if not isinstance(response, Mapping) or set(response) - {"id", "status", "result", "error"}:
-            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZQ$)YQhn!iT}m!pp<dhsf23%EHsn$in'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_server_fields_unknown')))
         request_id, status = response.get("id"), response.get("status")
         if (type(request_id) is not int or not -1 <= request_id < 1 << 64
                 or type(status) is not int or status not in (0, 1)):
-            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<u!qnHu$<)G!!pYIX%gEQl'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_response_envelope_unknown')))
         result = response.get("result")
         if request_id >= 0 and type(result) is bool:
             return "reply"
         if (request_id != -1 or status != 1 or response.get("error") is not None
                 or not isinstance(result, list) or not result):
-            raise S3ProtocolError(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZx>*3!b%(}&2_ht<N=*T~7#!iUt)#@E6'))
-        if constant_ascii_matches('extracounter', result[0]):
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_server_message_shape_unknown')))
+        if constant_ascii_matches('server_seed', result[0]):
             if len(result) != 2:
-                raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
-            _hex_bytes(result[1], 8, constant_text('extracounter'))
+                raise S3ProtocolError(constant_text(FixedAlias('training.validation.coordinator_seed_update_schema')))
+            _hex_bytes(result[1], 8, constant_text('server_seed'))
             return result[0]
-        if result[0] == constant_text(b'$;i{r!QK'):
+        if result[0] == constant_text(FixedAlias('training.message.batch_update')):
             # Full job validation is performed by parse_job, including version.
             if len(result) != 5 or not all(isinstance(field, str) for field in result):
-                raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<i$kWcj-iOr0&%(;a'))
-            return constant_text(b'$;i{r!QK')
+                raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_update_schema')))
+            return constant_text(FixedAlias('training.message.batch_update'))
         if isinstance(result[0], str):
-            raise UnknownWRRequest(constant_text(b'^2yA}$k54$^pJ<t!qw5j)rZN*)6T)p#KzOk$jJ'))
-        raise S3ProtocolError(constant_text(b'>c-2#$koci!-w>chsns(&cV*a#?#Ko$%o0t%EA'))
+            raise UnknownWRRequest(constant_text(FixedAlias('training.validation.batch_server_notification_unknown')))
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_notification_name_malformed')))
 
     @staticmethod
-    def parse_extranonce(result: list) -> bytes:
-        if not isinstance(result, list) or len(result) != 2 or not constant_ascii_matches('extracounter', result[0]):
-            raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<b-_zB`$;ipX!iUtv&%(;a'))
-        return _hex_bytes(result[1], 8, constant_text('extracounter'))
+    def parse_server_seed(result: list) -> bytes:
+        if not isinstance(result, list) or len(result) != 2 or not constant_ascii_matches('server_seed', result[0]):
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.coordinator_seed_update_schema')))
+        return _hex_bytes(result[1], 8, constant_text('server_seed'))
 
     @staticmethod
     def parse_job(result: list, configured_certificate_version: int | None = None,
-                  worker_nonce: bytes | None = None) -> WRJob:
-        if (not isinstance(result, list) or len(result) != 5 or result[0] != constant_text(b'$;i{r!QK')
+                  device_seed: bytes | None = None) -> WRJob:
+        if (not isinstance(result, list) or len(result) != 5
+                or result[0] != constant_text(FixedAlias('training.message.batch_update'))
                 or not all(isinstance(field, str) for field in result)):
-            raise S3ProtocolError(constant_text(b'^2yZF*Vo9^)561t^pJ<i$kWcj-iOr0&%(;a'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_update_schema')))
         if result[4] != "3":
-            raise S3ProtocolError(constant_text(b'=*i38hsed$!qw5j!-w>chrq(g!qvvp&dAA!l!wmLht$&7*T~h=!ov'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_generation_unsupported')))
         if configured_certificate_version is not None and (
             type(configured_certificate_version) is not int or configured_certificate_version != 3
         ):
-            raise S3ProtocolError(constant_text(b'^pJ<Z!pXwb#?#Ko$%mAO)xy@&&eg)yhs46w)6T)p#KzOYhta~-)XvDshm-'))
-        payload = _hex_bytes(result[1], 200, constant_text(b'$;i{r!QO}0#@@@w#=`'))
-        target_bytes = _hex_bytes(result[2], 32, constant_text(b')X&D%!iUqw)xg5j'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_generation_attestation_revision')))
+        payload = _hex_bytes(result[1], 200, constant_text(FixedAlias('training.label.batch_update_payload')))
+        training_threshold_bytes = _hex_bytes(result[2], 32, constant_text(FixedAlias('training.label.batch_acceptance_bound')))
         return WRJob(
-            job_id=_text(result[3], constant_text(b'&B(?0&cg'), 128), header_bytes=decode_notify_payload(result[1]),
+            job_id=_text(result[3], constant_text(FixedAlias('training.field.batch_identifier')), 128),
+            header_bytes=decode_update_payload(result[1]),
             # S7 transmits the uint256 in little-endian byte order,
-            # unlike KEX's display-order hexadecimal target.
-            height=0, cert_version=3, target=int.from_bytes(target_bytes, "little"),
-            raw_target=result[2], notify_payload=payload, worker_nonce=worker_nonce,
+            # unlike KEX's display-order hexadecimal training threshold.
+            height=0, cert_version=3, training_threshold=int.from_bytes(training_threshold_bytes, "little"),
+            encoded_training_threshold=result[2], update_payload=payload, device_seed=device_seed,
         )
 
     @staticmethod
-    def submit_request(job: WRJob, share: WRShare, request_id: int,
+    def submission_request(job: WRJob, submission: WRSubmission, request_id: int,
                        negotiated_gzip: bool = False) -> dict[str, Any]:
-        if not isinstance(job, WRJob) or not isinstance(share, WRShare):
-            raise S3ProtocolError(constant_text(b'^pJ<t(#6Wo)YQ(%$%oa#*3!<^!qkV()6|E}$i;`o$-{@l$jaBo#M6h=&&Jil'))
+        if not isinstance(job, WRJob) or not isinstance(submission, WRSubmission):
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_and_compact_attestation_required')))
         if negotiated_gzip:
-            raise S3ProtocolError(constant_text(b'^pJ<c$imcz$;i`()Y8}2$ko$_?Bf52z}?Q*hu77}$iauy(#6Wo)YQ(%$<z'))
-        if job.worker_nonce is None or share.worker_nonce != job.worker_nonce:
-            raise S3ProtocolError(constant_text(b'^pJ<t&&JilhtSB?%)-@&$;ipX!iU4i!qkV!$kT_)#?!>lhtAW~ht0^v'))
-        return share.request(request_id)
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_submission_compression_unsupported')))
+        if job.device_seed is None or submission.device_seed != job.device_seed:
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_submission_device_seed_mismatch')))
+        return submission.request(request_id)

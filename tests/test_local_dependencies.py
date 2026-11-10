@@ -52,18 +52,31 @@ def deny_connection(*args, **kwargs):
     raise AssertionError('Unexpected network connection')
 socket.socket.connect = deny_connection
 socket.socket.connect_ex = deny_connection
+'''
+        shared_imports = '''
 from LRAEP_trainer.protocol import load_official_helpers
 load_official_helpers(root / 'src/LRAEP_helpers')
 from LRAEP_trainer import S3_training, wr_work, wr_client, primitives
 from LRAEP_gateway.blockchain_utils import blockchain_utils, LRAEP_header, LRAEP_block, zk_certificate
 from LRAEP_gateway.comm import dataclasses, S1_configuration
 from LRAEP_gateway import proof_generator
+'''
+        standalone_imports = '''
+from workrunner.protocol import load_official_helpers
+load_official_helpers(root / 'src/work_helpers')
+from workrunner import S3_training, training_work, training_client, protocol_types as primitives
+from job_gateway.record_format import training_assembly, training_header, training_record, training_certificate
+from job_gateway.comm import training_types, S1_configuration
+from job_gateway import training_proofs
+'''
+        checks = '''
 assert not blocked.intersection(sys.modules)
 assert Path(primitives.__file__).resolve().is_relative_to(root)
 '''
-        for project in PROJECTS:
+        for project, imports in zip(PROJECTS, (shared_imports, standalone_imports), strict=True):
             with self.subTest(project=project.name):
-                result = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(project)], text=True, capture_output=True, timeout=30)
+                result = subprocess.run([sys.executable, '-I', '-B', '-c', script + imports + checks, str(project)],
+                                        text=True, capture_output=True, timeout=30)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

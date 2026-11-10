@@ -50,7 +50,7 @@ class NativeWireTests(unittest.TestCase):
         self.assertEqual(value['params'], ['mining.notify', {'account': 'hashrate', 'hash': 'abc'}])
         self.assertEqual(value['result'], ['extranonce', 'extranonce'])
         self.assertEqual(loads(b'{"result":["extranonce","extranonce"]}', 'wr'),
-                         {'result': ['extracounter', 'extranonce']})
+                         {'result': ['server_seed', 'extranonce']})
         self.assertEqual(loads(b'{"method":"unlisted","wallet":"abc"}', 'wr'),
                          {'method': 'unlisted', 'account': 'abc'})
 
@@ -93,7 +93,7 @@ class NativeWireTests(unittest.TestCase):
             })
 
     def test_wr_seeded_frame_matches_existing_codec(self):
-        neutral = {'id': 1, 'method': 'report_info', 'params': [{'prochPerSecond': 123.5, 'account': 'demo'}]}
+        neutral = {'id': 1, 'method': 'report_info', 'params': [{'training_rate': 123.5, 'account': 'demo'}]}
         expected = {'id': 1, 'method': 'report_info', 'params': [{'hashrate': 123.5, 'wallet': 'demo'}]}
         with dumps_buffer(neutral, 'wr', framed=True, seed=0x10203040) as view:
             self.assertEqual(view.tobytes(), encode_frame(expected, seed=0x10203040))
@@ -108,10 +108,10 @@ class NativeWireTests(unittest.TestCase):
             try:
                 expected = json.loads(json.dumps(entry['message']))
                 if isinstance(expected.get('result'), list) and expected['result'][0] == 'extranonce':
-                    expected['result'][0] = 'extracounter'
+                    expected['result'][0] = 'server_seed'
                 for params in expected.get('params', []):
                     if isinstance(params, dict) and 'hashrate' in params:
-                        params['prochPerSecond'] = params.pop('hashrate')
+                        params['training_rate'] = params.pop('hashrate')
                 self.assertEqual(_neutral_object(transformed), expected)
             finally:
                 transformed.close()

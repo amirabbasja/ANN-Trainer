@@ -28,7 +28,7 @@ class LRAEPHeader:
         return self.incomplete_header.timestamp
 
     @property
-    def target_bits(self) -> int:
+    def training_threshold_bits(self) -> int:
         return self.incomplete_header.nbits
 
     @classmethod

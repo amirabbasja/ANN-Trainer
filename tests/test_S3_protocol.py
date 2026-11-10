@@ -28,9 +28,9 @@ class KEXProtocolTests(unittest.TestCase):
         self.assertEqual(job.header_bytes[:4], (0x20000000).to_bytes(4, "little"))
         self.assertEqual(job.cert_version, 3)
         self.assertEqual(job.height, 119376)
-        self.assertEqual(job.target, (1 << 224) // 2097152 - 1)
-        self.assertNotEqual(job.target, (0xFFFF << 208) // 2097152)
-        self.assertEqual(job.raw_target, CAPTURED_JOB["target"])
+        self.assertEqual(job.training_threshold, (1 << 224) // 2097152 - 1)
+        self.assertNotEqual(job.training_threshold, (0xFFFF << 208) // 2097152)
+        self.assertEqual(job.encoded_training_threshold, CAPTURED_JOB["target"])
 
     def test_v1_handshake_registers_client_before_opening_session(self):
         requests = self.dialect.auth_requests()
@@ -72,7 +72,7 @@ class KEXProtocolTests(unittest.TestCase):
         job = self.dialect.parse_job(CAPTURED_JOB)
         raw = b"opaque official bincode proof\x00"
         b64 = base64.b64encode(raw).decode()
-        request = self.dialect.submit_request(job, b64, request_id=13)
+        request = self.dialect.submission_request(job, b64, request_id=13)
         self.assertEqual(request, {
             "jsonrpc": "2.0", "id": 13, "method": "work.complete",
             "params": {"worker": "public-S2.rig0", "job_id": job.job_id, "plain_proof": b64},
@@ -84,14 +84,14 @@ class KEXProtocolTests(unittest.TestCase):
         job = dialect.parse_job(CAPTURED_JOB)
         raw = b"opaque official bincode proof\x00" * 100
         b64 = base64.b64encode(raw).decode()
-        plain = dialect.submit_request(job, b64, request_id=10, negotiated_gzip=False)
+        plain = dialect.submission_request(job, b64, request_id=10, negotiated_gzip=False)
         self.assertEqual(plain["params"]["plain_proof"], b64)
-        compressed = dialect.submit_request(job, b64, request_id=11, negotiated_gzip=True)
+        compressed = dialect.submission_request(job, b64, request_id=11, negotiated_gzip=True)
         wire = base64.b64decode(compressed["params"]["plain_proof"])
         self.assertEqual(wire[:2], b"\x1f\x8b")
         self.assertEqual(gzip.decompress(wire), raw)
         with self.assertRaises(S3ProtocolError):
-            self.dialect.submit_request(job, b64, 12, negotiated_gzip=True)
+            self.dialect.submission_request(job, b64, 12, negotiated_gzip=True)
 
     def test_certificate_version_is_never_guessed(self):
         missing = {k: v for k, v in CAPTURED_JOB.items() if k != "cert_version"}
@@ -124,13 +124,13 @@ class KEXProtocolTests(unittest.TestCase):
         job = self.dialect.parse_job(CAPTURED_JOB)
         for proof in ["", "not base64!", "YQ==\n", "YR==", "YQ===", "é", None]:
             with self.subTest(proof=proof), self.assertRaises(S3ProtocolError):
-                self.dialect.submit_request(job, proof, 3)
+                self.dialect.submission_request(job, proof, 3)
 
     def test_oversized_proof_is_not_sent(self):
         job = self.dialect.parse_job(CAPTURED_JOB)
         proof = base64.b64encode(b"\x00" * (4 * 1024 * 1024 + 1)).decode()
         with self.assertRaisesRegex(S3ProtocolError, "4 MiB"):
-            self.dialect.submit_request(job, proof, 3)
+            self.dialect.submission_request(job, proof, 3)
 
     def test_invalid_ids_and_control_characters(self):
         for value in [0, -1, True, "1"]:

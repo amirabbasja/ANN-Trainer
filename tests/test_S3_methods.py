@@ -32,7 +32,7 @@ class S3MethodBoundaryTests(unittest.TestCase):
         session = self.session()
         job = S3Job("job-1", bytes(76), 1, 3, 10)
         requests = session.dialect.auth_requests(start_id=7)
-        requests.append(session.dialect.submit_request(job, "eA==", 9))
+        requests.append(session.dialect.submission_request(job, "eA==", 9))
         self.assertEqual([r["method"] for r in requests], [
             "compute.register", "compute.session", "work.complete",
         ])
@@ -55,7 +55,7 @@ class S3MethodBoundaryTests(unittest.TestCase):
         job = S3Job("job-1", bytes(76), 1, 3, 10)
         raw = b"native proof bytes" * 20
         requests = session.dialect.auth_requests(start_id=7)
-        requests.append(session.dialect.submit_request(
+        requests.append(session.dialect.submission_request(
             job, base64.b64encode(raw).decode("ascii"), 9, negotiated_gzip=True,
         ))
         auth, completed = self.capture_requests(session, requests)

@@ -111,7 +111,7 @@ class WRSessionTests(unittest.TestCase):
             snapshot = session.wait_job(1)
             self.assertEqual(transport.sent[0], {"id": 1, "method": "login",
                                                "params": ["test-S2", "test-worker", "LRAEP-trainer/0.1"]})
-            self.assertEqual(snapshot.job.worker_nonce.hex(), "19df092c6c027fee")
+            self.assertEqual(snapshot.job.device_seed.hex(), "19df092c6c027fee")
             self.assertTrue(session.is_current(snapshot))
             self.assertTrue(session.submit(snapshot, compact_share(snapshot.job)).accepted)
             self.assertEqual(transport.sent[-1]["method"], "submit")
@@ -410,11 +410,11 @@ class WRSessionTests(unittest.TestCase):
             transport.feed({"id": -1, "status": 1, "result": ["extranonce", "0102030405060708"]})
             with session._condition:
                 self.assertTrue(session._condition.wait_for(
-                    lambda: session._worker_nonce == bytes.fromhex("0102030405060708"), timeout=1,
+                    lambda: session._device_seed == bytes.fromhex("0102030405060708"), timeout=1,
                 ))
             new = session.wait_job(1)
             self.assertFalse(session.is_current(old))
-            self.assertEqual(new.job.worker_nonce.hex(), "0102030405060708")
+            self.assertEqual(new.job.device_seed.hex(), "0102030405060708")
             self.assertGreater(new.generation, old.generation)
             with self.assertRaises(StaleS3Job):
                 session.submit(old, compact_share(old.job))

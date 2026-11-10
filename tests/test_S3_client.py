@@ -10,14 +10,14 @@ import unittest
 from unittest.mock import patch
 
 from LRAEP_trainer.S3_client import (
-    S3AuthenticationError, S3CompatibilityError, S3Session, ShareResult, StaleS3Job,
+    S3AuthenticationError, S3CompatibilityError, S3Session, SubmissionResult, StaleS3Job,
 )
 from LRAEP_trainer.S3_transport import S3ConnectionError
 from LRAEP_trainer.S3_protocol import S3ProtocolError
 
 
-def job_message(job_id="job-1", *, cert=3, target="1234"):
-    params = {"job_id": job_id, "header": "00" * 76, "height": 100, "target": target}
+def job_message(job_id="job-1", *, cert=3, training_threshold="1234"):
+    params = {"job_id": job_id, "header": "00" * 76, "height": 100, "target": training_threshold}
     if cert is not None:
         params["cert_version"] = cert
     return {"method": "mining.notify", "params": params}

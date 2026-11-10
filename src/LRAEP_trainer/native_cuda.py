@@ -283,12 +283,12 @@ def transcripts_device(a, bt, *, variant=0):
 
 
 @torch.inference_mode()
-def hash_candidates(transcripts, key: bytes, target: int, *, capacity=64):
+def hash_candidates(transcripts, key: bytes, training_threshold: int, *, capacity=64):
     """Return every qualifying ticket; retry a full buffer without losing work."""
     if (not isinstance(transcripts, torch.Tensor) or not transcripts.is_cuda
             or transcripts.dtype != torch.int32 or transcripts.ndim != 3
-            or transcripts.shape[-1] != 16 or type(target) is not int
-            or not 0 <= target < 2**256):
+            or transcripts.shape[-1] != 16 or type(training_threshold) is not int
+            or not 0 <= training_threshold < 2**256):
         raise ValueError("native hashing requires CUDA int32 transcripts and a 256-bit target")
     if type(capacity) is not int or capacity < 1:
         raise ValueError("candidate capacity must be positive")
@@ -299,14 +299,14 @@ def hash_candidates(transcripts, key: bytes, target: int, *, capacity=64):
         return []
     with torch.cuda.device(transcripts.device):
         lib, stream = load_native(transcripts.device), _stream(transcripts.device)
-        with _temporary_words(transcripts.device, key, target.to_bytes(32, 'little')) as (key_gpu, target_gpu):
+        with _temporary_words(transcripts.device, key, training_threshold.to_bytes(32, 'little')) as (key_gpu, training_threshold_gpu):
             size = min(capacity, count)
             while True:
                 indices = torch.empty(size, dtype=torch.int32, device=transcripts.device)
                 digests = torch.empty((size, 32), dtype=torch.uint8, device=transcripts.device)
                 matches = torch.empty(1, dtype=torch.int32, device=transcripts.device)
                 _check(lib, lib.LRAEP_hash_candidates(transcripts.data_ptr(), count, key_gpu.data_ptr(),
-                                                      target_gpu.data_ptr(), indices.data_ptr(), digests.data_ptr(),
+                                                      training_threshold_gpu.data_ptr(), indices.data_ptr(), digests.data_ptr(),
                                                       matches.data_ptr(), size, stream))
                 found = int(matches.cpu()[0])
                 if found <= size:

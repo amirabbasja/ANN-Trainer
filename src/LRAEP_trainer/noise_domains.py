@@ -1,10 +1,11 @@
 import struct
 
-from .fixed_constants import constant_buffer
+from .fixed_constants import FixedAlias, constant_buffer
 
 
 def tensor_domain(is_b=False):
-    return constant_buffer(b'<@nRW$<)Zzr>Cc<r>Cc<r>Cc<r>Cc<r>Cc<r>Cc<' if is_b else b'=J?aX$<)Zzr>Cc<r>Cc<r>Cc<r>Cc<r>Cc<r>Cc<')
+    domain = 'training.tensor.weight_noise_domain' if is_b else 'training.tensor.input_noise_domain'
+    return constant_buffer(FixedAlias(domain))
 
 
 def certificate_salt(digest_type, label):

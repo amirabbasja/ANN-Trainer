@@ -22,17 +22,26 @@ WRAPPER = ROOT / 'src' / 'LRAEP_trainer' / 'word_codec.py'
 README = ROOT / 'README.md'
 START = '<!-- native-word-codec:start -->'
 END = '<!-- native-word-codec:end -->'
-ENTRY = re.compile(r'make_entry\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*\)')
+ENTRY = re.compile(r'(make_entry|make_binary_entry)\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*\)')
 
 
 def entries():
-    rows = [(json.loads(left), json.loads(right)) for left, right in ENTRY.findall(SOURCE.read_text())]
+    rows = []
+    for kind, left, right in ENTRY.findall(SOURCE.read_text()):
+        alias, value = json.loads(left), json.loads(right)
+        if kind == 'make_binary_entry':
+            raw = bytes.fromhex(value)
+            if raw.hex() != value:
+                raise ValueError('binary word codec values must be lowercase hex without spaces')
+            value = raw
+        rows.append((alias, value))
     if not rows:
         raise ValueError('native source contains no word codec entries')
-    if len({left for left, _ in rows}) != len(rows) or len({right for _, right in rows}) != len(rows):
+    originals = [value.encode() if isinstance(value, str) else value for _, value in rows]
+    if len({alias for alias, _ in rows}) != len(rows) or len(set(originals)) != len(rows):
         raise ValueError('placeholders and decoded values must each be unique')
-    if any(not left or not right or max(len(left.encode()), len(right.encode())) >= 256 for left, right in rows):
-        raise ValueError('mapping entries must contain between 1 and 255 UTF-8 bytes')
+    if any(not alias or max(len(alias.encode()), len(value)) > 256 for (alias, _), value in zip(rows, originals)):
+        raise ValueError('mapping aliases must be nonempty and all fields must fit in 256 bytes')
     return rows
 
 
@@ -44,64 +53,73 @@ def platform_directory():
     return 'linux-' + machine
 
 
+def table_code(value):
+    fence = '`' * (1 + max((len(run) for run in re.findall(r'`+', value)), default=0))
+    escaped = value.replace('|', '\\|')
+    return f'{fence} {escaped} {fence}' if value.startswith('`') or value.endswith('`') else f'{fence}{escaped}{fence}'
+
+
+def decoded_cell(value):
+    if isinstance(value, bytes):
+        return f'{table_code(value.hex())} ({len(value)} bytes, hex)'
+    return table_code(json.dumps(value) if not value or value != value.strip() else value)
+
+
 def documentation(rows):
-    table = '\n'.join('| `' + left.replace('|', '\\|') + '` | `' + right.replace('|', '\\|') + '` |' for left, right in rows)
+    table = '\n'.join(f'| {table_code(alias)} | {decoded_cell(value)} |' for alias, value in rows)
     return f'''{START}
 ## Native word codec
 
-`native/word_codec.cpp` is the authoritative exact-word table. Python calls
-the compiled shared library through `src/LRAEP_trainer/word_codec.py`; the
-standalone receives the same Python bridge and compiled library, with no
-decoder C++ source or mapping documentation. The bridge performs no Python
-table lookup and has no Python decoding fallback.
+The author checkout's `native/word_codec.cpp` defines the exact aliases used
+by both trainers. Training-related names identify internal constants. The
+codec resolves them to the original text or bytes wherever the peer protocol,
+proof format, diagnostics, or regression fixtures require those values.
+The table is reversible and the original values are public below.
 
 ```python
-from LRAEP_trainer.word_codec import transform_word, word_buffer
+from LRAEP_trainer.word_codec import FixedAlias, encode_fixed, fixed_buffer, transform_word
 
-transform_word("legacyMethod", "decode")
+transform_word("legacy_protocol", "decode")
 transform_word("pearlhash", "encode")
-transform_word("unlisted-word", "decode")
-with word_buffer("account") as temporary:
+assert encode_fixed(b"target") == FixedAlias("training.field.acceptance_bound")
+with fixed_buffer(FixedAlias("training.field.acceptance_bound")) as temporary:
     consume(temporary)
 ```
 
-The corresponding standalone import is `workrunner.word_codec`.
-`decode_word` and `encode_word` are convenience functions. Matching is exact
-and case-sensitive in each direction: unknown words, empty strings, Unicode,
-and embedded NUL characters pass through unchanged. There is no substring
-replacement. An unsupported method raises `ValueError`, and a non-string word
-raises `TypeError`. The `walletnonce` row deliberately maps to `w_counter`, as
-requested; the distinct `device_counter` row preserves the existing wire field.
+The corresponding standalone import is `workrunner.native_text_codec`.
+`decode_word` and `encode_word` match structural protocol aliases exactly and
+pass unlisted text through unchanged. `encode_fixed` and `fixed_buffer` with
+a `FixedAlias` perform exact lookup across the full table. An unknown fixed
+alias or value raises `ValueError`. Fixed values can include arbitrary binary
+bytes. The codec performs no substring replacement.
 
 ### Placeholder table (decode direction)
 
-| Placeholder | Decoded value |
+| Training alias | Decoded value |
 | --- | --- |
 {table}
 
-The first thirteen rows are the requested mappings. The remaining rows cover
-the existing device-counter field, full qualified wire methods, certificate
-domain, address prefix, default device name, RPC field names and the three
-node request methods. RPC fields are translated at the native network boundary;
-`rpc_fields.py` also supports explicit compatibility calls. Model metadata
-uses neutral field names with no decoded aliases, and Pydantic string caching
-is disabled. Existing S1–S7 source
-abbreviations remain identifiers; this table controls dynamic protocol text.
-The fixed field schema and protocol/proof bytes remain compatible.
+Text values with leading or trailing spaces are quoted to show the exact
+spacing. Raw binary values are shown in hex. RPC fields and methods use the
+structural entries selected by the native wire profile. Explicit constant
+aliases are resolved by their callers and do not rewrite arbitrary message
+content. The aliases describe internal names and preserve the original peer
+protocol and proof behavior.
 
 ### Updating and distributing mappings
 
-1. Add or change a `make_entry("placeholder", "decoded value")` row in
-   `native/word_codec.cpp`. Both columns must remain unique. Use the placeholder
-   at the Python boundary where that exact protocol word is needed. For a new
+1. Add or change a `make_entry("alias", "decoded value")` row in
+   `native/word_codec.cpp`, or use `make_binary_entry("alias", "hex")` for
+   binary bytes. Both columns must remain unique. For an explicit constant,
+   add the row to `kConstants` and use `FixedAlias` in Python. For a new
    network field or command, also select it in the appropriate `key_entry` or
    `Parser::translation` profile in `native/wire_codec.cpp`. Profiles distinguish
    RPC fields, pool fields, command names and ordinary string data; adding a
    word-table entry alone does not rewrite arbitrary message values.
 2. Run `python3 tools/build_word_codec.py`. It validates the table, compiles the
-   word and wire libraries, regenerates this README table, and atomically installs identical
-   libraries and Python bridges in both repositories. This includes
-   `word_codec.py`, `wire_io.py` and `rpc_fields.py`. The default standalone
+   word and wire libraries, regenerates this table in both READMEs, and atomically
+   installs identical libraries and Python bridges. This includes
+   `native_text_codec.py`, `wire_io.py` and `rpc_fields.py`. The default standalone
    checkout is the sibling `LRAEP-WR-Trainer`; use `--standalone PATH` to choose
    another checkout or `--local-only` for an author-only build.
 3. Run `python3 tools/build_word_codec.py --check` and the protocol/native tests.
@@ -118,30 +136,23 @@ installed alongside it as `libwire_codec.so`. Rebuild on each target
 architecture. No compiler or C++ decoder source is needed in the standalone
 at runtime. A missing or incompatible library produces an explicit error.
 
-### Buffer lifetime and protection limits
+### Buffer lifetime
 
-Native static table values are stored in a compile-time encoded representation;
-there is no decoded global table or plaintext result cache. `word_buffer`
-decodes into a mutable buffer and explicitly overwrites it on normal and
-exception exits. `word_matches` compares ASCII protocol values with a scoped
-buffer. Legacy fixed binary tables and message constants use `fixed_buffer`,
-which performs their existing Base85/XOR transformation in the native library
-and clears its output after use.
+`word_buffer` and `fixed_buffer` copy values into mutable buffers and clear
+the buffers on normal and exception exits. `word_matches` compares ASCII
+protocol values with a scoped buffer. The native table retains the original
+bytes so later calls can resolve the same alias.
 
 `transform_word`, `decode_word`, and `encode_word` return ordinary immutable
 Python strings. Callers must release those references after use; their physical
 bytes cannot be guaranteed erased, and serializers, sockets, exception text,
 or caller-retained objects may create copies. The framing-only
-`customEncoder`/`customDecoder` API remains unchanged for wire compatibility.
-Compilation and encoding provide obfuscation, not encryption or a security
-boundary against a host administrator. Embedded values can be recovered from
-the binary or observed while decoded. No speedup is claimed without a
-workload-specific benchmark.
+`customEncoder`/`customDecoder` API implements the peer's frame format.
 {END}'''
 
 
-def expected_readme(rows):
-    document = README.read_text()
+def expected_readme(rows, path):
+    document = path.read_text() if path.exists() else ''
     section = documentation(rows)
     if START in document or END in document:
         if document.count(START) != 1 or document.count(END) != 1:
@@ -149,7 +160,7 @@ def expected_readme(rows):
         left, rest = document.split(START, 1)
         _, right = rest.split(END, 1)
         return left + section + right
-    return document.rstrip() + '\n\n' + section + '\n'
+    return '\n\n'.join(part for part in (document.rstrip(), section) if part) + '\n'
 
 
 def atomic_write(path, content, mode=0o644):
@@ -172,7 +183,8 @@ def artifact_source_id(path, prefix='wr_codec'):
     fingerprint = getattr(library, prefix + '_source_id')
     version.restype = ctypes.c_uint
     fingerprint.restype = ctypes.c_char_p
-    if version() != 1:
+    expected_abi = 3 if prefix == 'wr_codec' else 1
+    if version() != expected_abi:
         raise ValueError('unsupported library ABI: ' + str(path))
     return fingerprint().decode('ascii')
 
@@ -188,22 +200,26 @@ def main(argv=None):
     label = platform_directory()
     author_library = WRAPPER.parent / 'bin' / label / 'libword_codec.so'
     libraries = [author_library]
-    standalone_wrapper = args.standalone / 'src' / 'workrunner' / 'word_codec.py'
-    bridges = [WRAPPER]
-    bridges.extend(WRAPPER.with_name(name) for name in ('rpc_fields.py', 'wire_io.py'))
+    standalone = args.standalone / 'src' / 'workrunner'
+    bridges = {standalone / 'native_text_codec.py': WRAPPER.read_bytes()}
+    for name in ('rpc_fields.py', 'wire_io.py'):
+        bridges[standalone / name] = WRAPPER.with_name(name).read_bytes().replace(
+            b'from .word_codec import ', b'from .native_text_codec import ')
     if not args.local_only:
-        if not (standalone_wrapper.parent / '__init__.py').is_file():
+        if not (standalone / '__init__.py').is_file():
             raise ValueError('standalone checkout not found: ' + str(args.standalone))
-        libraries.append(standalone_wrapper.parent / 'bin' / label / 'libword_codec.so')
+        libraries.append(standalone / 'bin' / label / 'libword_codec.so')
     source_id = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
     wire_source_id = hashlib.sha256(SOURCE.read_bytes() + b'\0' + WIRE_SOURCE.read_bytes()).hexdigest()
     wire_libraries = [path.with_name('libwire_codec.so') for path in libraries]
     artifact_groups = [(libraries, source_id, 'wr_codec'), (wire_libraries, wire_source_id, 'wr_wire')]
-    readme = expected_readme(rows)
+    readme_paths = [README] if args.local_only else [README, args.standalone / 'README.md']
+    readmes = {path: expected_readme(rows, path) for path in readme_paths}
     if args.check:
         problems = []
-        if README.read_text() != readme:
-            problems.append('README mapping section is stale')
+        for path, expected in readmes.items():
+            if not path.is_file() or path.read_text() != expected:
+                problems.append('README mapping section is stale: ' + str(path))
         for paths, fingerprint, prefix in artifact_groups:
             for path in paths:
                 try:
@@ -215,10 +231,9 @@ def main(argv=None):
                 if paths[0].read_bytes() != paths[1].read_bytes():
                     problems.append('compiled libraries differ: ' + paths[0].name)
         if not args.local_only:
-            for bridge in bridges:
-                deployed = standalone_wrapper.with_name(bridge.name)
-                if not deployed.is_file() or deployed.read_bytes() != bridge.read_bytes():
-                    problems.append('standalone Python bridge differs: ' + bridge.name)
+            for deployed, content in bridges.items():
+                if not deployed.is_file() or deployed.read_bytes() != content:
+                    problems.append('standalone Python bridge differs: ' + deployed.name)
         if problems:
             raise ValueError('\n'.join(problems))
         print('Native word/wire codec sources, README and deployed artifacts agree (' + str(len(rows)) + ' mappings).')
@@ -241,9 +256,10 @@ def main(argv=None):
             for path in paths:
                 atomic_write(path, content)
     if not args.local_only:
-        for bridge in bridges:
-            atomic_write(standalone_wrapper.with_name(bridge.name), bridge.read_bytes())
-    atomic_write(README, readme.encode())
+        for deployed, content in bridges.items():
+            atomic_write(deployed, content)
+    for path, content in readmes.items():
+        atomic_write(path, content.encode())
     print('Built and deployed ' + label + ' native word/wire codecs (' + str(len(rows)) + ' mappings).')
     return 0
 

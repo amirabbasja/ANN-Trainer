@@ -15,7 +15,7 @@ helpers and this project's own GPU implementation.
 from __future__ import annotations
 
 from . import S3_methods as methods
-from .fixed_constants import constant_text
+from .fixed_constants import FixedAlias, constant_text
 
 import base64
 import binascii
@@ -54,48 +54,48 @@ def _text(value: Any, name: str, maximum: int, *, allow_empty: bool = False) -> 
 
 
 def _certificate(value: Any) -> int:
-    version = _integer(value, constant_text(b'#KP6n&cV*a#?!)w(Zbc#&dA9'), 1)
+    version = _integer(value, constant_text(FixedAlias('training.label.attestation_version')), 1)
     if version not in (1, 2, 3):
-        raise S3ProtocolError(f"{constant_text(b'(#h1)*Vo9^)561t^pS_e!qwBx!Oq0S)53?*!qwEy$jOH')}{version}")
+        raise S3ProtocolError(f"{constant_text(FixedAlias('training.validation.attestation_version_prefix'))}{version}")
     return version
 
 
 def _proof_bytes(encoded: str) -> bytes:
     if not isinstance(encoded, str) or not encoded:
-        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK'))
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.dense_attestation_canonical_format')))
     if len(encoded) > 4 * ((MAX_DECODED_PROOF_BYTES + 2) // 3):
-        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm!r#Qg!o$>u)6c?(lZWcg<%h$<#K^<K!-v$)-NJ{<&dScy'))
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.dense_attestation_size_limit')))
     try:
         raw = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError):
-        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK')) from None
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.dense_attestation_canonical_format'))) from None
     if not raw or base64.b64encode(raw).decode("ascii") != encoded:
-        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm%F@)+hsDB&$;ipV%GcB0hs4Io$jQ#c#><Dr#?-=*lK'))
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.dense_attestation_canonical_format')))
     if len(raw) > MAX_DECODED_PROOF_BYTES:
-        raise S3ProtocolError(constant_text(b'*UQGv$@tgR$jHHm!r#Qg!o$>u)6c?(lZWcg<%h$<#K^<K!-v$)-NJ{<&dScy'))
+        raise S3ProtocolError(constant_text(FixedAlias('training.validation.dense_attestation_size_limit')))
     return raw
 
 
 @dataclass(frozen=True)
 class S3Job:
-    """Immutable S3 work; target is the unadjusted, big-endian share target."""
+    """Immutable training job with its unadjusted, big-endian training threshold."""
 
     job_id: str
     header_bytes: bytes
     height: int
     cert_version: int
-    target: int
-    raw_target: str | None = None
+    training_threshold: int
+    encoded_training_threshold: str | None = None
 
     def __post_init__(self) -> None:
-        _text(self.job_id, constant_text(b'&B(?0&cg'), 128)
+        _text(self.job_id, constant_text(FixedAlias('training.field.batch_identifier')), 128)
         if not isinstance(self.header_bytes, bytes) or len(self.header_bytes) != 76:
             raise S3ProtocolError("header must contain exactly 76 bytes")
         _integer(self.height, "height")
         _certificate(self.cert_version)
-        _integer(self.target, constant_text(b')5g`n!qW'), 1)
-        if self.target >= 1 << 256:
-            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3!Oqi%&dG<Bl97kS&ePN'))
+        _integer(self.training_threshold, constant_text(FixedAlias('training.field.acceptance_bound')), 1)
+        if self.training_threshold >= 1 << 256:
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.acceptance_bound_bit_length')))
 
 
 class KEXDialect:
@@ -117,11 +117,11 @@ class KEXDialect:
         request_gzip: bool = False,
     ) -> None:
         self.KEX_uname = _text(KEX_uname, "KEX_uname", 256)
-        self.worker = _text(worker, constant_text(b'(8$%y!qo'), 128, allow_empty=True)
+        self.worker = _text(worker, constant_text(FixedAlias('training.field.training_worker')), 128, allow_empty=True)
         self.password = _text(password, "password", 1024, allow_empty=True)
         self.agent = _text(agent, "agent", 128)
         if any(c.isspace() for c in self.KEX_uname + self.worker):
-            raise S3ProtocolError(constant_text(b'?Bf6U(#gik!iUDm!-vqw)y%@xhsx5_(}%>!$<xNp$%o0vhtSW?)56r(#>Bz'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.coordinator_worker_identity_whitespace')))
         if type(request_gzip) is not bool:
             raise S3ProtocolError("request_gzip must be a boolean")
         self.request_gzip = request_gzip
@@ -177,7 +177,8 @@ class KEXDialect:
             raise S3ProtocolError("work.update params must be an object")
         if configured_certificate_version is not None:
             _certificate(configured_certificate_version)
-        job_id = _text(params.get(constant_text(b'&B(?0&cg')), constant_text(b'&B(?0&cg'), 128)
+        identifier_field = constant_text(FixedAlias('training.field.batch_identifier'))
+        job_id = _text(params.get(identifier_field), identifier_field, 128)
         encoded_header = params.get("header")
         if (
             not isinstance(encoded_header, str)
@@ -185,28 +186,28 @@ class KEXDialect:
             or _HEX.fullmatch(encoded_header) is None
         ):
             raise S3ProtocolError("header must be exactly 152 hexadecimal characters")
-        raw_target = params.get(constant_text(b')5g`n!qW'))
-        if not isinstance(raw_target, str):
-            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3#lnZihtI;_#>2wI&dSEiht$*6&dI<'))
-        digits = raw_target[2:] if raw_target.startswith("0x") else raw_target
+        encoded_training_threshold = params.get(constant_text(FixedAlias('training.field.acceptance_bound')))
+        if not isinstance(encoded_training_threshold, str):
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.acceptance_bound_hex_format')))
+        digits = encoded_training_threshold[2:] if encoded_training_threshold.startswith("0x") else encoded_training_threshold
         if not 1 <= len(digits) <= 64 or _HEX.fullmatch(digits) is None:
-            raise S3ProtocolError(constant_text(b')5g`n!qbP!($v$3#lnZihu6r|&eP7(!iSZTk&4C6(}&N(-^Rnj#Lmjb%ZJp{)y~Pl'))
-        # The captured target is a BASE target. The official helper applies the
-        # rank/work adjustment; do not derive a different target from job_id.
-        target = int(digits, 16)
-        version = params.get(constant_text(b'#KP6n_|d}E)XvDs'), configured_certificate_version)
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.acceptance_bound_positive_hex_range')))
+        # The received training threshold is unadjusted. The official helper
+        # applies rank and batch scaling independently of the job ID.
+        training_threshold = int(digits, 16)
+        version = params.get(constant_text(FixedAlias('training.field.attestation_revision')), configured_certificate_version)
         if version is None:
-            raise S3ProtocolError(constant_text(b'&B(=v&eVs>&eYV-$-sxi!qwCG(Zbc#&dAA}hs4Oq!Op<a)xw9)(}%*}*UQet&eO}@hsf23($~Yr)53?-&%%fFlm'))
+            raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_attestation_revision_required')))
         return S3Job(
             job_id=job_id,
             header_bytes=bytes.fromhex(encoded_header),
             height=_integer(params.get("height"), "height"),
             cert_version=_certificate(version),
-            target=target,
-            raw_target=raw_target,
+            training_threshold=training_threshold,
+            encoded_training_threshold=encoded_training_threshold,
         )
 
-    def submit_request(
+    def submission_request(
         self,
         job: S3Job,
         plain_proof_b64: str,
@@ -225,5 +226,9 @@ class KEXDialect:
             encoded = base64.b64encode(gzip.compress(raw, mtime=0)).decode("ascii")
         return {
             "jsonrpc": "2.0", "id": request_id, "method": methods.WORK_COMPLETE,
-            "params": {constant_text(b'(8$%y!qo'): self.login, constant_text(b'&B(?0&cg'): job.job_id, constant_text(b'*UQGv$@tgR$jHF'): encoded},
+            "params": {
+                constant_text(FixedAlias('training.field.training_worker')): self.login,
+                constant_text(FixedAlias('training.field.batch_identifier')): job.job_id,
+                constant_text(FixedAlias('training.field.dense_attestation')): encoded,
+            },
         }

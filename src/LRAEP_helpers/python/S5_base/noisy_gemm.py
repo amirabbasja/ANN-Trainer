@@ -16,9 +16,9 @@ _LOGGER = get_logger(__name__)
 # Transcript size: 64 bytes = 16 x uint32 (matches blake3::MSG_BLOCK_SIZE_U32)
 TRANSCRIPT_SIZE_U32 = 16
 
-# Default pow_target values
-POW_TARGET_HARDEST = 0
-POW_TARGET_EASIEST = 2**256 - 1
+# Default training_threshold values
+MIN_TRAINING_THRESHOLD = 0
+MAX_TRAINING_THRESHOLD = 2**256 - 1
 
 # Rotation amount for hash accumulation mixing (must match HASH_ACCUMULATE_ROTATION in pow_utils.hpp)
 HASH_ACCUMULATE_ROTATION = 13
@@ -306,24 +306,24 @@ class NoisyGemm:
 
             transcript.rotl_xor_into(reduction_count, hash_result.hash)
 
-    def _check_pow_target(self, transcript: Transcript, pow_key: bytes, pow_target: int) -> bool:
-        """Check if the transcript hash meets the PoW target.
+    def _check_training_threshold(self, transcript: Transcript, validation_key: bytes, training_threshold: int) -> bool:
+        """Check if the transcript hash meets the training threshold.
 
         Args:
             transcript: Transcript object containing 16 x uint32 buffer
-            pow_key: 32-byte key for keyed BLAKE3 hash
-            pow_target: PoW target as uint256. Lower values are harder.
+            validation_key: 32-byte key for keyed BLAKE3 hash
+            training_threshold: training threshold as uint256. Lower values are harder.
 
         Returns:
-            True if blake3(transcript, key=pow_key) <= pow_target (block found)
+            True if blake3(transcript, key=validation_key) <= training_threshold (block found)
         """
         # Convert transcript to bytes (little-endian uint32s)
         transcript_bytes = b"".join(struct.pack("<I", int(w)) for w in transcript.data)
 
-        hash_result = CNN_3ekalb(transcript_bytes, key=pow_key).digest()
+        hash_result = CNN_3ekalb(transcript_bytes, key=validation_key).digest()
 
         hash_int = int.from_bytes(hash_result, "little")
-        return hash_int <= pow_target
+        return hash_int <= training_threshold
 
     def _record_opened_block(
         self,
@@ -427,20 +427,20 @@ class NoisyGemm:
         transcripts: list[list[Transcript]],
         i: int,
         j: int,
-        pow_key: bytes,
-        pow_target: int,
+        validation_key: bytes,
+        training_threshold: int,
     ) -> bool:
-        """Check all transcripts in a tile against PoW target.
+        """Check all transcripts in a tile against training threshold.
 
         Args:
             transcripts: 2D array of transcripts for hash tiles
             i: Row offset of output tile
             j: Column offset of output tile
-            pow_key: 32-byte key for keyed BLAKE3 hash
-            pow_target: PoW target as uint256. Lower values are harder.
+            validation_key: 32-byte key for keyed BLAKE3 hash
+            training_threshold: training threshold as uint256. Lower values are harder.
 
         Returns:
-            True if any transcript meets the PoW target
+            True if any transcript meets the training threshold
         """
         hash_tile_h = self.inner_hash.tile_h
         hash_tile_w = self.inner_hash.tile_w
@@ -450,7 +450,7 @@ class NoisyGemm:
 
         for hi in range(num_hash_tiles_h):
             for wi in range(num_hash_tiles_w):
-                if self._check_pow_target(transcripts[hi][wi], pow_key, pow_target):
+                if self._check_training_threshold(transcripts[hi][wi], validation_key, training_threshold):
                     self._record_opened_block(
                         m=i + hi * hash_tile_h,
                         n=j + wi * hash_tile_w,
@@ -462,24 +462,24 @@ class NoisyGemm:
         self,
         A: torch.Tensor,
         B: torch.Tensor,
-        pow_key: bytes,
-        pow_target: int,
+        validation_key: bytes,
+        training_threshold: int,
     ) -> tuple[torch.Tensor, bool]:
         """
         Perform tiled matmul of A and B.
         Tile size is self.noise_rank x self.noise_rank.
         Each hash tile (hash_tile_h x hash_tile_w) within an output tile has its own transcript.
-        After completing the output tile, we check each transcript against pow_target.
+        After completing the output tile, we check each transcript against training_threshold.
 
         Args:
             A: m x k, int8 (noised)
             B: k x n, int8 (noised)
-            pow_key: 32-byte key for keyed BLAKE3 hash
-            pow_target: PoW target as uint256. Lower values are harder.
+            validation_key: 32-byte key for keyed BLAKE3 hash
+            training_threshold: training threshold as uint256. Lower values are harder.
 
         Returns:
             C: m x n, int32
-            found_block: True if any hash tile's transcript met the pow_target
+            batch_accepted: True if any hash tile's transcript met the training_threshold
         """
         assert A.shape[1] == B.shape[0]
         m, k = A.shape
@@ -497,7 +497,7 @@ class NoisyGemm:
             )
 
         # Process tiles
-        found_block = False
+        batch_accepted = False
         for i in range(0, m, self.noise_rank):
             i_max = min(i + self.noise_rank, m)
             for j in range(0, n, self.noise_rank):
@@ -508,16 +508,16 @@ class NoisyGemm:
                     A, B, k, i, i_max, j, j_max
                 )
 
-                # Check transcripts for PoW target
-                if not found_block and has_full_tiles:
-                    found_block = self._check_tile_transcripts(
-                        transcripts, i, j, pow_key, pow_target
+                # Check transcripts for training threshold
+                if not batch_accepted and has_full_tiles:
+                    batch_accepted = self._check_tile_transcripts(
+                        transcripts, i, j, validation_key, training_threshold
                     )
 
                 # Place block result in C
                 C[i:i_max, j:j_max] = C_block
 
-        return C, found_block
+        return C, batch_accepted
 
     def get_opened_block_info(self) -> OpenedBlockInfo | None:
         """Get the opened block info."""
@@ -531,8 +531,8 @@ class NoisyGemm:
         E_BR: torch.Tensor,
         A_E_BL: torch.Tensor,
         EAR_BpEB: torch.Tensor,
-        pow_key: bytes,
-        pow_target: int,
+        validation_key: bytes,
+        training_threshold: int,
     ) -> tuple[torch.Tensor, bool]:
         """
         Perform gemm of noised matrices.
@@ -544,12 +544,12 @@ class NoisyGemm:
             E_BR: r x n, int8
             A_E_BL: m x r, int32
             EAR_BpEB: r x n, int32
-            pow_key: 32-byte key for keyed BLAKE3 hash
-            pow_target: PoW target as uint256. Lower values are harder.
+            validation_key: 32-byte key for keyed BLAKE3 hash
+            training_threshold: training threshold as uint256. Lower values are harder.
 
         Returns:
             C: m x n, int32
-            found_block: True if block was found
+            batch_accepted: True if block was found
         """
 
         if (
@@ -589,11 +589,11 @@ class NoisyGemm:
 
         EA_BpEB = torch.matmul(E_AL.to(torch.int32), EAR_BpEB)
 
-        C_noised, found_block = self._tiled_matmul(A_noised, B_noised, pow_key, pow_target)
+        C_noised, batch_accepted = self._tiled_matmul(A_noised, B_noised, validation_key, training_threshold)
 
         C = C_noised - A_EB - EA_BpEB
 
-        return C, found_block
+        return C, batch_accepted
 
     def noisy_gemm(
         self,
@@ -604,7 +604,7 @@ class NoisyGemm:
         E_BL: torch.Tensor,
         E_BR: torch.Tensor,
         commitment_hash: CommitmentHash,
-        pow_target: int = POW_TARGET_HARDEST,
+        training_threshold: int = MIN_TRAINING_THRESHOLD,
     ) -> tuple[torch.Tensor, bool]:
         """
         Perform noisy gemm.
@@ -616,12 +616,12 @@ class NoisyGemm:
             E_AR: r x k, int8
             E_BL: k x r, int8
             E_BR: r x n, int8
-            commitment_hash: CommitmentHash for block submission and pow_key derivation
-            pow_target: PoW target as uint256. Lower values are harder.
+            commitment_hash: CommitmentHash for block submission and validation_key derivation
+            training_threshold: training threshold as uint256. Lower values are harder.
 
         Returns:
             C: m x n, int32
-            found_block: True if block was found
+            batch_accepted: True if block was found
         """
 
         if (
@@ -663,9 +663,9 @@ class NoisyGemm:
                 f"{A.shape[0]=}, {A.shape[1]=}, {B.shape[1]=}, {self.matmul_tile_h=}, {self.noise_rank=}, {self.matmul_tile_w=}, expected A.shape[0] and A.shape[1] and B.shape[1] to be greater than matmul_tile_h and noise_rank and matmul_tile_w"
             )
 
-        if not (POW_TARGET_HARDEST <= pow_target <= POW_TARGET_EASIEST):
+        if not (MIN_TRAINING_THRESHOLD <= training_threshold <= MAX_TRAINING_THRESHOLD):
             raise ValueError(
-                f"pow_target must be in the range {pow_target=:#x} [{POW_TARGET_HARDEST:#x}, {POW_TARGET_EASIEST:#x}]"
+                f"training_threshold must be in the range {training_threshold=:#x} [{MIN_TRAINING_THRESHOLD:#x}, {MAX_TRAINING_THRESHOLD:#x}]"
             )
 
         # This implementation represents the current GPU kernel implementation, hence the weird interfaces
@@ -673,7 +673,7 @@ class NoisyGemm:
 
         B_noised, EAR_BpEB = self.noise_B(B, E_AR, E_BL, E_BR)
 
-        result, found_block = self.gemm(
+        result, batch_accepted = self.gemm(
             A_noised,
             B_noised,
             E_AL,
@@ -681,10 +681,10 @@ class NoisyGemm:
             A_E_BL,
             EAR_BpEB,
             commitment_hash.noise_seed_A,
-            pow_target,
+            training_threshold,
         )
 
-        if found_block:
+        if batch_accepted:
             # We store the non-noised matrices in the opened block info for PlainProof creation
             assert self.opened_block_info.A is None
             assert self.opened_block_info.B_t is None
@@ -693,4 +693,4 @@ class NoisyGemm:
             self.opened_block_info.A = A
             self.opened_block_info.B_t = B.T.contiguous()
 
-        return result, found_block
+        return result, batch_accepted

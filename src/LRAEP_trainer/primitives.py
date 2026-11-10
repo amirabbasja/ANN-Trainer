@@ -7,10 +7,10 @@ import struct
 from .CNN_3ekalb import CNN_3ekalb
 from .hashing import chunk_cv, parent_cv
 from .noise_domains import tensor_domain, certificate_salt
-from .fixed_constants import constant_buffer, constant_text
+from .fixed_constants import FixedAlias, constant_buffer, constant_text
 
 MERKLE_LEAF_SIZE = 1024
-PENALTY_BASE_RANK = 128
+TRAINING_BASE_RANK = 128
 PUBLICDATA_SIZE = 164
 MIN_MOE_PUBLICDATA_SIZE = 199
 PUBLICDATA_MAX_SIZE = 199 + 128 * 4 + 1024 * 4
@@ -41,10 +41,10 @@ class IncompleteBlockHeader:
     SERIALIZED_SIZE = 76
 
     def __post_init__(self):
-        for name in ('version', 'timestamp', constant_text(b'$;Hmo)B')):
+        for name in ('version', 'timestamp', constant_text(FixedAlias('training.field.compact_acceptance_bound'))):
             _unsigned(getattr(self, name), 32, name)
-        self.prev_block = _bytes(self.prev_block, 32, constant_text(b'*VV$&_{Gb}#LN'))
-        self.merkle_root = _bytes(self.merkle_root, 32, constant_text(b'%EHym%fk58$jH+'))
+        self.prev_block = _bytes(self.prev_block, 32, constant_text(FixedAlias('training.field.parent_record_digest')))
+        self.merkle_root = _bytes(self.merkle_root, 32, constant_text(FixedAlias('training.field.tensor_commitment_root')))
 
     def to_bytes(self):
         self.__post_init__()
@@ -216,12 +216,12 @@ class S1Configuration:
         return self.common_dim - self.common_dim % self.rank
 
 
-def penalized_target_bound(target, S1_config):
-    _unsigned(target, 256, 'target')
+def scaled_training_threshold(training_threshold, S1_config):
+    _unsigned(training_threshold, 256, 'target')
     if S1_config.rank <= 0:
         return None
-    factor = S1_config.hash_tile_h * S1_config.hash_tile_w * (S1_config.common_dim // S1_config.rank) * PENALTY_BASE_RANK
-    result = target * factor
+    factor = S1_config.hash_tile_h * S1_config.hash_tile_w * (S1_config.common_dim // S1_config.rank) * TRAINING_BASE_RANK
+    result = training_threshold * factor
     return result if factor and result < 1 << 256 else None
 
 
@@ -235,7 +235,7 @@ class MerkleTree:
         self.data = bytes(data)
         self.key = _bytes(key, 32, 'key')
         if not self.data:
-            raise ValueError(constant_text(b'>cZ8`%fg4l#?!`!%F@)+hsns(hsDB&!phgv-T'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_input_empty')))
         if len(self.data) <= MERKLE_LEAF_SIZE:
             self.layers = [[CNN_3ekalb(self.data, key=self.key).digest()]]
         else:
@@ -257,7 +257,7 @@ class MerkleTree:
         selected = sorted(set(leaf_indices))
         total = len(self.layers[0])
         if not selected or any(type(i) is not int or not 0 <= i < total for i in selected):
-            raise ValueError(constant_text(b'>cZ8`%fg4t!p6ae&dI~h#KP2v#?``y$kNk?$iauz#>v3K'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_leaf_range')))
         leaves = [self.data[i * MERKLE_LEAF_SIZE:(i + 1) * MERKLE_LEAF_SIZE].ljust(MERKLE_LEAF_SIZE, b'\0') for i in selected]
         current, siblings, width = set(selected), [], total
         for layer in self.layers[:-1]:
@@ -291,9 +291,9 @@ class MerkleProof:
 
     def sanity_check(self):
         if type(self.total_leaves) is not int or self.total_leaves <= 0:
-            raise ValueError(constant_text(b'>cZ8`%fg4#)xyGu)xy@&&eg)yhsKB3$kfi$&e6h$%fiONhs4Oz$<q'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_leaf_count_positive')))
         if not self.leaf_indices or len(self.leaf_indices) != len(self.leaf_data) or self.leaf_indices != sorted(set(self.leaf_indices)) or any(type(i) is not int or not 0 <= i < self.total_leaves for i in self.leaf_indices):
-            raise ValueError(constant_text(b'>cZ8`%fg4t!p6ae&dI~h#KP2v%F@)+hsDB&)X3G-!o!P)(#g)&(!z(v$-{@v$%oa($-u$'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_leaf_order')))
 
     def compute_root(self, key):
         try:
@@ -330,13 +330,13 @@ class MerkleProof:
 
     def extract_bytes(self, global_start, length):
         if type(global_start) is not int or type(length) is not int or global_start < 0 or length < 0:
-            raise ValueError(constant_text(b'&dJfn%g)1x>cZ8`%fg4k-_zB`#M92m$%oa($-u$'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_slice_range')))
         chunks, end, position = dict(zip(self.leaf_indices, self.leaf_data)), global_start + length, global_start
         result = bytearray()
         while position < end:
             index, offset = divmod(position, MERKLE_LEAF_SIZE)
             if index not in chunks:
-                raise ValueError(constant_text(b'>cZ8`%fg4t!p70U)Q7{!hsns(hs4Oy!qtb>!q(Ex)xyJv%Er^x&fkZ{-qXU='))
+                raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_matrix_coverage')))
             size = min(MERKLE_LEAF_SIZE - offset, end - position)
             result.extend(chunks[index][offset:offset + size])
             position += size
@@ -362,7 +362,7 @@ class _Reader:
 
     def read(self, size):
         if size < 0 or self.position + size > len(self.data):
-            raise ValueError(constant_text(b')78?+#KzOY!-v<^$jHF'))
+            raise ValueError(constant_text(FixedAlias('training.validation.attestation_truncated')))
         start, self.position = self.position, self.position + size
         return self.data[start:self.position]
 
@@ -372,12 +372,12 @@ class _Reader:
     def vector(self, read, minimum_size):
         count = self.integer()
         if count > (len(self.data) - self.position) // minimum_size:
-            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3bp#M8*ths(mrz|+q'))
+            raise ValueError(constant_text(FixedAlias('training.validation.attestation_vector_length_invalid')))
         return [read() for _ in range(count)]
 
 
 def _pack_int(value):
-    return struct.pack('<Q', _unsigned(value, 64, constant_text(b'*VV|#!H3St)55^Q)c')))
+    return struct.pack('<Q', _unsigned(value, 64, constant_text(FixedAlias('training.label.attestation_integer'))))
 
 
 def _pack_vec(values, pack):
@@ -409,24 +409,24 @@ class PlainProof:
 
     def to_base64(self):
         if self.moe is not None:
-            raise ValueError(constant_text(b'>d4}U*UQGv$%og~$jHIehsM>yhtkQ$(Z<fp#>LCR'))
+            raise ValueError(constant_text(FixedAlias('training.validation.mixture_of_experts_attestation_unavailable')))
         data = b''.join(_pack_int(value) for value in (self.m, self.n, self.k, self.noise_rank)) + _serialize_matrix(self.a) + _serialize_matrix(self.bt) + b'\0'
         return base64.b64encode(data).decode('ascii')
 
     @classmethod
     def from_base64(cls, data):
         if not isinstance(data, str) or len(data) > 24 << 20:
-            raise ValueError(constant_text(b'*UQGv$%og~$jHHm%F@)+hsDB&#)rko(#gZZ!-vJj)WVUIht$*6&dI<'))
+            raise ValueError(constant_text(FixedAlias('training.validation.dense_attestation_input_format')))
         try:
             reader = _Reader(base64.b64decode(data, validate=True))
             values = [reader.integer() for _ in range(4)]
             result = cls(*values, _deserialize_matrix(reader), _deserialize_matrix(reader))
             trailing = reader.data[reader.position:]
             if trailing not in (b'', b'\0'):
-                raise ValueError(constant_text(b'(#h1)*Vo9^)561t$km6_)yB@t&dI=s*UQGv$%og~$jHHm!^YFb'))
+                raise ValueError(constant_text(FixedAlias('training.validation.dense_attestation_trailing_data')))
             return result
         except (ValueError, TypeError, struct.error):
-            raise ValueError(constant_text(b'&dJfn%g)1x*UQGv$%og~$jHHm!pX$Q!_LXT')) from None
+            raise ValueError(constant_text(FixedAlias('training.validation.dense_attestation_encoding_invalid'))) from None
 
 
 @dataclass
@@ -438,20 +438,20 @@ class ZKProof:
         self.public_data, self.proof_data = bytes(self.public_data), bytes(self.proof_data)
 
 
-def nbits_to_difficulty(nbits):
-    _unsigned(nbits, 32, constant_text(b'$;Hmo)B'))
+def compact_training_threshold(nbits):
+    _unsigned(nbits, 32, constant_text(FixedAlias('training.field.compact_acceptance_bound')))
     exponent, mantissa = nbits >> 24, nbits & 0xFFFFFF
     if not exponent or not mantissa or mantissa & 0x800000:
         return 0
-    target = mantissa << (8 * (exponent - 3)) if exponent > 3 else mantissa >> (8 * (3 - exponent))
-    return target if target < 1 << 256 else 0
+    training_threshold = mantissa << (8 * (exponent - 3)) if exponent > 3 else mantissa >> (8 * (3 - exponent))
+    return training_threshold if training_threshold < 1 << 256 else 0
 
 
 def check_cert_version_eligible(cert_version, plain_proof):
     if type(cert_version) is not int or cert_version not in (1, 2, 3):
-        raise ValueError(constant_text(b'(#h1)*Vo9^)561t#KP6n&cV*a#?!)w(Zbc#&dA9'))
+        raise ValueError(constant_text(FixedAlias('training.validation.attestation_revision_unsupported')))
     if plain_proof.min_cert_version > cert_version:
-        raise ValueError(constant_text(b'*VV|#!H3nt*3!<^!qkVxhs(y(!qtbw!qwBx!Oq0S)53?*!qwEy$jJ'))
+        raise ValueError(constant_text(FixedAlias('training.validation.attestation_revision_too_old')))
 
 
 def _proof_digest(cert_version, header, proof):
@@ -459,10 +459,10 @@ def _proof_digest(cert_version, header, proof):
     from .wr_work import _uniform_rows, _permutation
     check_cert_version_eligible(cert_version, proof)
     if proof.moe is not None:
-        raise ValueError(constant_text(b'>d4}U*VV|#!PJMw)xw9>!p*|O)561t#omY0&%%ep!pYRaipa^!-iOuF%fb'))
+        raise ValueError(constant_text(FixedAlias('training.validation.dense_model_attestation_required')))
     rank, k = proof.noise_rank, proof.k
     if rank != 128 or type(k) is not int or not 2048 <= k <= 65536 or k % 64:
-        raise ValueError(constant_text(b'(#h1)*Vo9^)561t*VV|#!H3nx$;^ky)rZ8$%F4*ehr`aw!pYRm$jJ'))
+        raise ValueError(constant_text(FixedAlias('training.validation.attestation_rank_or_inner_dimension')))
     for name, dimension in (('m', proof.m), ('n', proof.n)):
         if type(dimension) is not int or not 1 <= dimension <= 1 << 24:
             raise ValueError(f'invalid proof dimension {name}')
@@ -470,33 +470,33 @@ def _proof_digest(cert_version, header, proof):
     for matrix, dimension in ((proof.a, proof.m), (proof.bt, proof.n)):
         rows = matrix.row_indices
         if not rows or rows != sorted(set(rows)) or any(type(i) is not int or not 0 <= i < dimension for i in rows):
-            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3Gm)78%3ht<f?)B'))
+            raise ValueError(constant_text(FixedAlias('training.validation.attestation_matrix_rows_invalid')))
         pattern = PeriodicPattern.from_list([i - rows[0] for i in rows])
         if not pattern.offset_is_valid(rows[0]):
-            raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3tz)6>G$$%n|n!PLUj'))
+            raise ValueError(constant_text(FixedAlias('training.validation.attestation_pattern_offset_invalid')))
         if matrix.proof.total_leaves != (dimension * k + MERKLE_LEAF_SIZE - 1) // MERKLE_LEAF_SIZE:
-            raise ValueError(constant_text(b'>cZ8`%fg4#)xyGu%fiONhs4Oz$<v3!&cVUL)zpW<)yT?+!@|VN#?`{Zhr`aw!pYRm$jQ_'))
+            raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_leaf_count_mismatch')))
         signal = np.stack([np.frombuffer(matrix.proof.extract_bytes(i * k, k), dtype=np.int8) for i in rows])
         if (signal < -64).any() or (signal > 64).any():
-            raise ValueError(constant_text(b'*VV|#!H3k&z{$qThtbB%(!$h-%F@)+hs(~whtA1|{ECs2i-(bu`T'))
+            raise ValueError(constant_text(FixedAlias('training.validation.attestation_tensor_signal_range')))
         patterns.append(pattern)
         signals.append(signal)
     h, w = (pattern.size for pattern in patterns)
     if h % 2 or w % 2 or not 32 <= h * w <= 256 or (h + w) * k > 1 << 22:
-        raise ValueError(constant_text(b'&dJfn%g)1x*VV|#!H3h%%fg4$&&Jon'))
+        raise ValueError(constant_text(FixedAlias('training.validation.attestation_tile_shape_invalid')))
     S1 = S1Configuration(k, rank, MMAType.Int7xInt7ToInt32, *patterns)
     key = CNN_3ekalb(header.to_bytes() + S1.to_bytes()).digest()
     if not proof.a.proof.verify(key) or not proof.bt.proof.verify(key):
-        raise ValueError(constant_text(b'>cZ8`%fg4()yT-fhs4Or%Fffu!pYNz!^pzahsns(hsws&#LtJ%!p6hG)rZE(!-vGk$-&OR($&V(&dA9'))
+        raise ValueError(constant_text(FixedAlias('training.validation.tensor_commitment_header_mismatch')))
     hash_a, hash_b = proof.a.root, proof.bt.root
     if cert_version == 3:
-        with constant_buffer(b'<^') as label:
+        with constant_buffer(FixedAlias('training.tensor.left_operand_label')) as label:
             salt = certificate_salt(CNN_3ekalb, label)
         try:
             hash_a = CNN_3ekalb(hash_a + struct.pack('<I', proof.m) + bytes(28), key=salt).digest()
         finally:
             del salt
-        with constant_buffer(b'<p') as label:
+        with constant_buffer(FixedAlias('training.tensor.right_operand_label')) as label:
             salt = certificate_salt(CNN_3ekalb, label)
         try:
             hash_b = CNN_3ekalb(hash_b + struct.pack('<I', proof.n) + bytes(28), key=salt).digest()
@@ -524,13 +524,13 @@ def _proof_digest(cert_version, header, proof):
 def verify_plain_proof_for_cert_version(cert_version, block_header, plain_proof, nbits_override=None):
     try:
         digest, config = _proof_digest(cert_version, block_header, plain_proof)
-        base = nbits_to_difficulty(block_header.nbits if nbits_override is None else nbits_override)
+        base = compact_training_threshold(block_header.nbits if nbits_override is None else nbits_override)
         factor = config.hash_tile_h * config.hash_tile_w * config.rounded_common_dim
-        target = min((1 << 256) - 1, base * factor)
-        penalty = min((1 << 256) - 1, base * config.hash_tile_h * config.hash_tile_w * (config.common_dim // config.rank) * PENALTY_BASE_RANK)
-        if int.from_bytes(digest, 'little') > min(target, penalty):
-            return False, constant_text(b'*VV|#!H2`nz{1qihr`Ii)Q8E)(}&8!!qbPt&cVUX#L~;t-iOo1)xg5j')
-        return True, constant_text(b'^p=Oz$jj2x&dAA!(Zbcv!Op_Nht$%<#KP3n!P3ji-T')
+        training_threshold = min((1 << 256) - 1, base * factor)
+        scaled_threshold = min((1 << 256) - 1, base * config.hash_tile_h * config.hash_tile_w * (config.common_dim // config.rank) * TRAINING_BASE_RANK)
+        if int.from_bytes(digest, 'little') > min(training_threshold, scaled_threshold):
+            return False, constant_text(FixedAlias('training.validation.attestation_digest_outside_bound'))
+        return True, constant_text(FixedAlias('training.log.batch_solution_verified'))
     except (ValueError, TypeError, AttributeError, OverflowError, struct.error) as error:
         return False, str(error)
 
@@ -549,10 +549,10 @@ def verify_plain_proof_v3(block_header, plain_proof, nbits_override=None):
 
 def generate_proof_for_cert_version(cert_version, block_header, plain_proof):
     check_cert_version_eligible(cert_version, plain_proof)
-    raise RuntimeError(constant_text(b'>&V2$%ZL5!hs46w)6T)p#KzOYhrq(g!qvvp&dAA!&eVs}$;Q#f&dbKd%fg(8@b!nr$-{@&%f`;hhxC+()X&D%!qkVu$cM?u(}&f<*3!<^!iUb&'))
+    raise RuntimeError(constant_text(FixedAlias('training.validation.local_attestation_generation_unavailable')))
 
 
 def verify_proof_for_cert_version(cert_version, block_header, proof):
     if cert_version not in (1, 2, 3):
-        raise ValueError(constant_text(b'(#h1)*Vo9^)561t#KP6n&cV*a#?!)w(Zbc#&dA9'))
-    raise RuntimeError(constant_text(b'>&V2$%ZL5!hs46w)6T)p#KzOYhta~-&cV*a#?#Ko$%oF=htkQ$(Z<fp#>LCR'))
+        raise ValueError(constant_text(FixedAlias('training.validation.attestation_revision_unsupported')))
+    raise RuntimeError(constant_text(FixedAlias('training.validation.local_attestation_verification_unavailable')))

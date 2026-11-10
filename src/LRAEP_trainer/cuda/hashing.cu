@@ -8,7 +8,7 @@ namespace {
 
 __global__ void hash_candidates_kernel(
     const unsigned int* transcripts, int count, const unsigned int* key,
-    const unsigned int* target, unsigned int* match_indices,
+    const unsigned int* training_threshold, unsigned int* match_indices,
     unsigned char* match_digests, unsigned int* match_count, int capacity
 ) {
     const unsigned int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -20,14 +20,14 @@ __global__ void hash_candidates_kernel(
         transcripts + static_cast<size_t>(index) * 16, key, digest
     );
 
-    // The digest and target represent little-endian 256-bit integers, so
+    // The digest and training_threshold represent little-endian 256-bit integers, so
     // comparison starts at their highest word. Full equality is a match.
     #pragma unroll
     for (int word = 7; word >= 0; --word) {
-        if (digest[word] > target[word]) {
+        if (digest[word] > training_threshold[word]) {
             return;
         }
-        if (digest[word] < target[word]) {
+        if (digest[word] < training_threshold[word]) {
             break;
         }
     }
@@ -53,14 +53,14 @@ __global__ void hash_candidates_kernel(
 
 extern "C" int LRAEP_hash_candidates(
     const unsigned int* transcripts, int count, const unsigned int* key,
-    const unsigned int* target, unsigned int* match_indices,
+    const unsigned int* training_threshold, unsigned int* match_indices,
     unsigned char* match_digests, unsigned int* match_count, int capacity,
     void* stream
 ) {
     if (count < 0 || capacity < 0 || match_count == nullptr) {
         return static_cast<int>(cudaErrorInvalidValue);
     }
-    if (count > 0 && (transcripts == nullptr || key == nullptr || target == nullptr
+    if (count > 0 && (transcripts == nullptr || key == nullptr || training_threshold == nullptr
         || (capacity > 0 && (match_indices == nullptr || match_digests == nullptr)))) {
         return static_cast<int>(cudaErrorInvalidValue);
     }
@@ -73,7 +73,7 @@ extern "C" int LRAEP_hash_candidates(
     const unsigned int blocks =
         (static_cast<unsigned int>(count) + threads - 1) / threads;
     hash_candidates_kernel<<<blocks, threads, 0, selected_stream>>>(
-        transcripts, count, key, target, match_indices, match_digests,
+        transcripts, count, key, training_threshold, match_indices, match_digests,
         match_count, capacity
     );
     return static_cast<int>(cudaGetLastError());
