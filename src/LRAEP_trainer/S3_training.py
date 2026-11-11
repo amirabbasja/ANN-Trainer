@@ -15,6 +15,8 @@ import time
 import numpy as np
 import torch
 
+from .training_artifacts import training_output
+
 from .gpu import TrainingCancelled
 from .gpu_pacing import GpuPacer
 from .effort import JobSequence, ScheduledSideJob
@@ -143,11 +145,12 @@ def _signal_stop(stopped, time_limit=0):
 def run_S3_training(configuration: dict, *, login_only: bool = False) -> int:
     """Run a repeating job sequence, closing every resource on stop or exit."""
     settings = configuration["training"]
+    generate_artifacts = login_only or settings.get("generate_artifacts", True)
     stopped = threading.Event()
     started = time.monotonic()
     effort = None if login_only else JobSequence(settings["job_sequence"], started=started)
     deadline = started + settings["max_seconds"] if settings["max_seconds"] else None
-    with _signal_stop(stopped, settings["max_seconds"]), ExitStack() as resources:
+    with training_output(generate_artifacts), _signal_stop(stopped, settings["max_seconds"]), ExitStack() as resources:
         if effort is not None:
             resources.enter_context(effort.stopping(stopped))
             if not effort.wait(stopped, deadline=deadline):
@@ -176,6 +179,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                               S3Session, StaleS3Job)
     from .S3_transport import S3ConnectionError
 
+    settings = configuration["training"]
+    generate_artifacts = login_only or settings.get("generate_artifacts", True)
     S3 = resolve_S3_settings(configuration["S3"])
     selected_protocol = select_S3_protocol(S3)
     validate_S3_endpoint(S3)
@@ -188,15 +193,15 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         from .wr_work import prepare_wr_batch, verified_wr_submission
 
         session_class = WRSession
-        diagnostic_dir = S3.get("unknown_request_dir") or (
-            Path(configuration["training"]["output_dir"]) / "unknown-S3-requests"
-        )
-        session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, S3)
+        if generate_artifacts:
+            diagnostic_dir = S3.get("unknown_request_dir") or (
+                Path(settings["output_dir"]) / "unknown-S3-requests"
+            )
+            session_options["unknown_handler"] = UnknownRequestRecorder(diagnostic_dir, S3)
     load_official_helpers(configuration["official_source"])
     validate_S3_identity(S3, selected_protocol)
     from LRAEP_trainer import primitives as pm
 
-    settings = configuration["training"]
     cfg = TrainingConfig(
         settings["m"], settings["n"], settings["k"],
         settings[constant_text(FixedAlias('training.field.matrix_tile_height'))],
@@ -233,9 +238,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         return expired() or (max_batches > 0 and stats.batches >= max_batches)
 
     with ExitStack() as resources:
-        progress = resources.enter_context(LiveProgress())
+        progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
         monitor = None
-        if not login_only:
+        if not login_only and generate_artifacts:
             monitor = GpuUtilization(str(device)).start()
             resources.callback(monitor.close)
 

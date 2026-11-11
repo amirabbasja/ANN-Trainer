@@ -702,6 +702,18 @@ class S3LoopTests(unittest.TestCase):
             worker.run_S3_training(self.configuration)
         self.factory.assert_not_called()
 
+    def test_quiet_wr_training_skips_unknown_request_recording(self):
+        from LRAEP_trainer.S3_client import S3CompatibilityError
+
+        self.configuration["training"]["generate_artifacts"] = False
+        self.configuration["S3"]["protocol"] = "WR"
+        self.session.wait_job.side_effect = S3CompatibilityError("Unknown S7 request")
+        with patch("LRAEP_trainer.wr_client.WRSession", return_value=self.session) as wr, \
+                self.assertNoLogs(worker.LOG, level="DEBUG"), self.assertRaises(S3CompatibilityError):
+            worker.run_S3_training(self.configuration)
+        self.assertNotIn("unknown_handler", wr.call_args.kwargs)
+        self.monitor.assert_not_called()
+
     def test_time_limit_interrupts_a_waiting_authentication(self):
         from LRAEP_trainer.S3_transport import S3ConnectionError
 

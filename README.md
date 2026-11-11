@@ -33,6 +33,13 @@ and checkpoints live under `data/side-job/`.
 
 ## Plain source configuration and WR export
 
+Set `training.generate_artifacts` to `false` for training without local output,
+terminal logs, or Telegram updates. Candidate files, unknown-request captures,
+and CNN checkpoints are skipped. The CNN reads dataset shards in memory, and
+native backends reuse existing libraries or use their reference implementations.
+The default is `true`. For the installed `LRAEP` command or `python -m LRAEP_trainer`,
+set `PYTHONDONTWRITEBYTECODE=1` to suppress Python bytecode during startup as well.
+
 ### Periodic Telegram updates
 
 Set `trainer_name` to the name that should appear at the start of each update.

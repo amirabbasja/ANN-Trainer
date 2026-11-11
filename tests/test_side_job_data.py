@@ -383,6 +383,20 @@ class ShardDatasetTests(unittest.TestCase):
     def write(self, rows):
         self.parquet.write_table(self.arrow.Table.from_pylist(rows), self.path)
 
+    def test_downloaded_shard_can_be_trained_from_memory(self):
+        stream = self.arrow.BufferOutputStream()
+        self.parquet.write_table(self.arrow.Table.from_pylist([
+            {"image_bytes": image_bytes(), "class": 1},
+        ]), stream)
+        source = DatasetSource(REPOSITORY)
+        source.opener = Mock()
+        source.opener.open.return_value = response(stream.getvalue().to_pybytes())
+        with patch.object(tempfile, "NamedTemporaryFile", side_effect=AssertionError("must not create a file")):
+            shard = source.download_shard("train/a.parquet")
+            dataset = ShardDataset(shard, image_size=24)
+            self.assertEqual(len(dataset), 1)
+            self.assertEqual([label for _, label in dataset], [1])
+
     def test_length_reads_footer_without_decoding_any_images(self):
         self.write([{"image_bytes": b"not an image", "class": index % 2} for index in range(5)])
         dataset = ShardDataset(self.path, image_size=8)

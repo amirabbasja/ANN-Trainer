@@ -12,6 +12,7 @@
     "training_stats_tgBot_key": ""
   },
   "training": {
+    "generate_artifacts": true,
     "m": 256,
     "n": 256,
     "k": 2048,

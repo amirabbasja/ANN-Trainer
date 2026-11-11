@@ -7,6 +7,7 @@ library or shared Hugging Face cache is used.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import http.client
 import io
 import json
@@ -243,24 +244,29 @@ class DatasetSource:
             raise DatasetError("the selected training folder contains no Parquet shards")
         return sorted(shards)
 
-    def download_shard(self, shard, destination, *, cancelled=None):
-        """Stream one file into an atomic destination; remove failed partials."""
+    def download_shard(self, shard, destination=None, *, cancelled=None):
+        """Download into memory or atomically replace a supplied destination."""
         if cancelled is not None and cancelled():
             raise DatasetCancelled("dataset shard download was cancelled")
         shard = self._shard_path(shard)
-        destination = Path(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination is not None:
+            destination = Path(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
         url = (f"https://huggingface.co/datasets/{quote(self.repo, safe='/')}"
                f"/resolve/{quote(self.revision, safe='')}/{quote(shard, safe='/')}")
         temporary = None
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-side-job/0.1"})
-            with self.opener.open(request, timeout=self.timeout) as response:
-                content_length = response.headers.get("Content-Length")
-                expected = int(content_length) if content_length is not None else self._sizes.get(shard)
-                size = 0
-                with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".shard-", suffix=".part", delete=False) as stream:
+            stream_context = (nullcontext(io.BytesIO()) if destination is None else
+                              tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".shard-",
+                                                          suffix=".part", delete=False))
+            with stream_context as stream:
+                if destination is not None:
                     temporary = Path(stream.name)
+                request = urllib.request.Request(url, headers={"User-Agent": "LRAEP-side-job/0.1"})
+                with self.opener.open(request, timeout=self.timeout) as response:
+                    content_length = response.headers.get("Content-Length")
+                    expected = int(content_length) if content_length is not None else self._sizes.get(shard)
+                    size = 0
                     read = getattr(response, "read1", response.read)
                     while True:
                         if cancelled is not None and cancelled():
@@ -270,14 +276,16 @@ class DatasetSource:
                             break
                         stream.write(chunk)
                         size += len(chunk)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                if expected is not None and size != expected:
-                    raise DatasetError("dataset shard download is incomplete")
-                if shard in self._sizes and size != self._sizes[shard]:
-                    raise DatasetError("dataset shard size does not match its repository listing")
-            if cancelled is not None and cancelled():
-                raise DatasetCancelled("dataset shard download was cancelled")
+                    if expected is not None and size != expected:
+                        raise DatasetError("dataset shard download is incomplete")
+                    if shard in self._sizes and size != self._sizes[shard]:
+                        raise DatasetError("dataset shard size does not match its repository listing")
+                if cancelled is not None and cancelled():
+                    raise DatasetCancelled("dataset shard download was cancelled")
+                if destination is None:
+                    return stream.getbuffer().toreadonly()
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, destination)
             return destination
         except DatasetError:
@@ -318,11 +326,11 @@ def _image_tensor(value, image_size):
 
 
 class ShardDataset(IterableDataset):
-    """Decode bounded Parquet batches from exactly one local shard per epoch."""
+    """Decode bounded Parquet batches from one file or in-memory shard per epoch."""
 
     def __init__(self, path, *, image_size, seed=42, passes=1, cache_limit_mb=2048):
         super().__init__()
-        self.path = Path(path)
+        self.path = path if isinstance(path, memoryview) else Path(path)
         if type(image_size) is not int or image_size < 1:
             raise DatasetError("dataset image_size must be a positive integer")
         if type(passes) is not int or not 1 <= passes <= 100:
@@ -334,30 +342,31 @@ class ShardDataset(IterableDataset):
         self.passes = passes
         self.cache_limit_mb = cache_limit_mb
 
-    def __len__(self):
-        """Read the shard's row count from its footer without decoding images."""
+    def _open(self):
         try:
+            import pyarrow as arrow
             import pyarrow.parquet as parquet
         except ImportError:
             raise DatasetError("job-1 requires pyarrow; install the project requirements") from None
+        source = arrow.BufferReader(self.path) if isinstance(self.path, memoryview) else self.path
+        return parquet.ParquetFile(source)
+
+    def __len__(self):
+        """Read the shard's row count from its footer without decoding images."""
         try:
-            with parquet.ParquetFile(self.path) as shard:
+            with self._open() as shard:
                 return shard.metadata.num_rows * self.passes
         except (OSError, ValueError, TypeError):
             raise DatasetError("could not read the selected Parquet training shard") from None
 
     def __iter__(self):
-        try:
-            import pyarrow.parquet as parquet
-        except ImportError:
-            raise DatasetError("job-1 requires pyarrow; install the project requirements") from None
         worker = get_worker_info()
         if self.passes > 1 and worker is not None:
             raise DatasetError("cached dataset passes require a single-process DataLoader")
         rng = random.Random(self.seed)
         cache = [] if self.passes > 1 else None
         try:
-            with parquet.ParquetFile(self.path) as shard:
+            with self._open() as shard:
                 if not {"image_bytes", "class"}.issubset(shard.schema_arrow.names):
                     raise DatasetError("dataset shard must contain image_bytes and class columns")
                 if cache is not None:

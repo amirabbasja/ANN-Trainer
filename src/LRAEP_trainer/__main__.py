@@ -29,6 +29,7 @@ from .telemetry import GpuUtilization
 from .telegram import TelegramUpdates
 from .job_control import JobEvents, VPNJobGuard
 from .progress import job_status
+from .training_artifacts import training_output
 
 LOG = logging.getLogger("LRAEP_trainer")
 
@@ -146,8 +147,9 @@ def self_test(args) -> int:
 
 
 def train(args) -> int:
-    from LRAEP_trainer import primitives as pm
-
+    side_job_configuration = getattr(args, "side_job_configuration", None)
+    configured_artifacts = (side_job_configuration or {}).get("training", {}).get("generate_artifacts", True)
+    generate_artifacts = getattr(args, "generate_artifacts", configured_artifacts)
     stopped = threading.Event()
     started = time.monotonic()
     schedule = JobSequence(args.job_sequence, started=started)
@@ -164,8 +166,10 @@ def train(args) -> int:
                 or (args.max_batches > 0 and batches >= args.max_batches)
                 or (deadline is not None and time.monotonic() >= deadline))
 
-    with schedule.stopping(stopped), ExitStack() as resources:
+    with training_output(generate_artifacts), schedule.stopping(stopped), ExitStack() as resources:
         try:
+            from LRAEP_trainer import primitives as pm
+
             # Pauses and an immediate exit must not initialize a S1 backend.
             if not schedule.wait(stopped, deadline=deadline) or finished():
                 return 0
@@ -178,16 +182,20 @@ def train(args) -> int:
                 raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
             cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
             pacer = GpuPacer(args.device, 100)
-            progress = resources.enter_context(LiveProgress())
-            telemetry_device = torch.device(args.device)
-            if telemetry_device.index is None:
-                telemetry_device = torch.device("cuda", torch.cuda.current_device())
-            monitor = GpuUtilization(str(telemetry_device)).start()
-            resources.callback(monitor.close)
+            progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
+            monitor = None
+            if generate_artifacts:
+                telemetry_device = torch.device(args.device)
+                if telemetry_device.index is None:
+                    telemetry_device = torch.device("cuda", torch.cuda.current_device())
+                monitor = GpuUtilization(str(telemetry_device)).start()
+                resources.callback(monitor.close)
             active_job = "job-0"
 
             def show_main(force=False):
                 nonlocal active_job
+                if monitor is None:
+                    return
                 events.update()
                 kind = schedule.current_job()[0]
                 force = force or active_job != kind
@@ -200,11 +208,13 @@ def train(args) -> int:
             def log(level, message, *values):
                 LOG.debug(message, *values)
 
-            if hasattr(args, "side_job_configuration"):
-                side_job_configuration = args.side_job_configuration
-            else:
+            if side_job_configuration is None:
                 from .config import DEFAULT_CONFIG
                 side_job_configuration = dict(copy.deepcopy(DEFAULT_CONFIG), device=args.device)
+            if configured_artifacts != generate_artifacts:
+                side_job_configuration = dict(side_job_configuration, training=dict(
+                    side_job_configuration.get("training", {}), generate_artifacts=generate_artifacts,
+                ))
             side_job = ScheduledSideJob(side_job_configuration, before_log=progress.clear, on_progress=show_side_job)
 
             def telegram_snapshot():
@@ -236,8 +246,10 @@ def train(args) -> int:
             watcher.vpn_guard = vpn_guard
             watcher.thread.start()
             rng = np.random.default_rng()
-            output = Path(args.output_dir).expanduser().resolve()
-            output.mkdir(parents=True, exist_ok=True)
+            output = None
+            if generate_artifacts:
+                output = Path(args.output_dir).expanduser().resolve()
+                output.mkdir(parents=True, exist_ok=True)
 
             def stage_deadline(boundary):
                 return boundary if deadline is None else min(boundary, deadline)
@@ -347,15 +359,17 @@ def train(args) -> int:
                             block_bytes = build_block(proof, template)
                             if candidate_cancelled():
                                 break
-                            name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
-                            (output / f"{name}.bin").write_bytes(block_bytes)
-                            (output / f"{name}.json").write_text(json.dumps({
-                                "height": template.height, "certificate_version": cert,
-                                "incomplete_header_hex": bytes(header.to_bytes()).hex(),
-                                "plain_proof_base64": proof.to_base64(),
-                            }, indent=2) + "\n")
+                            if output is not None:
+                                name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
+                                (output / f"{name}.bin").write_bytes(block_bytes)
+                                (output / f"{name}.json").write_text(json.dumps({
+                                    "height": template.height, "certificate_version": cert,
+                                    "incomplete_header_hex": bytes(header.to_bytes()).hex(),
+                                    "plain_proof_base64": proof.to_base64(),
+                                }, indent=2) + "\n")
                             if args.no_submit:
-                                log(logging.DEBUG, "Verified block saved to %s (submission disabled)", output / f"{name}.bin")
+                                if output is not None:
+                                    log(logging.DEBUG, "Verified block saved to %s (submission disabled)", output / f"{name}.bin")
                             elif rpc(node.best_hash) == parent and not candidate_cancelled():
                                 rpc(node.submit, block_bytes)
                                 accepted += 1
@@ -387,8 +401,9 @@ def train(args) -> int:
                     watcher.thread.join()
                 for sig, handler in old_handlers.items():
                     signal.signal(sig, handler)
-    LOG.debug("job-0 stopped: steps=%d elapsed=%s", batches, format_elapsed(time.monotonic() - started))
-    LOG.debug("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
+    if generate_artifacts:
+        LOG.debug("job-0 stopped: steps=%d elapsed=%s", batches, format_elapsed(time.monotonic() - started))
+        LOG.debug("Training stopped: batches=%d tile_attempts=%d accepted=%d", batches, attempts, accepted)
     return 0
 
 
@@ -458,6 +473,7 @@ def _apply_settings(args, configuration):
         k=training.get("k", 2048), tile_h=training.get("tile_h", 8),
         tile_w=training.get("tile_w", 8), max_batches=training.get("max_batches", 0),
         max_seconds=training.get("max_seconds", 0),
+        generate_artifacts=training.get("generate_artifacts", True),
         output_dir=training.get("output_dir", str(artifacts_dir())),
         address=node.get("address") if configuration else os.environ.get("LRAEP_TRAINING_ADDRESS"),
         rpc_url=node.get("rpc_url", "https://127.0.0.1:44107") if configuration else
@@ -578,28 +594,31 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=(logging.ERROR if args.command in (None, "train", "S3") else logging.INFO),
                         format="%(asctime)s %(message)s")
-    try:
-        from .config import load_config
+    with ExitStack() as resources:
+        try:
+            from .config import load_config
 
-        selected_config = args.config
-        if selected_config is None and args.command != "self-test":
-            canonical = default_config_path()
-            if canonical.is_file():
-                selected_config = canonical
-        configuration = load_config(selected_config) if selected_config else None
-        if args.command is None:
-            if configuration is None:
-                parser.error("specify a command, or use --config to select the configured mode")
-            args.command = "S3" if configuration["mode"] == "S3" else "train"
-            args.no_submit = False
-        _apply_settings(args, configuration)
-        return _execute(args, configuration)
-    except KeyboardInterrupt:
-        LOG.info("Stopped")
-        return 130
-    except (ValueError, RuntimeError, ImportError, OSError) as exc:
-        LOG.error("%s", exc)
-        return 1
+            selected_config = args.config
+            if selected_config is None and args.command != "self-test":
+                canonical = default_config_path()
+                if canonical.is_file():
+                    selected_config = canonical
+            configuration = load_config(selected_config) if selected_config else None
+            if args.command is None:
+                if configuration is None:
+                    parser.error("specify a command, or use --config to select the configured mode")
+                args.command = "S3" if configuration["mode"] == "S3" else "train"
+                args.no_submit = False
+            if args.command in ("S3", "train") and configuration is not None:
+                resources.enter_context(training_output(configuration["training"].get("generate_artifacts", True)))
+            _apply_settings(args, configuration)
+            return _execute(args, configuration)
+        except KeyboardInterrupt:
+            LOG.info("Stopped")
+            return 130
+        except (ValueError, RuntimeError, ImportError, OSError) as exc:
+            LOG.error("%s", exc)
+            return 1
 
 
 if __name__ == "__main__":

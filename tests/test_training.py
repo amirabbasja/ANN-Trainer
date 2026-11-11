@@ -132,6 +132,16 @@ class TrainingControlFlowTests(unittest.TestCase):
         updates.return_value.__enter__.assert_called_once()
         updates.return_value.__exit__.assert_called_once()
 
+    def test_training_without_artifacts_still_submits(self):
+        self.args.generate_artifacts = False
+        self.args.output_dir = str(self.output / "uncreated")
+        with self.assertNoLogs(cli.LOG, level="DEBUG"):
+            self.assertEqual(cli.train(self.args), 0)
+        self.node.submit.assert_called_once_with(self.block)
+        self.monitor.assert_not_called()
+        self.progress.return_value.__enter__.return_value.update.assert_not_called()
+        self.assertEqual(list(self.output.iterdir()), [])
+
     def test_main_progress_counts_real_steps_without_S1_counters(self):
         with self.assertLogs(cli.LOG, level="DEBUG") as messages:
             self.assertEqual(cli.train(self.args), 0)

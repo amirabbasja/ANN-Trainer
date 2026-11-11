@@ -28,6 +28,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result["device"], "cuda:0")
         self.assertEqual(result["official_source"], str(self.directory / "src/LRAEP_helpers"))
         self.assertEqual(result["training"]["output_dir"], str(artifacts_dir().resolve()))
+        self.assertTrue(result["training"]["generate_artifacts"])
         self.assertEqual(result["training"]["job_sequence"], [{"title": 'job-0', "time": 60, "max_gpu_utilization": 80}, {"title": 'job-0', "time": 120, "max_gpu_utilization": 70}, {"title": 'job-0', "time": 180, "max_gpu_utilization": 10}])
         self.assertNotIn("side_job_effort", result["training"])
         self.assertNotIn("max_gpu_utilization", result["training"])
@@ -46,6 +47,12 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(result["S3"]["stop_on_unknown_request"])
         self.assertIsNone(result["S3"]["unknown_request_dir"])
         self.assertEqual(result["node"]["rpc_url"], "https://127.0.0.1:44107")
+
+    def test_training_artifact_option_requires_a_boolean(self):
+        settings = self.load({"version": 1, "training": {"generate_artifacts": False}})
+        self.assertFalse(settings["training"]["generate_artifacts"])
+        with self.assertRaisesRegex(ConfigError, "training.generate_artifacts"):
+            self.load({"version": 1, "training": {"generate_artifacts": "false"}})
 
     def test_job_sequence_preserves_order_pause_exit_and_roles(self):
         sequence = [{"title": 'job-0', "time": 0.5, "max_gpu_utilization": 100}, {"title": 'job-1', "time": 2, "max_gpu_utilization": 1}, {"title": 'job-0', "time": 1, "max_gpu_utilization": 0}, {"title": 'job-1', "time": 0, "max_gpu_utilization": -1}]

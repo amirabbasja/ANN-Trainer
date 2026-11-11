@@ -35,6 +35,7 @@ _TELEGRAM_DEFAULTS = {
     "update_interval_seconds": 300,
 }
 _TRAINING_DEFAULTS = {
+    "generate_artifacts": True,
     "m": 256, "n": 256, "k": 2048, "tile_h": 8, "tile_w": 8,
     "max_batches": 0, "max_seconds": 0,
     "job_sequence": [
@@ -520,6 +521,8 @@ def _validate_config(config, config_path) -> dict:
         raise ConfigError("training proof inputs exceed S6's 4 MiB worker-input limit")
     _integer(training["max_batches"], "training.max_batches", 0)
     _number(training["max_seconds"], "training.max_seconds", zero=True)
+    if type(training["generate_artifacts"]) is not bool:
+        raise ConfigError("training.generate_artifacts must be true or false")
     training["output_dir"] = _path(training["output_dir"], "training.output_dir", directory)
 
     raw_S3 = _section(config.get("S3", {}), set(_S3_DEFAULTS) | set(_S3_PROFILES), "S3")

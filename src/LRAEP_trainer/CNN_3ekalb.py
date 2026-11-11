@@ -22,6 +22,7 @@ import subprocess
 import threading
 
 from .paths import cache_dir
+from .training_artifacts import artifacts_enabled
 
 _IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
        0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)
@@ -31,19 +32,25 @@ _MASK = 0xFFFFFFFF
 _BUILD_LOCK = threading.Lock()
 
 
-@lru_cache(maxsize=1)
 def _native():
-    compiler = shutil.which('c++')
+    return _cached_native(artifacts_enabled())
+
+
+@lru_cache(maxsize=2)
+def _cached_native(allow_build):
     source = Path(__file__).with_name('CNN_3ekalb_native.cpp')
-    if compiler is None or os.name != 'posix' or not source.is_file():
+    if os.name != 'posix' or not source.is_file():
         return None
     try:
         with _BUILD_LOCK:
             identity = source.read_bytes() + platform.machine().encode() + platform.system().encode()
             folder = cache_dir() / 'hashing'
-            folder.mkdir(parents=True, exist_ok=True)
             library = folder / ('CNN_3ekalb-' + hashlib.sha256(identity).hexdigest()[:16] + '.so')
             if not library.is_file():
+                compiler = shutil.which('c++') if allow_build else None
+                if compiler is None:
+                    return None
+                folder.mkdir(parents=True, exist_ok=True)
                 temporary = library.with_suffix(f'.{os.getpid()}.tmp.so')
                 try:
                     subprocess.run([compiler, '-O3', '-std=c++17', '-shared', '-fPIC',
