@@ -14,7 +14,7 @@ class GpuPacer:
     """
 
     def __init__(self, device, max_utilization):
-        self.device = device
+        self.devices = device if isinstance(device, tuple) else (device,)
         self._started = None
         self._deadline = None
         self.max_utilization = None
@@ -38,13 +38,17 @@ class GpuPacer:
             if cancelled:
                 # Unpaced work can still be queued when a stage is cancelled.
                 # Drain it before a pause or shutdown begins.
-                torch.cuda.synchronize(self.device)
+                self._synchronize()
             return
-        torch.cuda.synchronize(self.device)
+        self._synchronize()
         now = time.monotonic()
         work_seconds = now - self._started
         self._deadline = now + work_seconds * (100 - self.max_utilization) / self.max_utilization
         self._started = None
+
+    def _synchronize(self):
+        for device in self.devices:
+            torch.cuda.synchronize(device)
 
     def wait(self, stopped, *, deadline=None):
         if self._deadline is None:

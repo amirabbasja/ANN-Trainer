@@ -40,7 +40,7 @@ job-1 | Epoch 2/10 | Step 125/400 (31.2%) | loss=0.1234 accuracy=95.0% | GPU 42%
 Each step is one optimizer batch. The percentage counts images processed from
 the current shard across all configured passes; the final batch can be smaller.
 Loss and accuracy are running
-averages for that epoch, and GPU usage is the selected device's overall busy
+averages for that epoch, and GPU usage is the busiest selected device's overall busy
 percentage (`N/A` when unavailable). Epoch totals come from the local Parquet
 footer without decoding every image in advance. Unlimited training shows the
 epoch number without a limit. Preparing a shard shows `Preparing` until its
@@ -99,7 +99,10 @@ Add or edit the top-level `side_job` object in the shared `config.json`.
 }
 ```
 
-The shared top-level `device` selects the GPU, for example `"cuda:0"`. Each
+The shared top-level `device` selects one GPU with `"cuda:0"` or multiple GPUs
+with `[0, 1]`. A batch is split across the selected GPUs with one shared model
+checkpoint. Use a multiple of the GPU count for `batch_size` to use every GPU
+on full batches. Each
 `channels` entry sets a stage's width; the matching `blocks_per_stage` entry sets
 its number of residual blocks. Lower `batch_size` if GPU memory is tight.
 `repo_url` accepts a Hugging Face dataset repository URL (defaults to its `train`

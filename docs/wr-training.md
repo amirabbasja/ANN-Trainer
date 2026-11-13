@@ -32,10 +32,10 @@ KEX's optional gzip proof transport is unavailable on S7.
 ## GPU count and connected-worker hashrate
 
 WR sends S7's `report_info` message after authentication to register the
-selected GPU. It sends the measured work rate after the first completed batch,
+selected GPUs. It sends the measured work rates after the first completed batch,
 then about every 10 seconds during the connection's first two minutes, and
 about every 120 seconds afterward, at a batch boundary. Each report contains
-one device object with its actual GPU name and a numeric rate in H/s.
+one device object per selected GPU, with its actual name and numeric rate in H/s.
 For example, a diagnostic rate of 4 TH/s corresponds to about `4000000000000`
 H/s in the report. Login-only checks send no GPU reports.
 
@@ -65,6 +65,12 @@ messages remain available at `DEBUG`. GPU reports and submission behavior are
 unchanged, and rejected work still logs a warning.
 
 ## Deterministic work
+
+For the shape captured in accepted WR submissions, set `training.m` to
+4096, `training.n` to 262144, `training.k` to 8192, `training.tile_h` to 8,
+and `training.tile_w` to 16. This shape uses periodic row and column
+patterns and requires native CUDA. If the coordinator rejects a submission
+with `shape not allowed`, the trainer stops and reports the configured dimensions.
 
 The S7 path builds the captured `sb: 1`, `tail_mode: 1` work: constant
 signal value `64`, with the last sixteen bytes of A derived from

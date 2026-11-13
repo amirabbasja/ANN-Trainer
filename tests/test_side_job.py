@@ -51,6 +51,30 @@ class CheckpointTests(unittest.TestCase):
 
 
 class CNNTests(unittest.TestCase):
+    def test_gpu_array_uses_one_unwrapped_checkpoint(self):
+        config = copy.deepcopy(DEFAULT_CONFIG)
+        config["device"] = [1, 0]
+        config["training"]["generate_artifacts"] = False
+        config["side_job"].update(channels=[8], blocks_per_stage=[1], hidden_size=8, use_amp=False)
+        model = OrientationCNN(channels=[8], blocks_per_stage=[1], hidden_size=8)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(torch.cuda, "is_available", return_value=True), \
+                patch.object(torch.cuda, "device_count", return_value=2), \
+                patch.object(torch.cuda, "get_device_name", side_effect=str), \
+                patch.object(model, "to", return_value=model), \
+                patch("LRAEP_trainer.side_job.OrientationCNN", return_value=model), \
+                patch("LRAEP_trainer.side_job.nn.DataParallel") as parallel, \
+                patch("LRAEP_trainer.side_job_data.DatasetSource") as source:
+            source.return_value.list_shards.return_value = ["train/a.parquet"]
+            job = SideJob(config, project_root=temporary)
+            try:
+                job._initialize()
+                parallel.assert_called_once_with(model, device_ids=[1, 0])
+                self.assertIs(job.forward_model, parallel.return_value)
+                self.assertEqual(set(job._checkpoint()["model"]), set(model.state_dict()))
+            finally:
+                job.close()
+
     def test_configurable_network_has_two_orientation_logits(self):
         model = OrientationCNN(channels=[8, 16], blocks_per_stage=[1, 1], hidden_size=16)
         output = model(torch.randn(2, 3, 64, 64))

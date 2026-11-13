@@ -348,7 +348,10 @@ class S3Session:
             raise pending.error
         if pending.response is None:
             raise S3ConnectionError(constant_text(FixedAlias('training.validation.coordinator_closed_before_acknowledgement')))
-        if self.dialect.accept(pending.response):
+        return self._submission_result(pending.response)
+
+    def _submission_result(self, response: dict) -> SubmissionResult:
+        if self.dialect.accept(response):
             return SubmissionResult(True)
         # Do not echo untrusted S3 text, credentials, or proof data to logs.
         return SubmissionResult(False, constant_text(FixedAlias('training.validation.coordinator_submission_rejected')))

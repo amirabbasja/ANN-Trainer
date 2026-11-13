@@ -17,13 +17,15 @@ import torch
 
 from .training_artifacts import training_output
 
-from .gpu import TrainingCancelled
+from .cuda_devices import resolve_cuda_devices
+from .gpu import TrainingCancelled as TrainingCancelled
 from .gpu_pacing import GpuPacer
+from .mining_devices import MiningDevice, batch_executor, run_batches
 from .effort import JobSequence, ScheduledSideJob
 from .progress import LiveProgress, format_elapsed, main_status
 from .protocol import (TrainingConfig, load_official_helpers, S3_training_threshold,
                        prepare_batch, search_batch, verified_S3_submission)
-from .telemetry import GpuUtilization
+from .telemetry import GpuUtilization, busiest_gpu
 from .telegram import TelegramUpdates
 from .job_control import JobEvents, VPNJobGuard
 from .progress import job_status
@@ -159,12 +161,13 @@ def run_S3_training(configuration: dict, *, login_only: bool = False) -> int:
                                   effort=effort, started=started)
 
 
-def _release_work(device):
+def _release_work(devices):
     gc.collect()
     if torch.cuda.is_initialized():
-        with torch.cuda.device(device):
-            torch.cuda.synchronize(device)
-            torch.cuda.empty_cache()
+        for device in devices:
+            with torch.cuda.device(device):
+                torch.cuda.synchronize(device)
+                torch.cuda.empty_cache()
 
 
 def _run_S3_training(configuration, *, login_only, stopped, effort, started):
@@ -174,10 +177,11 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
     Continuous sessions reconnect after transport failures, invalidating every
     job and pending submission from the disconnected session.
     """
-    from .config import resolve_S3_settings
+    from .config import ConfigError, resolve_S3_settings
     from .S3_client import (S3AuthenticationError, S3CompatibilityError,
                               S3Session, StaleS3Job)
     from .S3_transport import S3ConnectionError
+    from .wire_constants import WR_CAPTURED_SHAPE
 
     settings = configuration["training"]
     generate_artifacts = login_only or settings.get("generate_artifacts", True)
@@ -187,11 +191,21 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
     validate_S3_identity(S3, selected_protocol, validate_address=False)
     session_class = S3Session
     session_options = {}
+    shape = tuple(settings[field] for field in ("m", "n", "k", "tile_h", "tile_w"))
+    captured_shape = selected_protocol == "WR" and shape == WR_CAPTURED_SHAPE
+    config_class = TrainingConfig
+    search = search_batch
     if selected_protocol == "WR":
         from .S3_diagnostics import UnknownRequestRecorder
         from .wr_client import WRSession
-        from .wr_work import prepare_wr_batch, verified_wr_submission
+        from .wr_protocol import SHAPE_REJECTED
+        from .wr_work import (
+            CapturedTrainingConfig, compute_captured_batch, prepare_wr_batch, verified_wr_submission,
+        )
 
+        if captured_shape:
+            config_class = CapturedTrainingConfig
+            search = compute_captured_batch
         session_class = WRSession
         if generate_artifacts:
             diagnostic_dir = S3.get("unknown_request_dir") or (
@@ -202,32 +216,25 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
     validate_S3_identity(S3, selected_protocol)
     from LRAEP_trainer import primitives as pm
 
-    cfg = TrainingConfig(
-        settings["m"], settings["n"], settings["k"],
-        settings[constant_text(FixedAlias('training.field.matrix_tile_height'))],
-        settings[constant_text(FixedAlias('training.field.matrix_tile_width'))],
-    )
-    gpu_name = None
+    if selected_protocol != "WR" and shape == WR_CAPTURED_SHAPE:
+        raise ConfigError("The captured S7 training shape requires the WR protocol")
+    cfg = config_class(*shape)
+    devices = ()
     if not login_only:
-        device = torch.device(configuration["device"])
-        if device.type != "cuda" or not torch.cuda.is_available():
-            raise ValueError("an available CUDA GPU is required for S3 training")
-        # Capture the caller's current device before the telemetry thread
-        # starts; CUDA's implicit current-device selection is thread-local.
-        if device.index is None:
-            device = torch.device("cuda", torch.cuda.current_device())
-        gpu_name = torch.cuda.get_device_name(device)
-        LOG.debug("GPU: %s", gpu_name)
-    use_native = (not login_only and (cfg.tile_h, cfg.tile_w) == (8, 8)
-                  and native_cuda.available(configuration["device"]))
-    if not login_only:
-        LOG.debug("Compute backend: %s", "native CUDA DP4A" if use_native else "PyTorch reference")
+        devices = resolve_cuda_devices(configuration["device"], unavailable="an available CUDA GPU is required for S3 training")
+    gpu_names = [torch.cuda.get_device_name(device) for device in devices]
+    workers = [MiningDevice(device, GpuPacer(device, 100),
+                            (captured_shape or (cfg.tile_h, cfg.tile_w) == (8, 8)) and native_cuda.available(device))
+               for device in devices]
+    for worker, name in zip(workers, gpu_names):
+        if captured_shape and not worker.native:
+            raise ConfigError("The configured S7 shape requires native CUDA kernels")
+        LOG.debug("GPU %s (%s): %s", worker.device, name, "native CUDA DP4A" if worker.native else "PyTorch reference")
     torch.set_num_threads(min(4, torch.get_num_threads()))
     stats = S3TrainingStats()
-    rng = np.random.default_rng()
     limit = settings["max_seconds"]
     max_batches = settings["max_batches"]
-    pacer = GpuPacer(device, 100) if not login_only else None
+    side_pacer = GpuPacer(devices, 100) if len(devices) > 1 else workers[0].pacer if workers else None
     deadline = started + limit if limit else None
 
     def expired():
@@ -238,11 +245,13 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         return expired() or (max_batches > 0 and stats.batches >= max_batches)
 
     with ExitStack() as resources:
+        executor = batch_executor(resources, devices)
         progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
-        monitor = None
-        if not login_only and generate_artifacts:
+        monitors = []
+        for device in devices if generate_artifacts else ():
             monitor = GpuUtilization(str(device)).start()
             resources.callback(monitor.close)
+            monitors.append(monitor)
 
         active_job = "job-0"
 
@@ -266,7 +275,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                 speed = (0 if percentage <= 0 or (vpn_guard is not None and vpn_guard.blocked())
                          else S3_training_rate(stats, cfg, now - started))
             return job_status(number, kind,
-                              monitor.read(), remaining, speed)
+                              busiest_gpu(monitors), remaining, speed)
 
         updates = None
         events = None
@@ -279,7 +288,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
         def update_progress(force=False):
             nonlocal active_job
-            if monitor is not None:
+            if monitors:
                 if events is not None:
                     events.update()
                 kind = effort.current_job()[0]
@@ -291,8 +300,14 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
             LOG.debug(message, *args)
 
         def report_gpu(session, sample_time):
-            rate = S3_training_rate(stats, cfg, sample_time - started)
-            request_id = session.report_info(gpu_name, rate)
+            elapsed = sample_time - started
+            rate = S3_training_rate(stats, cfg, elapsed)
+            if len(workers) == 1:
+                request_id = session.report_info(gpu_names[0], rate)
+            else:
+                scale = cfg.m * cfg.n * cfg.k / max(elapsed, 0.001)
+                request_id = session.report_devices([(name, worker.batches * scale)
+                                                     for worker, name in zip(workers, gpu_names)])
             log(logging.DEBUG, constant_text(FixedAlias('training.log.accelerator_metrics_sent')),
                 format_training_rate(rate), request_id)
 
@@ -300,7 +315,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         while not finished():
             if effort is not None and not effort.wait(stopped, deadline=deadline):
                 break
-            if side_job is not None and side_job.run_if_active(effort, stopped, pacer, deadline=deadline):
+            if side_job is not None and side_job.run_if_active(effort, stopped, side_pacer, deadline=deadline):
                 continue
             if vpn_guard is not None and not vpn_guard.resume():
                 vpn_guard.wait(stopped, deadline=deadline, on_progress=update_progress)
@@ -375,8 +390,6 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                             kind, utilization, boundary = effort.current_job()
                             if kind != "job-0" or utilization <= 0 or expired():
                                 continue
-                            if pacer.max_utilization != utilization:
-                                pacer.set_utilization(utilization)
                             if previous_effort != (kind, utilization):
                                 log(logging.INFO, constant_text(FixedAlias('training.log.accelerator_duty_cycle')),
                                     kind, utilization)
@@ -385,27 +398,28 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                             cancelled = lambda: (expired() or time.monotonic() >= boundary
                                                  or (vpn_guard is not None and vpn_guard.check())
                                                  or not session.is_current(snapshot))
-                            pacer.begin()
-                            if selected_protocol == "WR":
-                                batch = prepare_wr_batch(job, cfg, rng,
-                                                              device=configuration["device"], native=use_native)
-                            else:
-                                batch = prepare_batch(header, job.cert_version, cfg, rng,
-                                                      device=configuration["device"], gpu_signals=True,
-                                                      native=use_native)
-                            if cancelled():
-                                pacer.finish(cancelled=True)
+                            def prepare(worker):
+                                if selected_protocol == "WR":
+                                    return prepare_wr_batch(job, cfg, worker.rng, device=worker.device, native=worker.native)
+                                return prepare_batch(header, job.cert_version, cfg, worker.rng,
+                                                     device=worker.device, gpu_signals=True, native=worker.native)
+
+                            active_workers = workers[:max_batches - stats.batches] if max_batches else workers
+                            for worker in active_workers:
+                                if worker.pacer.max_utilization != utilization:
+                                    worker.pacer.set_utilization(utilization)
+                            results = run_batches(executor, active_workers, prepare, search,
+                                                  training_threshold, cancelled)
+                            completed = 0
+                            for worker, outcome in zip(active_workers, results):
+                                if outcome is not None:
+                                    worker.batches += 1
+                                    completed += 1
+                            stats.batches += completed
+                            stats.attempts += completed * (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
+                            if not completed:
                                 wait_after_batch = vpn_guard is None or not vpn_guard.check()
                                 continue
-                            try:
-                                matches = search_batch(batch, training_threshold, configuration["device"], cancelled)
-                            except TrainingCancelled:
-                                pacer.finish(cancelled=True)
-                                wait_after_batch = vpn_guard is None or not vpn_guard.check()
-                                continue
-                            pacer.finish()
-                            stats.batches += 1
-                            stats.attempts += (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
                             if selected_protocol == "WR":
                                 now = time.monotonic()
                                 interval = (WR_STARTUP_REPORT_INTERVAL
@@ -417,41 +431,52 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                                     reported_work = True
                             # Limits stop the next batch; completed work remains
                             # eligible for submission, as in the solo training loop.
-                            for row, col, digest in matches:
-                                if cancelled():
-                                    stats.stale += 1
-                                    break
-                                if selected_protocol == "WR":
-                                    submission = verified_wr_submission(batch, row, col, digest, training_threshold)
-                                else:
-                                    proof, _ = verified_S3_submission(
-                                        batch, header, job.cert_version, row, col, digest, training_threshold,
-                                    )
-                                    submission = proof.to_base64()
-                                if cancelled():
-                                    stats.stale += 1
-                                    break
-                                try:
-                                    result = session.submit(snapshot, submission)
-                                except StaleS3Job:
-                                    stats.stale += 1
-                                    break
-                                stats.submitted += 1
-                                if result.accepted:
-                                    stats.accepted += 1
-                                    log(logging.DEBUG, constant_text(FixedAlias('training.log.batch_submission_accepted')),
-                                        job.job_id)
-                                else:
-                                    stats.rejected += 1
-                                    log(logging.WARNING, constant_text(FixedAlias('training.log.batch_submission_rejected')),
-                                        job.job_id, result.error)
+                            for outcome in results:
+                                if outcome is None:
+                                    continue
+                                batch, matches = outcome
+                                for row, col, digest in matches:
+                                    if cancelled():
+                                        stats.stale += 1
+                                        break
+                                    if selected_protocol == "WR":
+                                        submission = verified_wr_submission(batch, row, col, digest, training_threshold)
+                                    else:
+                                        proof, _ = verified_S3_submission(
+                                            batch, header, job.cert_version, row, col, digest, training_threshold,
+                                        )
+                                        submission = proof.to_base64()
+                                    if cancelled():
+                                        stats.stale += 1
+                                        break
+                                    try:
+                                        result = session.submit(snapshot, submission)
+                                    except StaleS3Job:
+                                        stats.stale += 1
+                                        break
+                                    stats.submitted += 1
+                                    if result.accepted:
+                                        stats.accepted += 1
+                                        log(logging.DEBUG, constant_text(FixedAlias('training.log.batch_submission_accepted')),
+                                            job.job_id)
+                                    else:
+                                        stats.rejected += 1
+                                        if selected_protocol == "WR" and result.error == SHAPE_REJECTED:
+                                            raise ConfigError(
+                                                f"S7 coordinator rejected training shape {shape}: {SHAPE_REJECTED}. "
+                                                "Check training.m, training.n, training.k, training.tile_h, and training.tile_w."
+                                            )
+                                        log(logging.WARNING, constant_text(FixedAlias('training.log.batch_submission_rejected')),
+                                            job.job_id, result.error)
                             update_progress()
                             wait_after_batch = not finished()
                         finally:
+                            results = outcome = prepare = None
                             batch = matches = proof = submission = result = digest = None
                             header = job = snapshot = cancelled = training_threshold = row = col = _ = None
                             if wait_after_batch:
-                                pacer.wait(stopped, deadline=rest_deadline)
+                                for worker in active_workers:
+                                    worker.pacer.wait(stopped, deadline=rest_deadline)
                     if selected_protocol == "WR":
                         # Unknown messages cancel GPU work via the stop event.
                         # Raise before close() or a normal exit can hide them.
@@ -486,7 +511,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                     vpn_guard.detach(session)
                 session = None
                 if not login_only:
-                    _release_work(device)
+                    _release_work(devices)
             if wait_for_vpn:
                 vpn_guard.wait(stopped, deadline=deadline, on_progress=update_progress)
             elif retry_delay is not None:

@@ -209,6 +209,28 @@ class S3LoopTests(unittest.TestCase):
         self.session.submit.assert_called_once_with(self.snapshot, "cHJvb2Y=")
         self.assertEqual(self.header.nbits, 0x1D00FFFF)
 
+    def test_multi_gpu_pool_batches_run_concurrently_and_share_a_limit(self):
+        self.configuration["device"] = [1, 0]
+        self.configuration["training"].update(
+            max_batches=3,
+            job_sequence=[{"title": "job-0", "time": 60, "max_gpu_utilization": 100}],
+        )
+        barrier = threading.Barrier(2, timeout=2)
+        devices = []
+
+        def search(_batch, _target, device, _cancelled):
+            devices.append(device.index)
+            if len(devices) <= 2:
+                barrier.wait()
+            return iter(())
+
+        self.search.side_effect = search
+        with patch.object(worker.torch.cuda, "device_count", return_value=2):
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
+        self.assertCountEqual(devices, [1, 0, 1])
+        self.assertEqual(devices[-1], 1)
+        self.session.submit.assert_not_called()
+
     def test_telegram_uses_config_and_completed_work_and_closes_with_training(self):
         self.configuration["trainer_name"] = "configured trainer"
         self.configuration["telegram"].update(

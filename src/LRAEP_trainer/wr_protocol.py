@@ -35,6 +35,9 @@ def work_prefix_mask():
     return constant_bytes(_WORK_PREFIX_MASK)
 
 
+SHAPE_REJECTED = "shape not allowed"
+
+
 class UnknownWRRequest(S3ProtocolError):
     """An otherwise framed server command has no implemented meaning."""
 
@@ -135,8 +138,23 @@ class WRDialect:
     @staticmethod
     def report_request(gpu_name: str, training_rate: float, request_id: int) -> dict[str, Any]:
         """Report one GPU's measured work rate in raw hash units per second."""
+        return WRDialect.devices_report_request(((gpu_name, training_rate),), request_id)
+
+    @staticmethod
+    def devices_report_request(devices, request_id: int) -> dict[str, Any]:
         if type(request_id) is not int or not 0 <= request_id < 1 << 64:
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_request_identifier_range')))
+        entries = [WRDialect._device_report(name, rate) for name, rate in devices]
+        if not entries:
+            raise S3ProtocolError("GPU report must contain at least one device")
+        return {
+            "id": request_id,
+            "method": constant_text(FixedAlias('training.message.accelerator_metrics')),
+            "params": entries,
+        }
+
+    @staticmethod
+    def _device_report(gpu_name, training_rate):
         name = _text(gpu_name, "gpu_name", 256)
         if not name.strip() or not name.isprintable():
             raise S3ProtocolError("gpu_name must contain printable GPU identification")
@@ -148,11 +166,7 @@ class WRDialect:
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.accelerator_throughput_range'))) from None
         if not math.isfinite(rate) or rate < 0:
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.accelerator_throughput_range')))
-        return {
-            "id": request_id,
-            "method": constant_text(FixedAlias('training.message.accelerator_metrics')),
-            "params": [{constant_text('training_rate'): rate, "name": name}],
-        }
+        return {constant_text('training_rate'): rate, "name": name}
 
     @staticmethod
     def accept(response: Mapping[str, Any]) -> bool:
@@ -168,8 +182,8 @@ class WRDialect:
     def classify(response: Mapping[str, Any]) -> str:
         """Classify replies, server seed updates and batch updates.
 
-        Boolean replies may reject a correlated request. Their IDs are checked
-        by the session; uncorrelated replies never authenticate or credit results.
+        Rejection replies can carry a boolean or a text reason. The session
+        correlates replies by request ID before authenticating or crediting work.
         """
         if isinstance(response, Mapping) and isinstance(response.get("method"), str):
             raise UnknownWRRequest(constant_text(FixedAlias('training.validation.batch_server_method_unknown')))
@@ -180,7 +194,7 @@ class WRDialect:
                 or type(status) is not int or status not in (0, 1)):
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_response_envelope_unknown')))
         result = response.get("result")
-        if request_id >= 0 and type(result) is bool:
+        if request_id >= 0 and (type(result) is bool or (status == 0 and isinstance(result, str) and result)):
             return "reply"
         if (request_id != -1 or status != 1 or response.get("error") is not None
                 or not isinstance(result, list) or not result):

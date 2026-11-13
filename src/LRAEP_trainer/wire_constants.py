@@ -3,6 +3,8 @@
 from .fixed_constants import constant_bytes, constant_text
 from .word_codec import word_buffer
 
+WR_CAPTURED_SHAPE = (4096, 262144, 8192, 8, 16)
+
 
 def has_identity_mode_prefix(value):
     """Check the peer's unsupported identity mode without retaining its text."""

@@ -70,6 +70,11 @@ def _query_gpu_utilization(identifier):
         return None
 
 
+def busiest_gpu(monitors):
+    samples = (monitor.read() for monitor in monitors)
+    return max((sample for sample in samples if sample is not None), default=None)
+
+
 class GpuUtilization:
     """Sample the selected GPU in the background; ``read`` never invokes a tool.
 

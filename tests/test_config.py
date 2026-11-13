@@ -22,6 +22,12 @@ class ConfigTests(unittest.TestCase):
         self.path.write_text(json.dumps(value))
         return load_config(self.path)
 
+    def test_device_array_keeps_order_and_rejects_duplicates(self):
+        self.assertEqual(self.load({"version": 1, "device": ["cuda:1", 0]})["device"], [1, 0])
+        for devices in ([], [0, "cuda:0"], [True], ["cpu"]):
+            with self.subTest(devices=devices), self.assertRaisesRegex(ConfigError, "device"):
+                self.load({"version": 1, "device": devices})
+
     def test_defaults_and_empty_S3_identities_are_valid(self):
         result = self.load({"version": 1})
         self.assertEqual(result["mode"], "S3")

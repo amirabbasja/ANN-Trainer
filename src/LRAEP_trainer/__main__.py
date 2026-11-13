@@ -16,8 +16,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from .cuda_devices import resolve_cuda_devices
 from .gpu import TrainingCancelled, gpu_transcripts
 from .gpu_pacing import GpuPacer
+from .mining_devices import MiningDevice, batch_executor, run_batches
 from .effort import JobSequence, ScheduledSideJob, normalize_job_sequence
 from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_training_threshold, load_official_helpers,
@@ -25,7 +27,7 @@ from .protocol import (TrainingConfig, adjusted_training_threshold, load_officia
 from . import native_cuda
 from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
 from .progress import LiveProgress, format_elapsed, main_status
-from .telemetry import GpuUtilization
+from .telemetry import GpuUtilization, busiest_gpu
 from .telegram import TelegramUpdates
 from .job_control import JobEvents, VPNJobGuard
 from .progress import job_status
@@ -87,21 +89,27 @@ class TipWatcher:
         return self.failed or self.tip != parent
 
 
-def require_cuda(device: str) -> None:
-    if torch.device(device).type != "cuda" or not torch.cuda.is_available():
-        raise ValueError("select an available CUDA GPU, for example --device cuda:0")
-    name = torch.cuda.get_device_name(torch.device(device))
-    LOG.info("GPU: %s", name)
+def require_cuda(selection):
+    devices = resolve_cuda_devices(selection, unavailable="select an available CUDA GPU, for example --device cuda:0")
+    for device in devices:
+        LOG.info("GPU %s: %s", device, torch.cuda.get_device_name(device))
+    return devices
 
 
 def self_test(args) -> int:
     """Exercise all supported certificate versions without contacting a network."""
+    for device in require_cuda(args.device):
+        _self_test_device(device, args.zk)
+    LOG.info("Self-test passed; no network connection or block submission was made")
+    return 0
+
+
+def _self_test_device(device, zk):
     from LRAEP_trainer import primitives as pm
     from S5_base.noisy_gemm import NoisyGemm
 
-    require_cuda(args.device)
     cfg = TrainingConfig(m=128, n=128)
-    use_native = native_cuda.available(args.device)
+    use_native = native_cuda.available(device)
     # With this synthetic target and work factor, almost every tile qualifies.
     # It is used only locally and is never sent to a node.
     header = pm.IncompleteBlockHeader(
@@ -111,14 +119,14 @@ def self_test(args) -> int:
     base_training_threshold = 0x7FFFFF << (8 * (0x1E - 3))
     rng = np.random.default_rng(20261025)
     for version in (1, 2, 3):
-        batch = prepare_batch(header, version, cfg, rng, device=args.device, gpu_signals=True,
+        batch = prepare_batch(header, version, cfg, rng, device=device, gpu_signals=True,
                               native=use_native)
         if use_native:
             transcripts = native_cuda.transcripts_device(batch.a_noised, batch.b_noised_t)
             transcripts = transcripts.cpu().numpy().view(np.uint32)
         else:
             transcripts = gpu_transcripts(batch.a_noised, batch.b_noised,
-                                          cfg.tile_h, cfg.tile_w, args.device)
+                                          cfg.tile_h, cfg.tile_w, device)
         # Compare a complete k=2048 tile against the official CPU reference.
         reference = NoisyGemm(noise_rank=128, hash_tile_h=cfg.tile_h,
                               hash_tile_w=cfg.tile_w)
@@ -135,15 +143,13 @@ def self_test(args) -> int:
         if not valid:
             raise RuntimeError(f"V{version} official proof verification failed: {message}")
         LOG.info("V%d: GPU transcript matches official CPU reference; plain proof verified", version)
-        if args.zk and version == 3:
+        if zk and version == 3:
             LOG.info("Creating a local V3 ZK certificate using the official proof helper")
             zk = pm.generate_proof_for_cert_version(version, header, proof)
             valid, message = pm.verify_proof_for_cert_version(version, header, zk)
             if not valid:
                 raise RuntimeError(f"V3 ZK proof verification failed: {message}")
             LOG.info("V3 ZK proof verified (%d proof bytes)", len(zk.proof_data))
-    LOG.info("Self-test passed; no network connection or block submission was made")
-    return 0
 
 
 def train(args) -> int:
@@ -173,7 +179,7 @@ def train(args) -> int:
             # Pauses and an immediate exit must not initialize a S1 backend.
             if not schedule.wait(stopped, deadline=deadline) or finished():
                 return 0
-            require_cuda(args.device)
+            devices = require_cuda(args.device)
             if not args.address:
                 raise ValueError("set LRAEP_TRAINING_ADDRESS or provide --address (a S6 Taproot payout address)")
             username = getattr(args, "rpc_username", os.environ.get("LRAEPD_RPC_USER", ""))
@@ -181,20 +187,22 @@ def train(args) -> int:
             if not username or not password:
                 raise ValueError("set node.username and node.password in --config, or LRAEPD_RPC_USER and LRAEPD_RPC_PASSWORD")
             cfg = TrainingConfig(args.m, args.n, args.k, args.tile_h, args.tile_w)
-            pacer = GpuPacer(args.device, 100)
+            workers = [MiningDevice(device, GpuPacer(device, 100),
+                                    (cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(device))
+                       for device in devices]
+            executor = batch_executor(resources, devices)
+            side_pacer = GpuPacer(devices, 100) if len(devices) > 1 else workers[0].pacer
             progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
-            monitor = None
-            if generate_artifacts:
-                telemetry_device = torch.device(args.device)
-                if telemetry_device.index is None:
-                    telemetry_device = torch.device("cuda", torch.cuda.current_device())
-                monitor = GpuUtilization(str(telemetry_device)).start()
+            monitors = []
+            for device in devices if generate_artifacts else ():
+                monitor = GpuUtilization(str(device)).start()
                 resources.callback(monitor.close)
+                monitors.append(monitor)
             active_job = "job-0"
 
             def show_main(force=False):
                 nonlocal active_job
-                if monitor is None:
+                if not monitors:
                     return
                 events.update()
                 kind = schedule.current_job()[0]
@@ -228,14 +236,13 @@ def train(args) -> int:
                     speed = (0 if percentage <= 0 or vpn_guard.blocked() else
                              batches * cfg.m * cfg.n * cfg.k / max(0.001, now - started))
                 return job_status(number, kind,
-                                  monitor.read(), remaining, speed)
+                                  busiest_gpu(monitors), remaining, speed)
 
             updates = resources.enter_context(TelegramUpdates(side_job_configuration, telegram_snapshot))
             events = JobEvents(schedule, updates)
             resources.callback(events.finish)
             vpn_guard = resources.enter_context(VPNJobGuard(schedule, side_job_configuration, updates))
             log(logging.INFO, "GPU job sequence: %s", args.job_sequence)
-            use_native = ((cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(args.device))
             from LRAEP_gateway.blockchain_utils.blockchain_utils import get_script_pubkey_from_p2tr_address
             get_script_pubkey_from_p2tr_address(args.address)
             node_options = dict(url=args.rpc_url, username=username, password=password,
@@ -245,7 +252,6 @@ def train(args) -> int:
                                  schedule=schedule, stopped=stopped, deadline=deadline)
             watcher.vpn_guard = vpn_guard
             watcher.thread.start()
-            rng = np.random.default_rng()
             output = None
             if generate_artifacts:
                 output = Path(args.output_dir).expanduser().resolve()
@@ -270,7 +276,7 @@ def train(args) -> int:
             while not finished():
                 if not schedule.wait(stopped, deadline=deadline) or finished():
                     break
-                if side_job.run_if_active(schedule, stopped, pacer, deadline=deadline):
+                if side_job.run_if_active(schedule, stopped, side_pacer, deadline=deadline):
                     continue
                 if not vpn_guard.resume():
                     vpn_guard.wait(stopped, deadline=deadline, on_progress=show_main)
@@ -308,7 +314,6 @@ def train(args) -> int:
                             continue
                         if not vpn_guard.resume():
                             break
-                        pacer.set_utilization(percentage)
                         if previous_effort != (kind, percentage):
                             log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind, percentage)
                             previous_effort = kind, percentage
@@ -324,62 +329,62 @@ def train(args) -> int:
                                     or time.monotonic() >= boundary
                                     or schedule.current()[0] <= 0)
 
-                        pacer.begin()
-                        batch = prepare_batch(header, cert, cfg, rng, device=args.device, gpu_signals=True,
-                                              native=use_native)
-                        if cancelled():
-                            pacer.finish(cancelled=True)
-                            if not vpn_guard.check():
-                                pacer.wait(stopped, deadline=stage_deadline(boundary))
-                            continue
-                        try:
-                            matches = search_batch(batch, training_threshold, args.device, cancelled)
-                        except TrainingCancelled:
-                            pacer.finish(cancelled=True)
-                            if not vpn_guard.check():
-                                pacer.wait(stopped, deadline=stage_deadline(boundary))
-                            continue
-                        pacer.finish()
-                        batches += 1
-                        attempts += (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
-                        for row, col, _ in matches:
-                            if candidate_cancelled():
-                                break
-                            if rpc(node.best_hash) != parent or candidate_cancelled():
-                                break
-                            proof = batch.plain_proof(row, col)
-                            if candidate_cancelled():
-                                break
-                            valid, message = pm.verify_plain_proof_for_cert_version(cert, header, proof)
-                            if not valid:
-                                raise RuntimeError(f"GPU candidate rejected locally: {message}")
-                            if candidate_cancelled():
-                                break
-                            log(logging.DEBUG, "Training candidate verified; creating its ZK certificate")
-                            block_bytes = build_block(proof, template)
-                            if candidate_cancelled():
-                                break
-                            if output is not None:
-                                name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
-                                (output / f"{name}.bin").write_bytes(block_bytes)
-                                (output / f"{name}.json").write_text(json.dumps({
-                                    "height": template.height, "certificate_version": cert,
-                                    "incomplete_header_hex": bytes(header.to_bytes()).hex(),
-                                    "plain_proof_base64": proof.to_base64(),
-                                }, indent=2) + "\n")
-                            if args.no_submit:
+                        def prepare(worker):
+                            return prepare_batch(header, cert, cfg, worker.rng, device=worker.device,
+                                                 gpu_signals=True, native=worker.native)
+
+                        active_workers = workers[:args.max_batches - batches] if args.max_batches else workers
+                        for worker in active_workers:
+                            worker.pacer.set_utilization(percentage)
+                        results = run_batches(executor, active_workers, prepare, search_batch,
+                                              training_threshold, cancelled)
+                        completed = sum(outcome is not None for outcome in results)
+                        batches += completed
+                        attempts += completed * (cfg.m // cfg.tile_h) * (cfg.n // cfg.tile_w)
+                        for outcome in results:
+                            if outcome is None:
+                                continue
+                            batch, matches = outcome
+                            for row, col, _ in matches:
+                                if candidate_cancelled():
+                                    break
+                                if rpc(node.best_hash) != parent or candidate_cancelled():
+                                    break
+                                proof = batch.plain_proof(row, col)
+                                if candidate_cancelled():
+                                    break
+                                valid, message = pm.verify_plain_proof_for_cert_version(cert, header, proof)
+                                if not valid:
+                                    raise RuntimeError(f"GPU candidate rejected locally: {message}")
+                                if candidate_cancelled():
+                                    break
+                                log(logging.DEBUG, "Training candidate verified; creating its ZK certificate")
+                                block_bytes = build_block(proof, template)
+                                if candidate_cancelled():
+                                    break
                                 if output is not None:
-                                    log(logging.DEBUG, "Verified block saved to %s (submission disabled)", output / f"{name}.bin")
-                            elif rpc(node.best_hash) == parent and not candidate_cancelled():
-                                rpc(node.submit, block_bytes)
-                                accepted += 1
-                                log(logging.DEBUG, "Node accepted the training result at height %d", template.height)
-                            else:
-                                log(logging.DEBUG, "Chain advanced during certification; saved candidate is stale")
-                            break
+                                    name = f"candidate-{template.height}-{hashlib.sha256(block_bytes).hexdigest()[:16]}"
+                                    (output / f"{name}.bin").write_bytes(block_bytes)
+                                    (output / f"{name}.json").write_text(json.dumps({
+                                        "height": template.height, "certificate_version": cert,
+                                        "incomplete_header_hex": bytes(header.to_bytes()).hex(),
+                                        "plain_proof_base64": proof.to_base64(),
+                                    }, indent=2) + "\n")
+                                if args.no_submit:
+                                    if output is not None:
+                                        log(logging.DEBUG, "Verified block saved to %s (submission disabled)", output / f"{name}.bin")
+                                elif rpc(node.best_hash) == parent and not candidate_cancelled():
+                                    rpc(node.submit, block_bytes)
+                                    accepted += 1
+                                    log(logging.DEBUG, "Node accepted the training result at height %d", template.height)
+                                else:
+                                    log(logging.DEBUG, "Chain advanced during certification; saved candidate is stale")
+                                break
+                        batch = matches = results = outcome = None
                         show_main()
-                        if not finished():
-                            pacer.wait(stopped, deadline=stage_deadline(boundary))
+                        if not finished() and not vpn_guard.check():
+                            for worker in active_workers:
+                                worker.pacer.wait(stopped, deadline=stage_deadline(boundary))
                 except TrainingCancelled:
                     continue
                 except NodeError as exc:

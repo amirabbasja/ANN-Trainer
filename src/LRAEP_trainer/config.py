@@ -20,6 +20,7 @@ from .config_crypto import KEY_ENV, EncryptionError, decode_string, validate_key
 from .config_export import DEFAULT_DECRYPT_KEY, ExportError, decode_config_document, encode_config_document
 from .effort import normalize_job_sequence
 from .paths import artifacts_dir
+from .wire_constants import WR_CAPTURED_SHAPE
 from .word_codec import word_matches
 
 
@@ -140,6 +141,25 @@ def _number(value, field, *, zero=False):
         adjective = "nonnegative" if zero else "positive"
         raise ConfigError(f"{field} must be {adjective} and finite")
     return value
+
+
+def _device_selection(value):
+    if isinstance(value, str) and re.fullmatch(r"cuda(?::[0-9]+)?", value):
+        return value
+    if isinstance(value, list) and value:
+        devices = []
+        for item in value:
+            if type(item) is int and item >= 0:
+                index = item
+            elif isinstance(item, str) and re.fullmatch(r"cuda:(?:0|[1-9][0-9]{0,8})", item):
+                index = int(item[5:])
+            else:
+                raise ConfigError("device array entries must be CUDA indices or names like cuda:0")
+            devices.append(index)
+        if len(set(devices)) != len(devices):
+            raise ConfigError("device array must contain unique CUDA devices")
+        return devices
+    raise ConfigError("device must select CUDA, for example cuda:0 or [0, 1]")
 
 
 def _path(value, field, directory, *, optional=False):
@@ -479,9 +499,7 @@ def _validate_config(config, config_path) -> dict:
     mode = config.get("mode", "S3")
     if not isinstance(mode, str) or mode not in {"S3", "solo"}:
         raise ConfigError("configuration.mode must be S3 or solo")
-    device = _string(config.get("device", "cuda:0"), "device", nonempty=True)
-    if re.fullmatch(r"cuda(?::[0-9]+)?", device) is None:
-        raise ConfigError("device must select CUDA, for example cuda:0")
+    device = _device_selection(config.get("device", "cuda:0"))
     directory = config_path.parent
     official_source = _path(config.get("official_source", "src/LRAEP_helpers"),
                             "official_source", directory)
@@ -504,8 +522,10 @@ def _validate_config(config, config_path) -> dict:
         )
     except ValueError as exc:
         raise ConfigError(str(exc)) from None
-    for field in ("m", "n"):
-        _integer(training[field], f"training.{field}", 128, 4096)
+    shape = tuple(training[field] for field in ("m", "n", "k", "tile_h", "tile_w"))
+    _integer(training["m"], "training.m", 128, 4096)
+    max_n = WR_CAPTURED_SHAPE[1] if mode == "S3" and shape == WR_CAPTURED_SHAPE else 4096
+    _integer(training["n"], "training.n", 128, max_n)
     _integer(training["k"], "training.k", 2048, 65536)
     if training["k"] % 128:
         raise ConfigError("training.k must be a multiple of 128")

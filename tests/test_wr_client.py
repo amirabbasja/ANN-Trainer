@@ -1,6 +1,7 @@
 """Concurrent S7 exchange tests with an in-memory transport, no S3/GPU."""
 
 import json
+from pathlib import Path
 import queue
 import tempfile
 import threading
@@ -116,6 +117,22 @@ class WRSessionTests(unittest.TestCase):
             self.assertTrue(session.submit(snapshot, compact_share(snapshot.job)).accepted)
             self.assertEqual(transport.sent[-1]["method"], "submit")
             self.assertFalse(session.negotiated_gzip)
+
+    def test_shape_rejection_is_a_submission_reply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            records = UnknownRequestRecorder(directory, {"host": "127.0.0.1", "port": 9000, "tls": False})
+            session, transport = self.create_session(records)
+            with session:
+                snapshot = session.wait_job(1)
+                transport.after_send = lambda request: transport.feed({
+                    "id": request["id"], "status": 0, "result": "shape not allowed",
+                })
+                result = session.submit(snapshot, compact_share(snapshot.job))
+                self.assertFalse(result.accepted)
+                self.assertEqual(result.error, "shape not allowed")
+                self.assertTrue(session.is_current(snapshot))
+                self.assertFalse(session.stop_event.is_set())
+                self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_gpu_report_uses_raw_rate_and_never_waits_for_acknowledgement(self):
         session, transport = self.create_session()

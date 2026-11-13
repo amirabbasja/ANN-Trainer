@@ -217,6 +217,14 @@ CUDA context and GPU memory. Other cells wait until training finishes.
 The notebook includes the training entry point directly and does not import or
 execute `train.py`. That file remains available for separate command-line use.
 
+Set `"device": [0, 1]` in `config.json` to use two GPUs. The indices follow
+PyTorch's visible CUDA order, including `CUDA_VISIBLE_DEVICES`. A string such as
+`"cuda:0"` still selects one GPU. Pool and solo-node `job-0` search independent
+batches on the selected GPUs. The `training.max_batches` limit applies to the
+whole run. `job-1` splits a batch across the selected GPUs and saves one CNN
+checkpoint. Use a multiple of the GPU count for `side_job.batch_size` to use
+every GPU on full batches.
+
 KEX and WR share the `device`, `training`, `vpn` and `node` sections. The `pool`
 section keeps both identities and separate connection settings:
 
@@ -376,7 +384,7 @@ these periodic updates through `telegram.training_stats_tgBot_key`. Lifecycle
 events continue to use `telegram.tgBot_key` and the shared `tgChatID`.
 `update_interval_seconds` controls the training-stats interval.
 
-GPU utilization is the selected CUDA device's overall busy percentage,
+GPU utilization is the busiest selected CUDA device's overall busy percentage,
 sampled in the background using `nvidia-smi`. It shows `N/A` when unavailable.
 Normal connection, training, and error messages clear the status row before
 being logged. The row fits the terminal width to prevent wrapping. Redirected
@@ -384,8 +392,8 @@ output writes only the final status, rather than a line for every batch.
 `Ctrl+C` finishes the status row
 and stops the sampler along with the S5.
 
-For WR/S7, the client also reports the selected GPU's name and measured
-rate using `report_info`. It registers the GPU after login, updates the rate
+For WR/S7, the client also reports each selected GPU's name and measured
+rate using `report_info`. It registers the GPUs after login, updates their rates
 after the first completed batch, then about every 10 seconds during the first
 two minutes and every two minutes afterward. Each report logs the rate sent
 and its request ID at `DEBUG` so it can be compared with the dashboard.

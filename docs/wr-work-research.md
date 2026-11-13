@@ -101,8 +101,8 @@ All three independently reconstructed digests meet the exact target:
 
 The exact adjusted target has bit length 222. Using signal value 1, raw nonce
 bytes, or the opposite nonce order fails to reproduce this accepted work.
-These fixtures also exercise WR's observed noncontiguous 8-by-16 tiles;
-the trainer searches its configured contiguous tiles.
+These fixtures exercise WR's noncontiguous 8-by-16 tiles. With the captured
+shape configured, the trainer searches the same periodic tile layout.
 
 `tests/test_wr_work.py` checks native-tail agreement, all three accepted
 witnesses, full dimension binding, independent candidate verification, invalid

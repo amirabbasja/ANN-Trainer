@@ -8,6 +8,8 @@ commitment binds the complete matrix, including that extra row.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from .fixed_constants import FixedAlias, constant_text
 
 from .noise_domains import tensor_domain, noise_draw
@@ -19,11 +21,73 @@ import numpy as np
 import torch
 
 from .protocol import TrainingConfig, prepare_signal_batch
+from .wire_constants import WR_CAPTURED_SHAPE
 from .wr_protocol import WRJob, WRSubmission
 
 
 _INVALID_TRAINING_THRESHOLD = FixedAlias('training.validation.batch_acceptance_bound_range')
 _TRAINING_THRESHOLD_EXCEEDED = FixedAlias('training.validation.batch_candidate_outside_acceptance_bound')
+_ROW_OFFSETS = (0, 1, 8, 9, 64, 65, 72, 73)
+_COLUMN_OFFSETS = (0, 1, 8, 9, 32, 33, 40, 41, 64, 65, 72, 73, 96, 97, 104, 105)
+# Process one column range at a time to bound GPU scratch space.
+_COLUMN_CHUNK_SIZE = 4096
+
+
+@lru_cache(maxsize=2)
+def _pattern_starts(offsets):
+    from .primitives import PeriodicPattern
+
+    pattern = PeriodicPattern.from_list(offsets)
+    return pattern.period, tuple(index for index in range(pattern.period)
+                                 if pattern.offset_is_valid(index))
+
+
+def _tile_indices(tile, offsets):
+    period, starts = _pattern_starts(offsets)
+    block, index = divmod(tile, len(starts))
+    start = block * period + starts[index]
+    return tuple(start + offset for offset in offsets)
+
+
+class CapturedTrainingConfig(TrainingConfig):
+    _MAX_N = WR_CAPTURED_SHAPE[1]
+
+    def __post_init__(self):
+        super().__post_init__()
+        if (self.m, self.n, self.k, self.tile_h, self.tile_w) != WR_CAPTURED_SHAPE:
+            raise ValueError("Invalid dimensions for the captured S7 shape")
+
+    def official_config(self):
+        from .primitives import PeriodicPattern
+
+        config = super().official_config()
+        config.rows_pattern = PeriodicPattern.from_list(_ROW_OFFSETS)
+        config.cols_pattern = PeriodicPattern.from_list(_COLUMN_OFFSETS)
+        return config
+
+
+def compute_captured_batch(batch, training_threshold, device, cancelled):
+    from . import native_cuda
+    from .gpu import TrainingCancelled
+
+    cfg = batch.config
+    # Gather the periodic tiles into the contiguous layout expected by DP4A.
+    rows = [index for tile in range(cfg.m // cfg.tile_h)
+            for index in _tile_indices(tile, _ROW_OFFSETS)]
+    a = batch.a_noised.index_select(0, torch.tensor(rows, device=device))
+    matches = []
+    for start in range(0, cfg.n, _COLUMN_CHUNK_SIZE):
+        if cancelled():
+            raise TrainingCancelled("training job cancelled")
+        first_tile = start // cfg.tile_w
+        stop = min(start + _COLUMN_CHUNK_SIZE, cfg.n)
+        cols = [index for tile in range(first_tile, stop // cfg.tile_w)
+                for index in _tile_indices(tile, _COLUMN_OFFSETS)]
+        bt = batch.b_noised_t.index_select(0, torch.tensor(cols, device=device))
+        transcripts = native_cuda.transcripts_device(a, bt, tile_w=cfg.tile_w)
+        candidates = native_cuda.hash_candidates(transcripts, batch.commitment.noise_seed_A, training_threshold)
+        matches.extend((row, col + first_tile, digest) for row, col, digest in candidates)
+    return matches
 
 
 def signal_base():
@@ -126,8 +190,7 @@ def reconstruct_wr_digest(header_bytes: bytes, batch_result: WRSubmission) -> by
     """Independently rebuild a compact witness and compute its CPU tile digest.
 
     This path never trusts GPU signals, roots, noise buffers, or the candidate
-    digest. It also permits inspecting captured noncontiguous WR tiles
-    while the trainer searches its configured contiguous tiles.
+    digest. It supports both periodic and contiguous tiles.
     """
     _validate_submission(batch_result)
     if not isinstance(header_bytes, bytes) or len(header_bytes) != 76:
@@ -178,12 +241,17 @@ def verified_wr_submission(batch, row: int, col: int, gpu_digest: bytes,
         raise ValueError(constant_text(FixedAlias('training.validation.batch_candidate_digest_length')))
     if type(training_threshold) is not int or not 0 < training_threshold < 1 << 256:
         raise ValueError(constant_text(_INVALID_TRAINING_THRESHOLD))
+    if isinstance(training_config, CapturedTrainingConfig):
+        a_rows = _tile_indices(row, _ROW_OFFSETS)
+        b_cols = _tile_indices(col, _COLUMN_OFFSETS)
+    else:
+        a_rows = tuple(range(row * training_config.tile_h, (row + 1) * training_config.tile_h))
+        b_cols = tuple(range(col * training_config.tile_w, (col + 1) * training_config.tile_w))
     batch_result = WRSubmission(
         local_seed=batch.local_seed, device_seed=batch.device_seed,
         m=training_config.m + 1, n=training_config.n, k=training_config.k, rank=128,
         tile_h=training_config.tile_h, tile_w=training_config.tile_w,
-        a_rows=tuple(range(row * training_config.tile_h, (row + 1) * training_config.tile_h)),
-        b_cols=tuple(range(col * training_config.tile_w, (col + 1) * training_config.tile_w)),
+        a_rows=a_rows, b_cols=b_cols,
     )
     digest = reconstruct_wr_digest(batch.header_bytes, batch_result)
     if digest != gpu_digest:

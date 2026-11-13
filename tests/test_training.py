@@ -70,7 +70,12 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.stack.enter_context(patch.dict("os.environ", {
             "LRAEPD_RPC_USER": "test-user", "LRAEPD_RPC_PASSWORD": "test-password",
         }))
-        self.cuda = self.stack.enter_context(patch.object(cli, "require_cuda"))
+        self.cuda = self.stack.enter_context(
+            patch.object(cli, "require_cuda", side_effect=lambda selection: (
+                cli.torch.device("cuda", cli.torch.cuda.current_device())
+                if selection == "cuda" else cli.torch.device(selection),
+            ))
+        )
         self.progress = self.stack.enter_context(patch.object(cli, "LiveProgress"))
         self.monitor = self.stack.enter_context(patch.object(cli, "GpuUtilization"))
         self.monitor.return_value.start.return_value.read.return_value = 42
@@ -103,6 +108,18 @@ class TrainingControlFlowTests(unittest.TestCase):
         self.assertEqual(metadata["certificate_version"], 3)
         self.assertEqual(metadata["plain_proof_base64"], self.proof.to_base64.return_value)
         self.assertEqual(metadata["incomplete_header_hex"], b"incomplete-header".hex())
+
+    def test_solo_batch_limit_is_shared_by_selected_devices(self):
+        self.args.device = [1, 0]
+        self.args.max_batches = 3
+        self.cuda.side_effect = None
+        self.cuda.return_value = (cli.torch.device("cuda:1"), cli.torch.device("cuda:0"))
+        self.search.side_effect = lambda *_: iter(())
+        self.assertEqual(cli.train(self.args), 0)
+        devices = [item.args[2].index for item in self.search.call_args_list]
+        self.assertCountEqual(devices, [1, 0, 1])
+        self.assertEqual(devices[-1], 1)
+        self.node.submit.assert_not_called()
 
     def test_last_allowed_batch_still_certifies_and_submits_completed_candidate(self):
         self.assertEqual(cli.train(self.args), 0)
@@ -362,7 +379,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 patch.object(cli.torch.cuda, "synchronize") as synchronize:
             self.assertEqual(cli.train(self.args), 0)
-        synchronize.assert_called_once_with(self.args.device)
+        synchronize.assert_called_once_with(cli.torch.device(self.args.device))
         self.search.assert_not_called()
         self.node.submit.assert_not_called()
 
@@ -379,7 +396,7 @@ class TrainingControlFlowTests(unittest.TestCase):
         with patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 patch.object(cli.torch.cuda, "synchronize") as synchronize:
             self.assertEqual(cli.train(self.args), 0)
-        synchronize.assert_called_once_with(self.args.device)
+        synchronize.assert_called_once_with(cli.torch.device(self.args.device))
         self.verify.assert_not_called()
         self.node.submit.assert_not_called()
         self.watcher.thread.join.assert_called_once()
