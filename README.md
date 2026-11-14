@@ -26,17 +26,18 @@ update model weights, or run a model optimizer. Supplying useful model work
 would require an additional model integration.
 
 The shared trainer now includes a separate [CNN side-job](side-job/README.md)
-for Tibetan page orientation. It runs during `job-1` schedule intervals or with
+for Tibetan page orientation. It runs during `job-1` and `job-2` schedule intervals or with
 `.venv/bin/python side-job/train.py`. Its `side_job` config section controls
 the dataset, layer sizes and independent VPN (disabled by default). All its data
 and checkpoints live under `data/side-job/`.
 
 ## Plain source configuration and WR export
 
-Set `training.generate_artifacts` to `false` for training without local output,
-terminal logs, or Telegram updates. Candidate files, unknown-request captures,
-and CNN checkpoints are skipped. The CNN reads dataset shards in memory, and
-native backends reuse existing libraries or use their reference implementations.
+Set `training.generate_artifacts` to `false` to skip local output files and
+terminal logs. The live status is still visible in Jupyter. Candidate files,
+unknown-request captures, and CNN checkpoints are skipped. The CNN reads dataset
+shards in memory, and native backends reuse existing libraries or use their
+reference implementations.
 The default is `true`. For the installed `LRAEP` command or `python -m LRAEP_trainer`,
 set `PYTHONDONTWRITEBYTECODE=1` to suppress Python bytecode during startup as well.
 
@@ -61,7 +62,8 @@ The interval is a positive number of seconds; the first update arrives after
 one interval. Reports contain elapsed time, completed batches, GPU utilization,
 average hashrate and share counters. Solo reports contain batches, attempts and
 accepted blocks. Updates continue during pool reconnects and schedule pauses.
-`telegram.enabled: false` disables reporting, as does omitting the section.
+Telegram reporting follows the `telegram` section even when local artifacts
+are disabled. Set `telegram.enabled` to `false` or omit the section to disable it.
 Connection and login checks do not send updates.
 
 Delivery uses the [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
@@ -184,9 +186,9 @@ readable. Only `S_3` is encrypted. Its default decryption key is `qwe`, and
 startup never reads a `.env` file. The standalone source has no dataset URL
 default; an active CNN interval requires `side_job.repo_url` in the config.
 
-Both trainers compute during `job-0` intervals and train the CNN during `job-1`
-intervals, preserving model, optimizer, and partial epoch state between them.
-Use an interval percentage of `100` to disable intentional GPU pacing.
+Both trainers support mining, CNN training, and concurrent mining and CNN
+training in the same schedule. CNN model, optimizer, and partial epoch state
+carry over between intervals.
 Standalone checkpoints live in `LRAEP-WR-Trainer/data/side-job/`; see the linked
 worker guide for checkpoint transfer and restart behavior.
 
@@ -317,25 +319,33 @@ contain exactly `title`, `time`, and `max_gpu_utilization`:
   "job_sequence": [
     {"title": "job-0", "time": 60, "max_gpu_utilization": 80},
     {"title": "job-1", "time": 30, "max_gpu_utilization": 20},
+    {"title": "job-2", "time": 60, "max_gpu_utilization": 80},
     {"title": "job-0", "time": 10, "max_gpu_utilization": 0},
     {"title": "job-0", "time": 0, "max_gpu_utilization": -1}
   ]
 }
 ```
 
-`job-0` runs the primary computation; `job-1` trains the page-orientation CNN.
-`time` is a positive, finite number of seconds; an exit entry may use zero.
-`max_gpu_utilization` must be an integer from `-1` to `100`. Values `1`–`99`
-set the GPU duty-cycle target, `100` runs without intentional pacing, `0`
-pauses for that interval, and `-1` exits when the entry begins. There is no
-tolerance or randomized target. Array entries and extra fields are rejected.
+- `job-0` runs mining only. It computes and verifies proof-of-work batches
+  for the configured pool or solo node using the full interval target.
+- `job-1` trains the Tibetan page-orientation CNN only. It uses the full
+  interval target and resumes the current epoch when scheduled again.
+- `job-2` runs both concurrently on the selected GPUs. Each workload gets half
+  the interval target. For example, `80` gives mining and CNN training a 40%
+  duty-cycle target each. If either workload is waiting for data or the CNN
+  reaches its epoch limit, the other keeps its assigned target. Both
+  workloads must fit in GPU memory at the same time.
 
-The example runs job-0 at 80% for one minute, job-1 at 20% for 30 seconds,
-pauses for ten seconds, then exits. Without an exit entry, the sequence repeats
-from the beginning. Both jobs share one monotonic wall-clock timeline and the
-same pause, stop, and duration rules. Model and partial epoch state survive
-job switches. The default schedule runs job-0 for 60 seconds at 80%, 120
-seconds at 70%, and 180 seconds at 10%, then repeats.
+`time` is a positive, finite number of seconds. An exit entry may use zero.
+`max_gpu_utilization` must be an integer from `-1` to `100`. Values `1`–`99`
+set the GPU duty-cycle target. At `100`, a single workload runs without pacing
+and `job-2` gives each workload 50%. Use `0` to pause for that interval and `-1`
+to exit when the entry begins. Array entries and extra fields are rejected.
+
+The example mines at 80% for one minute, trains the CNN at 20% for 30 seconds,
+runs both at 40% each for one minute, pauses for ten seconds, then exits. The
+sequence repeats if it has no exit entry. The default schedule runs job-0 for
+60 seconds at 80%, 120 seconds at 70%, and 180 seconds at 10%, then repeats.
 
 The config manager saves edits directly to the standalone directory:
 
@@ -350,10 +360,10 @@ GPU work is paced between batches. The standalone CNN additionally paces
 between CUDA operations during forward, backward, and optimizer work. Fresh
 hardware readings above the configured `max_gpu_utilization` delay new WR
 work until the sample falls to that value or the interval ends. There is no
-additional utilization margin. Missing or stale readings use time-based pacing;
-`100` bypasses intentional pacing. An in-flight operation can finish after a
-schedule boundary, and measured device-wide utilization can briefly exceed
-the configured target.
+additional utilization margin. Missing or stale readings use time-based pacing.
+`job-2` paces the workloads independently by time because hardware readings
+measure the entire GPU. Batch size, network waits, and kernel overlap can affect
+the actual split. An in-flight operation can finish after a schedule boundary.
 
 A legacy `training.max_gpu_utilization` value still supplies a repeating
 job-0 dictionary when `job_sequence` is absent. The CLI accepts the same JSON
@@ -369,18 +379,20 @@ computation stage finishes that stage before stopping. `training.max_batches`
 stops the next GPU batch while allowing valid results from the completed batch
 to be submitted. `Ctrl+C` stops the session and closes its connection.
 
-Both jobs use the same compact status row in the terminal and periodic
+All three jobs use the same compact status row in the terminal and periodic
 Telegram training stats:
 
 ```text
-1 | job-0 | 80% | 00:01:00 | 123.45
-2 | job-1 | 50% | 00:00:30 | 4
+my-trainer | 1 | job-0 | 80% | 00:01:00 | 123.45
+my-trainer | 2 | job-1 | 50% | 00:00:30 | 4
+my-trainer | 3 | job-2 | 76% | 00:01:00 | 123.45 mining, CNN epoch 4
 ```
 
-The fields are the cumulative interval number, job title, measured GPU
-utilization, remaining interval time, and speed. Job-0 speed is the compute
-rate without a unit; job-1 speed is the current epoch number. Telegram sends
-these periodic updates through `telegram.training_stats_tgBot_key`. Lifecycle
+The fields are `trainer_name`, cumulative interval number, job title, measured
+GPU utilization, remaining interval time, and speed. Job-0 speed is the compute
+rate without a unit. Job-1 shows the current epoch number and job-2 shows
+both values. Telegram sends periodic updates through
+`telegram.training_stats_tgBot_key`. Lifecycle
 events continue to use `telegram.tgBot_key` and the shared `tgChatID`.
 `update_interval_seconds` controls the training-stats interval.
 

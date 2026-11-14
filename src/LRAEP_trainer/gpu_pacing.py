@@ -18,14 +18,19 @@ class GpuPacer:
         self._started = None
         self._deadline = None
         self.max_utilization = None
+        self.shared_gpu = False
         self.set_utilization(max_utilization)
 
-    def set_utilization(self, percentage):
+    def set_utilization(self, percentage, *, shared=False):
         """Apply the current schedule interval and discard a previous rest."""
-        if type(percentage) is not int or not 1 <= percentage <= 100:
+        if shared:
+            if type(percentage) not in (int, float) or not 0.5 <= percentage <= 50:
+                raise ValueError("shared GPU utilization must be between 0.5 and 50")
+        elif type(percentage) is not int or not 1 <= percentage <= 100:
             raise ValueError("GPU utilization must be an integer between 1 and 100")
-        if percentage != self.max_utilization:
+        if percentage != self.max_utilization or shared != self.shared_gpu:
             self.max_utilization = percentage
+            self.shared_gpu = shared
             self._started = None
             self._deadline = None
 
@@ -48,7 +53,10 @@ class GpuPacer:
 
     def _synchronize(self):
         for device in self.devices:
-            torch.cuda.synchronize(device)
+            if self.shared_gpu:
+                torch.cuda.current_stream(device).synchronize()
+            else:
+                torch.cuda.synchronize(device)
 
     def wait(self, stopped, *, deadline=None):
         if self._deadline is None:

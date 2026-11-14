@@ -21,8 +21,8 @@ from .cuda_devices import resolve_cuda_devices
 from .gpu import TrainingCancelled as TrainingCancelled
 from .gpu_pacing import GpuPacer
 from .mining_devices import MiningDevice, batch_executor, run_batches
-from .effort import JobSequence, ScheduledSideJob
-from .progress import LiveProgress, format_elapsed, main_status
+from .effort import JobSequence, MINING_JOBS, ScheduledSideJob
+from .progress import LiveProgress, format_elapsed, in_notebook, main_status
 from .protocol import (TrainingConfig, load_official_helpers, S3_training_threshold,
                        prepare_batch, search_batch, verified_S3_submission)
 from .telemetry import GpuUtilization, busiest_gpu
@@ -234,7 +234,10 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
     stats = S3TrainingStats()
     limit = settings["max_seconds"]
     max_batches = settings["max_batches"]
-    side_pacer = GpuPacer(devices, 100) if len(devices) > 1 else workers[0].pacer if workers else None
+    side_pacer = None
+    if workers:
+        side_pacer = (GpuPacer(devices, 100) if len(devices) > 1 or effort.has_mixed_job
+                      else workers[0].pacer)
     deadline = started + limit if limit else None
 
     def expired():
@@ -246,9 +249,13 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
     with ExitStack() as resources:
         executor = batch_executor(resources, devices)
-        progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
+        show_progress = generate_artifacts or in_notebook()
+        progress = resources.enter_context(LiveProgress(
+            enabled=show_progress, trainer_name=configuration.get("trainer_name", "trainer"),
+        ))
+        telegram_enabled = configuration.get("telegram", {}).get("enabled", False)
         monitors = []
-        for device in devices if generate_artifacts else ():
+        for device in devices if show_progress or telegram_enabled else ():
             monitor = GpuUtilization(str(device)).start()
             resources.callback(monitor.close)
             monitors.append(monitor)
@@ -260,22 +267,23 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
         side_job = (ScheduledSideJob(configuration, before_log=progress.clear, on_progress=show_side_job)
                  if not login_only else None)
-        if side_job is not None:
-            resources.callback(side_job.close)
 
         def telegram_snapshot():
             now = time.monotonic()
             number, kind, percentage, boundary = effort.position(now)
             remaining = (0 if percentage == -1 else
                          max(0, (boundary if deadline is None else min(boundary, deadline)) - now))
-            if kind == "job-1":
+            cnn_epoch = 0
+            if kind in ("job-1", "job-2"):
                 job = side_job.job if side_job is not None else None
-                speed = getattr(job, "_progress_epoch", 0) if job is not None else 0
+                cnn_epoch = getattr(job, "_progress_epoch", 0)
+            if kind == "job-1":
+                speed = cnn_epoch
             else:
                 speed = (0 if percentage <= 0 or (vpn_guard is not None and vpn_guard.blocked())
                          else S3_training_rate(stats, cfg, now - started))
             return job_status(number, kind,
-                              busiest_gpu(monitors), remaining, speed)
+                              busiest_gpu(monitors), remaining, speed, cnn_epoch=cnn_epoch)
 
         updates = None
         events = None
@@ -288,9 +296,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
         def update_progress(force=False):
             nonlocal active_job
-            if monitors:
-                if events is not None:
-                    events.update()
+            if events is not None:
+                events.update()
+            if show_progress and monitors:
                 kind = effort.current_job()[0]
                 force = force or active_job != kind
                 active_job = kind
@@ -312,6 +320,12 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                 format_training_rate(rate), request_id)
 
         update_progress(force=True)
+        if not login_only:
+            progress.start_refresh(telegram_snapshot)
+        if side_job is not None:
+            resources.callback(side_job.close)
+            if effort.has_mixed_job:
+                side_job.start_concurrent(effort, stopped, devices, side_pacer, deadline=deadline)
         while not finished():
             if effort is not None and not effort.wait(stopped, deadline=deadline):
                 break
@@ -323,7 +337,11 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
             session = None
             retry_delay = None
             wait_for_vpn = False
-            session_boundary = effort.current_job()[2] if effort is not None else None
+            session_boundary = None
+            if effort is not None:
+                kind, percentage, session_boundary = effort.current_job()
+                if kind not in MINING_JOBS or percentage <= 0:
+                    continue
             try:
                 session_settings = dict(S3)
                 connect_deadline = deadline
@@ -331,8 +349,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                     connect_deadline = (effort.exit_deadline if connect_deadline is None else
                                         min(connect_deadline, effort.exit_deadline))
                 if effort is not None:
-                    boundary = effort.current_job()[2]
-                    connect_deadline = boundary if connect_deadline is None else min(boundary, connect_deadline)
+                    connect_deadline = (session_boundary if connect_deadline is None else
+                                        min(session_boundary, connect_deadline))
                 if connect_deadline is not None:
                     remaining = max(0.001, connect_deadline - time.monotonic())
                     session_settings["connect_timeout"] = min(S3["connect_timeout"], remaining)
@@ -360,7 +378,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                             break
                         if effort is not None:
                             kind, utilization, boundary = effort.current_job()
-                            if boundary != session_boundary or kind != "job-0" or utilization <= 0:
+                            if boundary != session_boundary or kind not in MINING_JOBS or utilization <= 0:
                                 break
                         update_progress()
                         wait_after_batch = False
@@ -388,8 +406,12 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                                 return 0
 
                             kind, utilization, boundary = effort.current_job()
-                            if kind != "job-0" or utilization <= 0 or expired():
+                            if (boundary != session_boundary or kind not in MINING_JOBS
+                                    or utilization <= 0 or expired()):
                                 continue
+                            shared = kind == "job-2"
+                            if shared:
+                                utilization /= 2
                             if previous_effort != (kind, utilization):
                                 log(logging.INFO, constant_text(FixedAlias('training.log.accelerator_duty_cycle')),
                                     kind, utilization)
@@ -406,7 +428,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
 
                             active_workers = workers[:max_batches - stats.batches] if max_batches else workers
                             for worker in active_workers:
-                                if worker.pacer.max_utilization != utilization:
+                                if shared:
+                                    worker.pacer.set_utilization(utilization, shared=True)
+                                elif worker.pacer.max_utilization != utilization or effort.has_mixed_job:
                                     worker.pacer.set_utilization(utilization)
                             results = run_batches(executor, active_workers, prepare, search,
                                                   training_threshold, cancelled)
@@ -505,6 +529,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                 delay = S3["reconnect_delay"]
                 if limit > 0:
                     delay = min(delay, max(0, limit - (time.monotonic() - started)))
+                if session_boundary is not None:
+                    delay = min(delay, max(0, session_boundary - time.monotonic()))
                 retry_delay = delay
             finally:
                 if vpn_guard is not None:

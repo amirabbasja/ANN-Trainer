@@ -2,8 +2,9 @@
 
 import io
 import os
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from LRAEP_trainer.progress import LiveProgress, job_status
 
@@ -95,6 +96,24 @@ class ProgressTests(unittest.TestCase):
                 progress.update("running")
                 raise RuntimeError("failure")
         self.assertTrue(stream.getvalue().endswith("running\n"))
+
+    def test_notebook_refresh_replaces_a_named_status_while_training_waits(self):
+        refreshed = threading.Event()
+        texts = iter(["1 | job-0 | N/A | 00:01:59 | 0", "1 | job-0 | 42% | 00:01:58 | 0"])
+        snapshot = Mock(side_effect=lambda: next(texts, "1 | job-0 | 42% | 00:01:58 | 0"))
+        publisher = Mock()
+        publisher.display.side_effect = lambda data, **_: refreshed.set() if "42%" in data["text/plain"] else None
+        with patch("LRAEP_trainer.progress.in_notebook", return_value=True), \
+                patch.dict("sys.modules", {"IPython.display": publisher}):
+            with LiveProgress(interval=0.01, trainer_name="test trainer") as progress:
+                progress.start_refresh(snapshot)
+                self.assertTrue(refreshed.wait(2))
+
+        self.assertEqual(publisher.mock_calls, [
+            call.display({"text/plain": "test trainer | 1 | job-0 | N/A | 00:01:59 | 0"}, raw=True),
+            call.clear_output(wait=True),
+            call.display({"text/plain": "test trainer | 1 | job-0 | 42% | 00:01:58 | 0"}, raw=True),
+        ])
 
     def test_no_updates_means_no_output(self):
         stream = TerminalStream()

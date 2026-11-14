@@ -379,7 +379,7 @@ class SideJob:
 def main(argv=None):
     from .config import load_config
     from .paths import default_config_path
-    from .progress import LiveProgress, job_status
+    from .progress import LiveProgress, in_notebook, job_status
     from .telemetry import GpuUtilization, busiest_gpu
     from .telegram import TelegramUpdates
 
@@ -400,9 +400,14 @@ def main(argv=None):
                 config["side_job"]["epochs"] = args.epochs
             torch.set_num_threads(min(4, os.cpu_count() or 1))
             with ExitStack() as resources:
-                progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
+                show_progress = generate_artifacts or in_notebook()
+                progress = resources.enter_context(LiveProgress(
+                    enabled=show_progress, trainer_name=config.get("trainer_name", "trainer"),
+                ))
                 job = SideJob(config, before_log=progress.clear)
-                if generate_artifacts:
+                telegram_enabled = config.get("telegram", {}).get("enabled", False)
+                monitors = []
+                if show_progress or telegram_enabled:
                     selection = config["device"]
                     if isinstance(selection, list):
                         telemetry_devices = resolve_cuda_devices(selection, unavailable="job-1 requires an available CUDA GPU")
@@ -412,17 +417,19 @@ def main(argv=None):
                                              torch.device("cuda", torch.cuda.current_device()),)
                     monitors = [resources.enter_context(GpuUtilization(str(device))) for device in telemetry_devices]
 
-                    def snapshot():
-                        return job_status(1, "job-1", busiest_gpu(monitors), None, job._progress_epoch)
+                def snapshot():
+                    return job_status(1, "job-1", busiest_gpu(monitors), None, job._progress_epoch)
 
-                    updates = resources.enter_context(TelegramUpdates(config, snapshot))
-                    updates.event("Job 1 job-1 starting")
-                    resources.callback(updates.event, "Job 1 job-1 finished")
+                updates = resources.enter_context(TelegramUpdates(config, snapshot))
+                updates.event("Job 1 job-1 starting")
+                resources.callback(updates.event, "Job 1 job-1 finished")
+                if show_progress:
                     progress.update(snapshot(), force=True)
+                progress.start_refresh(snapshot)
                 while job.step():
-                    if generate_artifacts:
+                    if show_progress:
                         progress.update(snapshot())
-                if generate_artifacts:
+                if show_progress:
                     progress.update(snapshot(), force=True)
             return 0
         except KeyboardInterrupt:

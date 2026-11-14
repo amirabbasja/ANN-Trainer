@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from LRAEP_trainer.config import ConfigError, DEFAULT_CONFIG, load_config, save_config
 from LRAEP_trainer.network import SocksProxy, routed
 from LRAEP_trainer.telegram import TelegramUpdates
+from LRAEP_trainer.training_artifacts import training_output
 
 
 def configuration():
@@ -108,8 +109,9 @@ class TelegramUpdatesTests(unittest.TestCase):
             self.assertEqual(request.full_url,
                              "https://api.telegram.org/bot456:PRIVATE_TRAINING_STATS_TOKEN/sendMessage")
             self.assertEqual(json.loads(request.data), {
-                "chat_id": -12345, "text": ['1 | job-0 | 80% | 00:01:00 | 123.45',
-                                           '2 | job-1 | 50% | 00:00:30 | 4'][index - 1],
+                "chat_id": -12345,
+                "text": ['test trainer Ω | 1 | job-0 | 80% | 00:01:00 | 123.45',
+                         'test trainer Ω | 2 | job-1 | 50% | 00:00:30 | 4'][index - 1],
             })
             self.assertEqual(call.kwargs["timeout"], 5.0)
 
@@ -261,7 +263,8 @@ class TelegramUpdatesTests(unittest.TestCase):
                 updates._request(self.opener, "123:test", "Job finished")
         self.opener.open.assert_not_called()
 
-    def test_network_work_runs_in_background_and_close_stops_reports(self):
+    def test_periodic_reporting_runs_without_artifacts_and_stops_on_close(self):
+        self.config["training"]["generate_artifacts"] = False
         self.config["telegram"]["update_interval_seconds"] = 0.01
         sent = threading.Event()
         threads = []
@@ -272,7 +275,8 @@ class TelegramUpdatesTests(unittest.TestCase):
             sent.set()
             return "Step 1"
 
-        with patch("LRAEP_trainer.telegram.http_opener", return_value=self.opener):
+        with training_output(False), \
+                patch("LRAEP_trainer.telegram.http_opener", return_value=self.opener):
             updates = TelegramUpdates(self.config, snapshot).start()
             try:
                 self.assertTrue(sent.wait(1))
@@ -280,6 +284,7 @@ class TelegramUpdatesTests(unittest.TestCase):
                 updates.close()
             self.assertFalse(updates._thread.is_alive())
         self.assertTrue(all(thread != caller for thread in threads))
+        self.opener.open.assert_called()
 
 
 if __name__ == "__main__":

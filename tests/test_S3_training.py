@@ -231,7 +231,8 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(devices[-1], 1)
         self.session.submit.assert_not_called()
 
-    def test_telegram_uses_config_and_completed_work_and_closes_with_training(self):
+    def test_telegram_reports_job_events_and_completed_work_without_artifacts(self):
+        self.configuration["training"]["generate_artifacts"] = False
         self.configuration["trainer_name"] = "configured trainer"
         self.configuration["telegram"].update(
             enabled=True, tgBot_key="123:TEST_TOKEN", tgChatID=123,
@@ -251,6 +252,49 @@ class S3LoopTests(unittest.TestCase):
         self.assertEqual(len(fields), 5)
         updates.return_value.__enter__.assert_called_once()
         updates.return_value.__exit__.assert_called_once()
+        self.assertEqual(
+            [entry.args[0] for entry in updates.return_value.__enter__.return_value.event.call_args_list],
+            ["Job 1 job-0 starting", "Job 1 job-0 finished"],
+        )
+        self.progress.return_value.__enter__.return_value.update.assert_not_called()
+
+    def test_mixed_job_runs_cnn_and_mining_concurrently_at_half_target(self):
+        self.configuration["training"]["job_sequence"] = [
+            {"title": "job-2", "time": 60, "max_gpu_utilization": 81},
+        ]
+        rendezvous = threading.Barrier(2)
+        mining_thread = threading.get_ident()
+        cnn_threads = []
+
+        def cnn_step(**_):
+            cnn_threads.append(threading.get_ident())
+            rendezvous.wait(timeout=5)
+            return False
+
+        def search(*_args, **_kwargs):
+            self.assertEqual(threading.get_ident(), mining_thread)
+            rendezvous.wait(timeout=5)
+            return iter([(0, 0, bytes(32))])
+
+        self.search.side_effect = search
+        with patch("LRAEP_trainer.side_job.SideJob") as cnn, \
+                patch.object(worker.torch.cuda, "Stream"), \
+                patch.object(worker.torch.cuda, "stream", side_effect=lambda _: ExitStack()), \
+                patch.object(worker, "GpuPacer") as pacer:
+            mining_pacer, cnn_pacer = MagicMock(), MagicMock()
+            pacer.side_effect = [mining_pacer, cnn_pacer]
+            cnn.return_value.step.side_effect = cnn_step
+            cnn.return_value.close.side_effect = lambda: cnn_threads.append(threading.get_ident())
+            self.assertEqual(worker.run_S3_training(self.configuration), 0)
+
+        mining_pacer.set_utilization.assert_called_once_with(40.5, shared=True)
+        cnn_pacer.set_utilization.assert_called_once_with(40.5, shared=True)
+        self.assertEqual(len(cnn_threads), 2)
+        self.assertEqual(cnn_threads[0], cnn_threads[1])
+        self.assertNotEqual(cnn_threads[0], mining_thread)
+        self.session.submit.assert_called_once()
+        progress = self.progress.return_value.__enter__.return_value
+        self.assertTrue(any(" | job-2 | " in entry.args[0] for entry in progress.update.call_args_list))
 
     def test_login_check_does_not_start_telegram(self):
         self.configuration["telegram"].update(

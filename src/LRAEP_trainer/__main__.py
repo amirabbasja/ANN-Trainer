@@ -20,13 +20,13 @@ from .cuda_devices import resolve_cuda_devices
 from .gpu import TrainingCancelled, gpu_transcripts
 from .gpu_pacing import GpuPacer
 from .mining_devices import MiningDevice, batch_executor, run_batches
-from .effort import JobSequence, ScheduledSideJob, normalize_job_sequence
+from .effort import JobSequence, MINING_JOBS, ScheduledSideJob, normalize_job_sequence
 from .node import NodeClient, NodeError, build_block
 from .protocol import (TrainingConfig, adjusted_training_threshold, load_official_helpers,
                        matching_tiles, prepare_batch, search_batch)
 from . import native_cuda
 from .paths import DEFAULT_SOURCE, artifacts_dir, default_config_path
-from .progress import LiveProgress, format_elapsed, main_status
+from .progress import LiveProgress, format_elapsed, in_notebook, main_status
 from .telemetry import GpuUtilization, busiest_gpu
 from .telegram import TelegramUpdates
 from .job_control import JobEvents, VPNJobGuard
@@ -59,7 +59,7 @@ class TipWatcher:
                 if not self.schedule.wait(self.stopped, deadline=self.deadline):
                     break
                 kind, percentage, boundary = self.schedule.current_job()
-                if kind != "job-0":
+                if kind not in MINING_JOBS:
                     until = boundary if self.deadline is None else min(boundary, self.deadline)
                     self.stopped.wait(min(threading.TIMEOUT_MAX, max(0, until - time.monotonic())))
                     continue
@@ -191,10 +191,15 @@ def train(args) -> int:
                                     (cfg.tile_h, cfg.tile_w) == (8, 8) and native_cuda.available(device))
                        for device in devices]
             executor = batch_executor(resources, devices)
-            side_pacer = GpuPacer(devices, 100) if len(devices) > 1 else workers[0].pacer
-            progress = resources.enter_context(LiveProgress(enabled=generate_artifacts))
+            side_pacer = (GpuPacer(devices, 100) if len(devices) > 1 or schedule.has_mixed_job
+                          else workers[0].pacer)
+            show_progress = generate_artifacts or in_notebook()
+            progress = resources.enter_context(LiveProgress(
+                enabled=show_progress, trainer_name=(side_job_configuration or {}).get("trainer_name", "trainer"),
+            ))
+            telegram_enabled = (side_job_configuration or {}).get("telegram", {}).get("enabled", False)
             monitors = []
-            for device in devices if generate_artifacts else ():
+            for device in devices if show_progress or telegram_enabled else ():
                 monitor = GpuUtilization(str(device)).start()
                 resources.callback(monitor.close)
                 monitors.append(monitor)
@@ -202,9 +207,9 @@ def train(args) -> int:
 
             def show_main(force=False):
                 nonlocal active_job
-                if not monitors:
-                    return
                 events.update()
+                if not show_progress:
+                    return
                 kind = schedule.current_job()[0]
                 force = force or active_job != kind
                 active_job = kind
@@ -230,13 +235,14 @@ def train(args) -> int:
                 number, kind, percentage, boundary = schedule.position(now)
                 remaining = (0 if percentage == -1 else
                              max(0, (boundary if deadline is None else min(boundary, deadline)) - now))
+                cnn_epoch = getattr(side_job.job, "_progress_epoch", 0)
                 if kind == "job-1":
-                    speed = getattr(side_job.job, "_progress_epoch", 0) if side_job.job is not None else 0
+                    speed = cnn_epoch
                 else:
                     speed = (0 if percentage <= 0 or vpn_guard.blocked() else
                              batches * cfg.m * cfg.n * cfg.k / max(0.001, now - started))
                 return job_status(number, kind,
-                                  busiest_gpu(monitors), remaining, speed)
+                                  busiest_gpu(monitors), remaining, speed, cnn_epoch=cnn_epoch)
 
             updates = resources.enter_context(TelegramUpdates(side_job_configuration, telegram_snapshot))
             events = JobEvents(schedule, updates)
@@ -264,13 +270,17 @@ def train(args) -> int:
                 # Existing requests remain synchronous and bounded by the next
                 # effort boundary, rather than continuing in detached threads.
                 kind, percentage, boundary = schedule.current_job()
-                if stopped.is_set() or kind != "job-0" or percentage <= 0 or vpn_guard.check():
+                if stopped.is_set() or kind not in MINING_JOBS or percentage <= 0 or vpn_guard.check():
                     raise TrainingCancelled("GPU effort is paused or stopped")
                 remaining = stage_deadline(boundary) - time.monotonic()
                 if remaining <= 0:
                     raise TrainingCancelled("GPU effort interval ended")
                 node.timeout = min(args.rpc_timeout, max(0.001, remaining))
                 return method(*values)
+
+            progress.start_refresh(telegram_snapshot)
+            if schedule.has_mixed_job:
+                side_job.start_concurrent(schedule, stopped, devices, side_pacer, deadline=deadline)
 
             previous_effort = None
             while not finished():
@@ -308,14 +318,17 @@ def train(args) -> int:
                         if not schedule.wait(stopped, deadline=deadline) or template_stale():
                             break
                         kind, percentage, boundary = schedule.current_job()
-                        if kind != "job-0":
+                        if kind not in MINING_JOBS:
                             break
                         if percentage <= 0:
                             continue
                         if not vpn_guard.resume():
                             break
+                        shared = kind == "job-2"
+                        if shared:
+                            percentage /= 2
                         if previous_effort != (kind, percentage):
-                            log(logging.INFO, "%s effort GPU duty-cycle target: %d%%", kind, percentage)
+                            log(logging.INFO, "%s effort GPU duty-cycle target: %g%%", kind, percentage)
                             previous_effort = kind, percentage
 
                         def cancelled():
@@ -335,7 +348,10 @@ def train(args) -> int:
 
                         active_workers = workers[:args.max_batches - batches] if args.max_batches else workers
                         for worker in active_workers:
-                            worker.pacer.set_utilization(percentage)
+                            if shared:
+                                worker.pacer.set_utilization(percentage, shared=True)
+                            else:
+                                worker.pacer.set_utilization(percentage)
                         results = run_batches(executor, active_workers, prepare, search_batch,
                                               training_threshold, cancelled)
                         completed = sum(outcome is not None for outcome in results)
@@ -446,7 +462,7 @@ def _add_training_arguments(parser):
     parser.add_argument("--max-gpu-utilization", type=int, default=argparse.SUPPRESS,
                         help="legacy constant GPU effort, 1-100 (100 disables pacing)")
     parser.add_argument("--job-sequence", default=argparse.SUPPRESS,
-                        help='JSON sequence of {title, time, max_gpu_utilization} dictionaries; title is job-0 or job-1, 0 pauses and -1 exits')
+                        help='JSON sequence of {title, time, max_gpu_utilization} dictionaries; title is job-0, job-1, or job-2, 0 pauses and -1 exits')
     parser.add_argument("--output-dir", default=argparse.SUPPRESS)
 
 
