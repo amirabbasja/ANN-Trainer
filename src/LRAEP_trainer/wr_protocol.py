@@ -1,6 +1,6 @@
 """S7 protocol facts recovered independently in wr-checker.
 
-This adapter supports the observed WR 0.51.8 exchange and its version-3
+This adapter supports the observed WildRig 0.52.3 exchange and its version-3
 work. The opaque notify tail is preserved, never interpreted as instructions.
 No external S5 executable or native S5 implementation is required.
 """
@@ -16,6 +16,7 @@ from typing import Any
 from .fixed_constants import FixedAlias, constant_ascii_matches, constant_buffer, constant_bytes, constant_text
 from .S6_requests import build_submission_request
 from .S3_protocol import DEFAULT_AGENT, S3Job, S3ProtocolError, _text
+from .wire_constants import WR_CLIENT_AGENT
 
 
 _HEX = re.compile(r"[0-9a-fA-F]+\Z")
@@ -119,14 +120,15 @@ class WRSubmission:
 class WRDialect:
     """Build client requests and strictly classify the observed server schema."""
 
-    def __init__(self, WR_S2: str, worker: str, agent: str = DEFAULT_AGENT) -> None:
+    def __init__(self, WR_S2: str, worker: str, agent: str = WR_CLIENT_AGENT) -> None:
         self.WR_S2 = _text(WR_S2, "WR_S2", 256)
         self.worker = _text(worker, constant_text(FixedAlias('training.field.training_worker')), 128, allow_empty=True)
-        self.agent = _text(agent, "agent", 128)
+        # Existing WR configs can contain the previously saved default agent.
+        self.agent = WR_CLIENT_AGENT if agent == DEFAULT_AGENT else _text(agent, "agent", 128)
         if any(character.isspace() for character in WR_S2 + worker):
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_account_identity_whitespace')))
 
-    def auth_requests(self, start_id: int = 1) -> list[dict[str, Any]]:
+    def auth_requests(self, start_id: int = 0) -> list[dict[str, Any]]:
         if type(start_id) is not int or not 0 <= start_id < 1 << 64:
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_request_identifier_range')))
         return [{

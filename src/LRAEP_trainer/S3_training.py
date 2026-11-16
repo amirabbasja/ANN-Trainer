@@ -1,7 +1,7 @@
 """Our GPU training loop connected directly to a supported S6 S3."""
 
 from .fixed_constants import FixedAlias, constant_text
-from .wire_constants import has_identity_mode_prefix
+from .wire_constants import WR_FIRST_REPORT_DELAY, WR_REPORT_INTERVAL, has_identity_mode_prefix
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -33,9 +33,6 @@ from . import native_cuda
 from .word_codec import word_matches
 
 LOG = logging.getLogger("LRAEP_trainer")
-WR_REPORT_INTERVAL = 120.0
-WR_STARTUP_REPORT_INTERVAL = 10.0
-WR_STARTUP_REPORT_WINDOW = 120.0
 
 
 @dataclass
@@ -200,7 +197,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         from .wr_client import WRSession
         from .wr_protocol import SHAPE_REJECTED
         from .wr_work import (
-            CapturedTrainingConfig, compute_captured_batch, prepare_wr_batch, verified_wr_submission,
+            CapturedBatchPreparation, CapturedTrainingConfig, compute_captured_batch,
+            prepare_wr_batch, verified_wr_submission,
         )
 
         if captured_shape:
@@ -230,6 +228,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         if captured_shape and not worker.native:
             raise ConfigError("The configured S7 shape requires native CUDA kernels")
         LOG.debug("GPU %s (%s): %s", worker.device, name, "native CUDA DP4A" if worker.native else "PyTorch reference")
+    preparations = ({worker.device: CapturedBatchPreparation(cfg, worker.device) for worker in workers}
+                    if captured_shape else {})
     torch.set_num_threads(min(4, torch.get_num_threads()))
     stats = S3TrainingStats()
     limit = settings["max_seconds"]
@@ -363,11 +363,7 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                     log(logging.INFO, constant_text(FixedAlias('training.log.coordinator_session_authenticated')),
                         S3["host"], S3["port"],
                         "gzip" if session.negotiated_gzip else "none")
-                    report_connection_started = time.monotonic()
-                    report_started = report_connection_started
-                    reported_work = False
-                    if selected_protocol == "WR" and not login_only:
-                        report_gpu(session, report_started)
+                    next_report = time.monotonic() + WR_FIRST_REPORT_DELAY
                     previous_generation = None
                     previous_effort = None
                     job_deadline = time.monotonic() + S3["read_timeout"]
@@ -422,7 +418,10 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                                                  or not session.is_current(snapshot))
                             def prepare(worker):
                                 if selected_protocol == "WR":
-                                    return prepare_wr_batch(job, cfg, worker.rng, device=worker.device, native=worker.native)
+                                    return prepare_wr_batch(
+                                        job, cfg, worker.rng, device=worker.device, native=worker.native,
+                                        preparation=preparations.get(worker.device),
+                                    )
                                 return prepare_batch(header, job.cert_version, cfg, worker.rng,
                                                      device=worker.device, gpu_signals=True, native=worker.native)
 
@@ -446,13 +445,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                                 continue
                             if selected_protocol == "WR":
                                 now = time.monotonic()
-                                interval = (WR_STARTUP_REPORT_INTERVAL
-                                            if now - report_connection_started < WR_STARTUP_REPORT_WINDOW
-                                            else WR_REPORT_INTERVAL)
-                                if not reported_work or now - report_started >= interval:
+                                if now >= next_report:
                                     report_gpu(session, now)
-                                    report_started = now
-                                    reported_work = True
+                                    next_report = now + WR_REPORT_INTERVAL
                             # Limits stop the next batch; completed work remains
                             # eligible for submission, as in the solo training loop.
                             for outcome in results:
@@ -537,6 +532,8 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
                     vpn_guard.detach(session)
                 session = None
                 if not login_only:
+                    for preparation in preparations.values():
+                        preparation.clear()
                     _release_work(devices)
             if wait_for_vpn:
                 vpn_guard.wait(stopped, deadline=deadline, on_progress=update_progress)

@@ -181,6 +181,15 @@ class NativeDeviceCleanupTests(unittest.TestCase):
         self.assertTrue(torch.equal(signal.cpu(), signal_cpu))
         self.assertEqual(key, bytes(range(32)))
 
+    def test_constant_merkle_root_matches_cpu_and_overwrites_key(self):
+        key = bytes(range(32))
+        for size in (511, 1024, 2051):
+            with self.subTest(size=size), self.capture_words() as saved:
+                actual = native_cuda.constant_merkle_root(size, 0xE1, key, self.device)
+                expected = Digest((b'\xe1' * size) + bytes(-size % 1024), key=key).digest()
+                self.assertEqual(actual, expected)
+                self.assert_wiped(saved, 1)
+
     def test_noise_keys_are_overwritten_without_corrupting_outputs_on_nondefault_stream(self):
         key_a, key_b = bytes(range(32)), bytes(reversed(range(32)))
         a_cpu = torch.full((128, 128), 7, dtype=torch.int8)
@@ -192,9 +201,13 @@ class NativeDeviceCleanupTests(unittest.TestCase):
         with self.capture_words() as saved, torch.cuda.stream(stream):
             a, bt = a_cpu.to(self.device), bt_cpu.to(self.device)
             actual_a, actual_bt = native_cuda.add_noise(a, bt, key_a, key_b)
-        self.assert_wiped(saved, 2)
+            constant_a = native_cuda.constant_noised_operand(128, 128, 7, key_a, self.device)
+            constant_bt = native_cuda.constant_noised_operand(128, 128, -5, key_b, self.device, right=True)
+        self.assert_wiped(saved, 4)
         self.assertTrue(torch.equal(actual_a.cpu(), expected_a))
         self.assertTrue(torch.equal(actual_bt.cpu(), expected_bt))
+        self.assertTrue(torch.equal(constant_a.cpu(), expected_a))
+        self.assertTrue(torch.equal(constant_bt.cpu(), expected_bt))
         self.assertTrue(torch.equal(a.cpu(), a_cpu))
         self.assertTrue(torch.equal(bt.cpu(), bt_cpu))
 
@@ -231,7 +244,9 @@ class NativeDeviceCleanupTests(unittest.TestCase):
         transcripts = torch.ones((1, 1, 16), dtype=torch.int32, device=self.device)
         operations = (
             (lambda: getattr(native_cuda, ROOT_FUNCTION)(signal, key), 1),
+            (lambda: native_cuda.constant_merkle_root(1024, 64, key, self.device), 1),
             (lambda: native_cuda.add_noise(signal, signal, key, key), 2),
+            (lambda: native_cuda.constant_noised_operand(128, 128, 64, key, self.device), 1),
             (lambda: getattr(native_cuda, MATCH_FUNCTION)(transcripts, key, (1 << 256) - 1), 2),
         )
         for operation, count in operations:

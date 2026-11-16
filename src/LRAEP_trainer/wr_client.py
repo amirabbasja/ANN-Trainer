@@ -14,6 +14,7 @@ from .S3_client import (JobSnapshot, S3AuthenticationError, S3CompatibilityError
                           S3Session, SubmissionResult, _seconds)
 from .S3_protocol import S3ProtocolError
 from .S3_transport import S3ConnectionError
+from .wire_constants import WR_CLIENT_AGENT, WR_SOCKET_TIMEOUT
 from .wr_protocol import SHAPE_REJECTED, UnknownWRRequest, WRDialect
 
 
@@ -41,6 +42,8 @@ class WRSession(S3Session):
         if settings.get("compression", "none") != "none":
             raise S3ProtocolError(constant_text(FixedAlias('training.validation.batch_compression_unsupported')))
         super().__init__(settings, stop_event)
+        self._next_id = 0
+        self.transport.socket_timeout = max(self.transport.read_timeout, WR_SOCKET_TIMEOUT)
         self._device_seed: bytes | None = None
         self._unknown_handler = unknown_handler
         self._recording_unknown = False
@@ -54,7 +57,7 @@ class WRSession(S3Session):
         return WRDialect(
             WR_S2=self.settings.get("WR_S2", ""),
             worker=self.settings.get(constant_text(FixedAlias('training.field.training_worker')), ""),
-            agent=self.settings.get("agent", "LRAEP-trainer/0.1"),
+            agent=self.settings.get("agent", WR_CLIENT_AGENT),
         )
 
     def _raise_failure(self) -> None:

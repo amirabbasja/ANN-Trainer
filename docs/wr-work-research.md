@@ -1,7 +1,8 @@
 # S7 work derivation and validation
 
-The custom trainer implements the observed WR 0.51.8 generation-3 work
-format in Python/CUDA. It does not execute or load WR. Its normal S6
+The custom trainer implements the generation-3 work format in Python/CUDA,
+based on the WR 0.51.8 analysis below and verified against captured submissions
+from WildRig Multi 0.52.3. It does not execute or load WR. Its normal S6
 helpers still supply commitment derivation, sparse noise and transcript rules.
 The local checker supplied the wire captures and offline research evidence.
 

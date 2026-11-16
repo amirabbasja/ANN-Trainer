@@ -8,6 +8,7 @@ commitment binds the complete matrix, including that extra row.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 
 from .fixed_constants import FixedAlias, constant_text
@@ -49,6 +50,12 @@ def _tile_indices(tile, offsets):
     return tuple(start + offset for offset in offsets)
 
 
+@lru_cache(maxsize=2)
+def _gather_indices(size, offsets):
+    return torch.tensor([index for tile in range(size // len(offsets))
+                         for index in _tile_indices(tile, offsets)], dtype=torch.long, device="cpu")
+
+
 class CapturedTrainingConfig(TrainingConfig):
     _MAX_N = WR_CAPTURED_SHAPE[1]
 
@@ -71,19 +78,17 @@ def compute_captured_batch(batch, training_threshold, device, cancelled):
     from .gpu import TrainingCancelled
 
     cfg = batch.config
-    # Gather the periodic tiles into the contiguous layout expected by DP4A.
-    rows = [index for tile in range(cfg.m // cfg.tile_h)
-            for index in _tile_indices(tile, _ROW_OFFSETS)]
-    a = batch.a_noised.index_select(0, torch.tensor(rows, device=device))
+    # Transfer each periodic gather map once, then keep matrix scratch bounded by a chunk.
+    rows = _gather_indices(cfg.m, _ROW_OFFSETS).to(device)
+    cols = _gather_indices(cfg.n, _COLUMN_OFFSETS).to(device)
+    a = batch.a_noised.index_select(0, rows)
     matches = []
     for start in range(0, cfg.n, _COLUMN_CHUNK_SIZE):
         if cancelled():
             raise TrainingCancelled("training job cancelled")
         first_tile = start // cfg.tile_w
         stop = min(start + _COLUMN_CHUNK_SIZE, cfg.n)
-        cols = [index for tile in range(first_tile, stop // cfg.tile_w)
-                for index in _tile_indices(tile, _COLUMN_OFFSETS)]
-        bt = batch.b_noised_t.index_select(0, torch.tensor(cols, device=device))
+        bt = batch.b_noised_t.index_select(0, cols[start:stop])
         transcripts = native_cuda.transcripts_device(a, bt, tile_w=cfg.tile_w)
         candidates = native_cuda.hash_candidates(transcripts, batch.commitment.noise_seed_A, training_threshold)
         matches.extend((row, col + first_tile, digest) for row, col, digest in candidates)
@@ -103,8 +108,66 @@ def wr_seed_tail(local_seed: bytes, device_seed: bytes) -> bytes:
                  for byte in CNN_3ekalb(device_seed + local_seed).digest()[:16])
 
 
+@dataclass(frozen=True)
+class _CapturedBatch:
+    config: CapturedTrainingConfig
+    a_noised: torch.Tensor
+    b_noised_t: torch.Tensor
+    commitment: object
+    local_seed: bytes
+    device_seed: bytes
+    header_bytes: bytes
+
+
+class CapturedBatchPreparation:
+    """Reuse the right operand while its header key is current on this device."""
+
+    def __init__(self, config: CapturedTrainingConfig, device):
+        self.config = config
+        self.device = torch.device(device)
+        self._right_operand = None
+
+    def clear(self):
+        self._right_operand = None
+
+    def prepare(self, job: WRJob, local_seed: bytes, tail: bytes):
+        from S5_base.commitment_hash import CommitmentHasher
+        from . import native_cuda
+        from .primitives import IncompleteBlockHeader
+
+        cfg = self.config
+        device = self.device
+        base = signal_base()
+        right = self._right_operand
+        if right is None or right[0] != job.header_bytes:
+            self.clear()
+            right = None
+            header = IncompleteBlockHeader.from_bytes(job.header_bytes)
+            key = CommitmentHasher.get_key(bytes(header.to_bytes()), cfg.official_config())
+            b_root = native_cuda.constant_merkle_root(cfg.n * cfg.k, base, key, device)
+        else:
+            _, key, b_root, bt_noised = right
+
+        a = torch.full((cfg.m + 1, cfg.k), base, dtype=torch.int8, device=device)
+        a[-1, -16:] = torch.from_numpy(np.frombuffer(tail, dtype=np.int8).copy()).to(device)
+        a_root = native_cuda.merkle_root(a, key)
+        commitment = CommitmentHasher.commitment_hash_from_merkle_roots(
+            a_root, b_root, key, salted_dims=(cfg.m + 1, cfg.n))
+        if right is None:
+            # B's noise seed depends only on its root, header key, and fixed dimensions.
+            bt_noised = native_cuda.constant_noised_operand(
+                cfg.n, cfg.k, base, commitment.noise_seed_B, device, right=True)
+            self._right_operand = (job.header_bytes, key, b_root, bt_noised)
+        # The seed row changes A's commitment but never participates in a dot product.
+        a_noised = native_cuda.constant_noised_operand(
+            cfg.m, cfg.k, base, commitment.noise_seed_A, device)
+        return _CapturedBatch(cfg, a_noised, bt_noised, commitment, local_seed,
+                              job.device_seed, job.header_bytes)
+
+
 def prepare_wr_batch(job: WRJob, config: TrainingConfig,
-                          rng: np.random.Generator, *, device="cpu", native=False):
+                     rng: np.random.Generator, *, device="cpu", native=False,
+                     preparation: CapturedBatchPreparation | None = None):
     """Prepare native trainer work with reproducible S3 reconstruction data.
 
     ``config.m`` remains the number of searched rows. The submitted dimension
@@ -118,6 +181,10 @@ def prepare_wr_batch(job: WRJob, config: TrainingConfig,
     local_seed = rng.bytes(8)
     tail = wr_seed_tail(local_seed, job.device_seed)
     destination = torch.device(device)
+    if preparation is not None:
+        if not native or preparation.config != config or preparation.device != destination:
+            raise ValueError("captured batch preparation must match the native configuration and device")
+        return preparation.prepare(job, local_seed, tail)
     a = torch.full((config.m + 1, config.k), signal_base(),
                    dtype=torch.int8, device=destination)
     bt = torch.full((config.n, config.k), signal_base(),

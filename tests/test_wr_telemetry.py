@@ -63,38 +63,30 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.now = next(self.search_times)
         return iter([])
 
-    def test_registration_then_first_completed_batch_report_do_not_require_a_share(self):
-        with self.assertLogs(worker.LOG, level='INFO') as logs:
+    def test_run_ending_before_the_first_report_deadline(self):
+        with self.assertNoLogs(worker.LOG, level='INFO'):
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
-        work = 128 * 128 * 2048
-        self.assertEqual(self.reports, [(0.0, 'selected GPU', 0.0),
-                                        (1.0, 'selected GPU', float(work))])
+        self.assertEqual(self.reports, [])
         self.session.submit.assert_not_called()
-        output = ' '.join(logs.output)
-        self.assertIn('Main job stopped: steps=1 elapsed=00:00:01', output)
-        self.assertNotIn('S7 GPU report sent', output)
-        self.assertNotIn('submitted=', output)
         status = self.progress.return_value.__enter__.return_value.update.call_args.args[0]
-        self.assertEqual(status, 'Main | Step 1/1 (100.0%) | elapsed=00:00:01 | GPU 37%')
+        self.assertIn(' | job-0 | 37% | ', status)
 
-    def test_reports_refresh_during_startup_then_return_to_120_second_cadence(self):
-        times = [1.0, 5.0, 11.0, 20.0, 21.0, 119.0, 120.0, 130.0, 238.0, 239.0, 359.0]
+    def test_reports_start_after_15_seconds_then_use_the_captured_interval(self):
+        second = 15.0 + 120.6
+        third = second + 120.6
+        times = [1.0, 14.99, 15.0, 20.0, second - 0.01, second, third - 0.01, third]
         self.configuration['training']['max_batches'] = len(times)
         self.search_times = iter(times)
-        self.assertEqual(worker.WR_STARTUP_REPORT_INTERVAL, 10.0)
-        self.assertEqual(worker.WR_STARTUP_REPORT_WINDOW, 120.0)
-        self.assertEqual(worker.WR_REPORT_INTERVAL, 120.0)
         self.assertEqual(worker.run_S3_training(self.configuration), 0)
         work = 128 * 128 * 2048
         self.assertEqual([record[0] for record in self.reports],
-                         [0.0, 1.0, 11.0, 21.0, 119.0, 239.0, 359.0])
+                         [15.0, second, third])
         self.assertEqual([record[2] for record in self.reports],
-                         [0.0, float(work), 3 * work / 11.0, 5 * work / 21.0,
-                          6 * work / 119.0, 10 * work / 239.0, 11 * work / 359.0])
+                         [3 * work / 15.0, 6 * work / second, 8 * work / third])
         self.assertEqual(self.search.call_count, len(times))
         self.session.submit.assert_not_called()
 
-    def test_user_989_batch_startup_scenario_refreshes_189_gh_report_without_inflation(self):
+    def test_report_rate_uses_completed_work_during_warmup(self):
         batches = 989
         work = 4096 * 4096 * 16384
         final_elapsed = batches * work / 4.53e12
@@ -105,34 +97,28 @@ class WRReportSchedulingTests(unittest.TestCase):
         self.search_times = iter(times)
         self.assertEqual(worker.run_S3_training(self.configuration), 0)
         self.assertEqual(self.search.call_count, 989)
-        self.assertEqual(len(self.reports), 7)
-        self.assertAlmostEqual(self.reports[1][2] / 1e9, 189.11)
-        self.assertGreater(self.reports[-1][0], 50.0)
-        self.assertLess(self.now - self.reports[-1][0], 10.1)
+        self.assertEqual(len(self.reports), 1)
+        self.assertEqual(self.reports[0][0], times[bisect_right(times, 15.0)])
         final_rate = batches * work / final_elapsed
         self.assertAlmostEqual(final_rate / 1e12, 4.53)
-        self.assertGreater(self.reports[-1][2], 4.4e12)
         self.assertLessEqual(self.reports[-1][2], final_rate)
-        self.assertLess(abs(final_rate - self.reports[-1][2]) / final_rate, 0.01)
         for timestamp, name, reported in self.reports:
             completed = bisect_right(times, timestamp)
             self.assertEqual(name, 'selected GPU')
             self.assertEqual(reported, completed * work / max(timestamp, 0.001))
-        for previous, current in zip(self.reports[1:], self.reports[2:]):
-            self.assertGreaterEqual(current[0] - previous[0], 10.0)
         status = self.progress.return_value.__enter__.return_value.update.call_args.args[0]
-        self.assertIn('Main | Step 989/989 (100.0%)', status)
+        self.assertIn(' | job-0 | 37% | ', status)
         self.assertNotIn('Hashrate', status)
         self.assertNotIn('attempts=', status)
         self.session.submit.assert_not_called()
 
-    def test_cancelled_work_only_registers_gpu_and_never_reports_uncompleted_work(self):
+    def test_cancelled_work_does_not_report_uncompleted_work(self):
         def cancel(*_args, **_kwargs):
             self.factory.call_args.kwargs['stop_event'].set()
             return MagicMock()
         self.prepare.side_effect = cancel
         self.assertEqual(worker.run_S3_training(self.configuration), 0)
-        self.assertEqual(self.reports, [(0.0, 'selected GPU', 0.0)])
+        self.assertEqual(self.reports, [])
         self.search.assert_not_called()
         self.session.submit.assert_not_called()
 

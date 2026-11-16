@@ -6,6 +6,9 @@ trainer's Python/CUDA code; it does not invoke the WR executable or load
 its libraries. The external WR research workspace supplies evidence and is
 not a runtime dependency; its location is documented in the main README.
 
+The adapter matches the captured WildRig Multi 0.52.3 exchange. The login
+request starts at ID `0` and uses `WildRig_0.52.3` by default.
+
 Use the app's single `config.json`. Set `S3.WR.host`, `S3.WR.port`,
 `S3.WR_S2` and `S3.worker`, and run from the trainer directory:
 
@@ -31,24 +34,18 @@ KEX's optional gzip proof transport is unavailable on S7.
 
 ## GPU count and connected-worker hashrate
 
-WR sends S7's `report_info` message after authentication to register the
-selected GPUs. It sends the measured work rates after the first completed batch,
-then about every 10 seconds during the connection's first two minutes, and
-about every 120 seconds afterward, at a batch boundary. Each report contains
+WR sends the first `report_info` at a completed batch boundary at least
+15 seconds after authentication. Each subsequent report is due 120.6 seconds
+after the last one and is sent at a completed batch boundary. Each report contains
 one device object per selected GPU, with its actual name and numeric rate in H/s.
 For example, a diagnostic rate of 4 TH/s corresponds to about `4000000000000`
 H/s in the report. Login-only checks send no GPU reports.
 
 Each report records the rate sent and its request ID at the `DEBUG` log level.
 Compare the newest `S7 GPU report sent` diagnostic with the website.
-The completed-work average continues changing between reports, and the website
-may refresh later.
-Early batches can run slower during allocation and GPU warmup; the frequent
-startup updates replace that initial low sample promptly.
-
-The rate uses completed matrix work and elapsed wall-clock time. The initial
-report can be zero before work has completed. A new connection registers the GPU
-again. A connected worker alone
+The rate uses completed matrix work and elapsed wall-clock time. The average
+continues changing between reports, and the website may refresh later. A new
+connection starts the report schedule again. A connected worker alone
 does not provide this device information: without reports the dashboard can
 show an online worker with zero GPUs and zero connected-worker hashrate.
 

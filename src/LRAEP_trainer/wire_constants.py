@@ -4,6 +4,10 @@ from .fixed_constants import constant_bytes, constant_text
 from .word_codec import word_buffer
 
 WR_CAPTURED_SHAPE = (4096, 262144, 8192, 8, 16)
+WR_CLIENT_AGENT = "WildRig_0.52.3"
+WR_FIRST_REPORT_DELAY = 15.0
+WR_REPORT_INTERVAL = 120.6
+WR_SOCKET_TIMEOUT = 180.0
 
 
 def has_identity_mode_prefix(value):

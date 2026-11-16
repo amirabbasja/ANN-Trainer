@@ -110,12 +110,13 @@ class WRSessionTests(unittest.TestCase):
         session, transport = self.create_session()
         with session:
             snapshot = session.wait_job(1)
-            self.assertEqual(transport.sent[0], {"id": 1, "method": "login",
-                                               "params": ["test-S2", "test-worker", "LRAEP-trainer/0.1"]})
+            self.assertEqual(transport.sent[0], {"id": 0, "method": "login",
+                                               "params": ["test-S2", "test-worker", "WildRig_0.52.3"]})
             self.assertEqual(snapshot.job.device_seed.hex(), "19df092c6c027fee")
             self.assertTrue(session.is_current(snapshot))
             self.assertTrue(session.submit(snapshot, compact_share(snapshot.job)).accepted)
             self.assertEqual(transport.sent[-1]["method"], "submit")
+            self.assertEqual(transport.sent[-1]["id"], 1)
             self.assertFalse(session.negotiated_gzip)
 
     def test_shape_rejection_is_a_submission_reply(self):

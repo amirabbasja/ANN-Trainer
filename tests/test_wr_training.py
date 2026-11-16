@@ -65,7 +65,8 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
                     connection.settimeout(30)
                     login = decode_frame(stream.readline())
                     self.assertEqual(login["method"], "login")
-                    self.assertEqual(login["params"][:2], ["local-test-account", "gpu-test"])
+                    self.assertEqual(login["id"], 0)
+                    self.assertEqual(login["params"], ["local-test-account", "gpu-test", "WildRig_0.52.3"])
                     frames = encode_frame({"id": login["id"], "status": 1, "result": True}, 0)
                     frames += encode_frame({"id": -1, "status": 1,
                                             "result": ["extranonce", extranonce]}, 1)
@@ -126,6 +127,7 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
             configuration["S3"]["unknown_request_dir"] = directory
             try:
                 with patch.object(worker.native_cuda, "available", return_value=native), \
+                        patch.object(worker, "WR_FIRST_REPORT_DELAY", 0), \
                         patch.object(worker, "search_batch", side_effect=one_candidate), \
                         patch.object(worker, "S3_training_rate", side_effect=measured_rate), \
                         self.assertLogs(worker.LOG, level="DEBUG") as messages:
@@ -137,9 +139,8 @@ class LocalWRGPUTrainingTests(unittest.TestCase):
         self.assertFalse(server.is_alive(), "local S7 peer did not stop")
         self.assertEqual(result, 0)
         self.assertIn("share", observed)
-        self.assertEqual(len(observed["reports"]), 2)
-        self.assertEqual(observed["reports"][0]["hashrate"], 0)
-        reported_rate = observed["reports"][1]["hashrate"]
+        self.assertEqual(len(observed["reports"]), 1)
+        reported_rate = observed["reports"][0]["hashrate"]
         self.assertGreater(reported_rate, 0)
         matching = [(batches, work, elapsed, value) for batches, work, elapsed, value in rate_measurements
                     if batches == 1 and value == reported_rate]

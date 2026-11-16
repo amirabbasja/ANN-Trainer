@@ -256,8 +256,8 @@ Run either S5 with the same file:
 .venv/bin/python ann_trainer.py pool --S5 WR
 ```
 
-KEX uses the Kryptex protocol. WR implements the recovered WildRig/S7
-protocol in this Python/CUDA client and does not launch WildRig. `KEX_uname`
+KEX uses the Kryptex protocol. The WR Python/CUDA adapter matches the S7
+exchange captured from WildRig Multi 0.52.3. `KEX_uname`
 accepts your Kryptex Mining Username or a S6 receiving address. `WR_wallet`
 takes your S6 receiving address for S7. Keep each identity separate
 from `pool.worker`; the client constructs the appropriate login.
@@ -405,9 +405,9 @@ output writes only the final status, rather than a line for every batch.
 and stops the sampler along with the S5.
 
 For WR/S7, the client also reports each selected GPU's name and measured
-rate using `report_info`. It registers the GPUs after login, updates their rates
-after the first completed batch, then about every 10 seconds during the first
-two minutes and every two minutes afterward. Each report logs the rate sent
+rate using `report_info`. The first report is due 15 seconds after login.
+Subsequent reports are due 120.6 seconds apart. Reports are sent at completed
+batch boundaries. Each report logs the rate sent
 and its request ID at `DEBUG` so it can be compared with the dashboard.
 The wire rate uses raw H/s calculated from completed matrix work as
 `batches * m * n * k / elapsed_seconds`. One work unit is an int8
@@ -425,7 +425,7 @@ Pool protocol options:
 | `WR_wallet` | `""` | S6 receiving address, used only by WR/S7. |
 | `KEX.compression` / `WR.compression` | `"none"` | Native uncompressed proof bytes; `"gzip"` requests the pool's optional gzip session. |
 | `KEX.certificate_version` / `WR.certificate_version` | `null` | Use the explicit job field. An integer `1`, `2`, or `3` is a fallback only when a job omits it. Unknown versions fail. |
-| `agent` | `"LRAEP-trainer/0.1"` | Client identifier sent during authentication. |
+| `agent` | WR uses `"WildRig_0.52.3"`. KEX uses `"LRAEP-trainer/0.1"`. | Client identifier sent during authentication. WR also updates the previously saved default to its current agent. |
 | `stop_on_unknown_request` | `true` | Record unknown S7 messages, stop work, close the connection, and report an error without reconnecting. |
 | `unknown_request_dir` | `null` | Diagnostic directory, relative to the config file. Defaults to `training.output_dir/unknown-pool-requests`. |
 
@@ -499,11 +499,11 @@ The local `.venv` and bundled `src/LRAEP_helpers` helper subset are installed.
 The Linux x86_64 Xray VPN core, its original MPL-2.0 license, and checksum
 manifest are included under `src/LRAEP_trainer/bin/` and packaged with the app.
 The pool client automatically selects the native CUDA DP4A backend for 8×8
-hash tiles. Startup reports `Compute backend: native CUDA DP4A`. The first run
-builds this project's CUDA sources with `nvcc`; later runs reuse the app's
-cache at `~/.cache/LRAEP/native/`.
+hash tiles and requires it for the captured WR 8×16 shape. Startup reports
+`Compute backend: native CUDA DP4A`. The first run builds this project's CUDA
+sources with `nvcc`. Later runs reuse the app's cache at `~/.cache/LRAEP/native/`.
 No external S5 executable is loaded. If CUDA compilation is unavailable,
-startup explains the failure and selects the PyTorch reference backend.
+the 8×8 path can use the PyTorch reference backend.
 
 The application source is in `src/LRAEP_trainer`. Required upstream Python
 modules and Rust proof-helper sources are bundled in `src/LRAEP_helpers`;
@@ -655,6 +655,23 @@ padding, chunk counters, target boundaries, and transcript slot reuse.
 Successful offline verification establishes arithmetic and proof compatibility;
 live acceptance still requires a current job and a timely valid result. No
 reward rate or live accepted share is implied by local hashrate measurements.
+
+### Captured WR CUDA optimizations
+
+The captured WR shape (`m=4096`, `n=262144`, `k=8192`, tile `8×16`) now uses
+16-byte vector loads and four CUDA lanes per transcript tile for 16-byte-aligned
+matrices. Matrices aligned only to four bytes use the scalar DP4A kernel. Both
+produce the same cumulative INT32 transcripts.
+
+Each GPU worker reuses the noised right-hand operand and its Merkle root for the
+current header. Preparation computes both directly from the constant signal and
+avoids allocating the raw 2 GiB matrix. The left commitment is recomputed per
+batch and includes the seed row. Periodic tile index maps are cached on the host
+and transferred once per batch. Search processes 4,096 columns at a time to
+bound GPU scratch space.
+
+Four warm, unpaced batches in an offline replay averaged 7.69 TH/s on a
+GTX 1660 SUPER with 2.13 GiB of peak allocated GPU memory.
 
 ## Validation
 
