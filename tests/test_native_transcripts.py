@@ -85,5 +85,29 @@ class NativeTranscriptTests(unittest.TestCase):
         np.testing.assert_array_equal(result.cpu().numpy().view(np.uint32), expected)
 
 
+    def test_large_optimized_dispatch_and_long_transcripts(self):
+        # This enters the large-matrix dispatch and updates each transcript slot
+        # repeatedly. Compare every 8x8 word with the retained scalar kernel,
+        # and independently reconstruct corner tiles for both transcript widths.
+        m, n, k = 776, 784, 16384
+        rng = np.random.default_rng(979)
+        a = rng.integers(-128, 128, (m, k), dtype=np.int8)
+        bt = rng.integers(-128, 128, (n, k), dtype=np.int8)
+        ag, bg = torch.from_numpy(a).cuda(), torch.from_numpy(bt).cuda()
+        for tile_w in (8, 16):
+            with self.subTest(tile_w=tile_w):
+                actual = self.run_transcripts(ag, bg, tile_w=tile_w)
+                actual_cpu = actual.cpu().numpy().view(np.uint32)
+                if tile_w == 8:
+                    legacy = self.run_transcripts(ag, bg, tile_w=8, variant=7)
+                    np.testing.assert_array_equal(actual_cpu, legacy.cpu().numpy().view(np.uint32))
+                for row in (0, m // 8 - 1):
+                    for col in (0, n // tile_w - 1):
+                        expected = integer_transcripts(a[row * 8:(row + 1) * 8],
+                                                         bt[col * tile_w:(col + 1) * tile_w],
+                                                         tile_w=tile_w)
+                        np.testing.assert_array_equal(actual_cpu[row, col], expected[0, 0])
+
+
 if __name__ == "__main__":
     unittest.main()

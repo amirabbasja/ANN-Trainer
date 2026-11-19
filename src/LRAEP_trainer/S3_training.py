@@ -228,8 +228,9 @@ def _run_S3_training(configuration, *, login_only, stopped, effort, started):
         if captured_shape and not worker.native:
             raise ConfigError("The configured S7 shape requires native CUDA kernels")
         LOG.debug("GPU %s (%s): %s", worker.device, name, "native CUDA DP4A" if worker.native else "PyTorch reference")
-    preparations = ({worker.device: CapturedBatchPreparation(cfg, worker.device) for worker in workers}
-                    if captured_shape else {})
+    preparations = ({worker.device: CapturedBatchPreparation(cfg, worker.device)
+                     for worker in workers if worker.native}
+                    if selected_protocol == "WR" else {})
     torch.set_num_threads(min(4, torch.get_num_threads()))
     stats = S3TrainingStats()
     limit = settings["max_seconds"]

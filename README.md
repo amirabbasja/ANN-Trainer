@@ -36,8 +36,9 @@ and checkpoints live under `data/side-job/`.
 Set `training.generate_artifacts` to `false` to skip local output files and
 terminal logs. The live status is still visible in Jupyter. Candidate files,
 unknown-request captures, and CNN checkpoints are skipped. The CNN reads dataset
-shards in memory, and native backends reuse existing libraries or use their
-reference implementations.
+shards in memory. Native CUDA reuses a cached library or builds one in a
+temporary directory, then removes its build files after loading. Other native
+backends retain their cache or reference-backend behavior.
 The default is `true`. For the installed `LRAEP` command or `python -m LRAEP_trainer`,
 set `PYTHONDONTWRITEBYTECODE=1` to suppress Python bytecode during startup as well.
 
@@ -656,22 +657,50 @@ Successful offline verification establishes arithmetic and proof compatibility;
 live acceptance still requires a current job and a timely valid result. No
 reward rate or live accepted share is implied by local hashrate measurements.
 
-### Captured WR CUDA optimizations
+### Native CUDA performance
 
-The captured WR shape (`m=4096`, `n=262144`, `k=8192`, tile `8×16`) now uses
-16-byte vector loads and four CUDA lanes per transcript tile for 16-byte-aligned
-matrices. Matrices aligned only to four bytes use the scalar DP4A kernel. Both
-produce the same cumulative INT32 transcripts.
+Large 8×8 and 8×16 workloads use 16-byte vector loads and a 128×64 block.
+Two CUDA lanes share each 8×8 transcript tile; four lanes share each 8×16 tile.
+Matrices aligned only to four bytes retain the scalar DP4A fallback. Every
+path preserves cumulative INT32 cells and the same 16-word transcript.
 
-Each GPU worker reuses the noised right-hand operand and its Merkle root for the
-current header. Preparation computes both directly from the constant signal and
-avoids allocating the raw 2 GiB matrix. The left commitment is recomputed per
-batch and includes the seed row. Periodic tile index maps are cached on the host
-and transferred once per batch. Search processes 4,096 columns at a time to
-bound GPU scratch space.
+Native WR preparation reuses the header-dependent right operand and its
+Merkle root across nonces, for both contiguous 8×8 and captured 8×16 shapes.
+It generates the right operand directly from the constant signal. The left
+commitment includes the reserved seed row: a new nonce changes only its final
+16 bytes, so preparation rehashes that leaf and its cached sibling path.
+Left noise is still generated for every nonce. A header change or session
+cleanup releases both caches. KEX and solo work retain their signal-generation
+and proof paths while using the faster transcript kernel when eligible.
 
-Four warm, unpaced batches in an offline replay averaged 7.69 TH/s on a
-GTX 1660 SUPER with 2.13 GiB of peak allocated GPU memory.
+The captured WR shape remains `m=4096`, `n=262144`, `k=8192`, tile `8×16`.
+Periodic tile index maps are cached on the host and transferred once per batch.
+Search processes 4,096 columns at a time to bound GPU scratch space; direct
+right-operand generation avoids allocating the raw 2 GiB constant matrix.
+
+The CLI and standalone WR runtime select these paths automatically. Restart
+an active worker to load changed Python code; its next start rebuilds CUDA for
+the selected GPU when the source changes. With `training.generate_artifacts`
+set to `false`, a fresh native library can be built temporarily instead of
+requiring a previously populated cache. Native CUDA still requires a compatible
+Linux host, GPU and `nvcc` compiler.
+
+Benchmark complete native WR batches offline, including preparation and
+candidate filtering, without loading private configuration or connecting to a
+pool:
+
+```bash
+.venv/bin/python tools/benchmark_miner.py --iterations 100
+.venv/bin/python tools/benchmark_miner.py --iterations 100 --uncached --variant 7
+```
+
+The second command selects the previous large 8×8 kernel and rebuilds both
+operands for each batch. Defaults are `m=n=4096`, `k=16384`, tile `8×8`, three
+warmup batches and 20 measured batches; compilation and warmup are excluded.
+Use `--stages` to inspect native-operation costs; its added synchronizations
+also affect total time. Rates count `m*n*k` per completed batch over wall time.
+Offline timings exclude pool latency, stale jobs, schedule pauses, and CPU
+share verification, and should be compared on the same idle GPU.
 
 ## Validation
 
