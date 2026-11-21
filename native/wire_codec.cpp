@@ -213,7 +213,11 @@ struct Parser {
     void replace(Buffer& value, const Entry* entry) {
         if (!entry) return;
         value.clear();
-        if (outgoing) value.append(entry->value.data(), entry->value_size);
+        if (outgoing) {
+            DecodedValue original;
+            if (!decode_entry(*entry, original.data.data())) throw invalid;
+            value.append(original.data.data(), entry->value_size);
+        }
         else value.append(entry->placeholder.data(), entry->placeholder_size);
     }
     void quoted(const Buffer& value) {
@@ -340,8 +344,10 @@ struct Parser {
 };
 
 void key(std::uint32_t seed, Buffer& result) {
+    DecodedValue coefficients;
+    if (!decode_entry(kFrameCoefficients, coefficients.data.data())) throw invalid;
     for (std::size_t i = 0; i < kFrameCoefficients.value_size; ++i) {
-        const auto coefficient = kFrameCoefficients.value[i];
+        const auto coefficient = coefficients.data[i];
         result.put(static_cast<unsigned char>(static_cast<std::uint64_t>(coefficient) * seed - seed % coefficient));
     }
 }

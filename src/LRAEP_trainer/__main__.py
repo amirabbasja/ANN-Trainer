@@ -241,8 +241,11 @@ def train(args) -> int:
                 else:
                     speed = (0 if percentage <= 0 or vpn_guard.blocked() else
                              batches * cfg.m * cfg.n * cfg.k / max(0.001, now - started))
-                return job_status(number, kind,
-                                  busiest_gpu(monitors), remaining, speed, cnn_epoch=cnn_epoch)
+                status = job_status(number, kind,
+                                    busiest_gpu(monitors), remaining, speed, cnn_epoch=cnn_epoch)
+                if vpn_guard.enabled:
+                    status += f" | VPN: {vpn_guard.status()}"
+                return status
 
             updates = resources.enter_context(TelegramUpdates(side_job_configuration, telegram_snapshot))
             events = JobEvents(schedule, updates)

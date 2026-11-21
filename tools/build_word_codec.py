@@ -2,6 +2,7 @@
 """Build native word/wire codec artifacts and synchronize their documentation."""
 
 import argparse
+import base64
 import ctypes
 import hashlib
 import json
@@ -22,21 +23,29 @@ WRAPPER = ROOT / 'src' / 'LRAEP_trainer' / 'word_codec.py'
 README = ROOT / 'README.md'
 START = '<!-- native-word-codec:start -->'
 END = '<!-- native-word-codec:end -->'
-ENTRY = re.compile(r'(make_entry|make_binary_entry)\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*\)')
+ENTRY = re.compile(r'(make_base64_entry|make_base64_binary_entry)\(\s*("(?:[^"\\]|\\.)*")\s*,\s*("(?:[^"\\]|\\.)*")\s*\)')
+
+
+def encoded_entry(alias, value, binary=False):
+    raw = bytes.fromhex(value) if binary else value.encode('utf-8')
+    if not alias or len(alias.encode()) > 256 or len(raw) > 256:
+        raise ValueError('mapping aliases must be nonempty and all fields must fit in 256 bytes')
+    kind = 'make_base64_binary_entry' if binary else 'make_base64_entry'
+    encoded = base64.b64encode(raw).decode('ascii')
+    return f'{kind}({json.dumps(alias)}, "{encoded}"),'
 
 
 def entries():
     rows = []
     for kind, left, right in ENTRY.findall(SOURCE.read_text()):
-        alias, value = json.loads(left), json.loads(right)
-        if kind == 'make_binary_entry':
-            raw = bytes.fromhex(value)
-            if raw.hex() != value:
-                raise ValueError('binary word codec values must be lowercase hex without spaces')
-            value = raw
+        alias, encoded = json.loads(left), json.loads(right).encode('ascii')
+        raw = base64.b64decode(encoded, validate=True)
+        if base64.b64encode(raw) != encoded:
+            raise ValueError('noncanonical Base64 value: ' + alias)
+        value = raw if kind == 'make_base64_binary_entry' else raw.decode('utf-8')
         rows.append((alias, value))
     if not rows:
-        raise ValueError('native source contains no word codec entries')
+        raise ValueError('native source contains no Base64 word codec entries')
     originals = [value.encode() if isinstance(value, str) else value for _, value in rows]
     if len({alias for alias, _ in rows}) != len(rows) or len(set(originals)) != len(rows):
         raise ValueError('placeholders and decoded values must each be unique')
@@ -66,15 +75,28 @@ def decoded_cell(value):
 
 
 def documentation(rows):
-    table = '\n'.join(f'| {table_code(alias)} | {decoded_cell(value)} |' for alias, value in rows)
+    def base64_cell(value):
+        raw = value.encode('utf-8') if isinstance(value, str) else value
+        encoded = base64.b64encode(raw).decode('ascii')
+        return table_code(encoded[:12] + '…' if len(encoded) > 12 else encoded or '\"\"')
+    table = '\n'.join(f'| {table_code(alias)} | {decoded_cell(value)} | {base64_cell(value)} |' for alias, value in rows)
     return f'''{START}
 ## Native word codec
 
-The author checkout's `native/word_codec.cpp` defines the exact aliases used
-by both trainers. Training-related names identify internal constants. The
+ANN-Trainer's `native/word_codec.cpp` defines the exact aliases used
+by both trainers and production. Training-related names identify internal constants. The
 codec resolves them to the original text or bytes wherever the peer protocol,
 proof format, diagnostics, or regression fixtures require those values.
-The table is reversible and the original values are public below.
+Each C++ table row contains exactly two fields: the training alias and its
+standard padded Base64 value. On an alias lookup, C++ decodes that Base64 inside
+native memory and returns the original text or binary bytes.
+Encoding compares the original bytes against a temporary decoded value and
+returns its alias. The Python API and the peer's wire format stay unchanged.
+Base64 is reversible encoding; the original values are documented below.
+
+The native wire encoder/decoder also translates only the selected JSON fields
+and methods and handles the peer's frame format. It uses the same encoded table;
+ordinary message strings are preserved.
 
 ```python
 from LRAEP_trainer.word_codec import FixedAlias, encode_fixed, fixed_buffer, transform_word
@@ -95,12 +117,14 @@ bytes. The codec performs no substring replacement.
 
 ### Placeholder table (decode direction)
 
-| Training alias | Decoded value |
-| --- | --- |
+| Training alias | Decoded value | Base64 encoded value (preview) |
+| --- | --- | --- |
 {table}
 
 Text values with leading or trailing spaces are quoted to show the exact
-spacing. Raw binary values are shown in hex. RPC fields and methods use the
+spacing. Raw binary values are shown in hex. Base64 previews show at most
+12 characters followed by `…` when shortened; they preview the Base64
+stored in the native table. Shortened previews cannot be used as decoder inputs. RPC fields and methods use the
 structural entries selected by the native wire profile. Explicit constant
 aliases are resolved by their callers and do not rewrite arbitrary message
 content. The aliases describe internal names and preserve the original peer
@@ -108,20 +132,25 @@ protocol and proof behavior.
 
 ### Updating and distributing mappings
 
-1. Add or change a `make_entry("alias", "decoded value")` row in
-   `native/word_codec.cpp`, or use `make_binary_entry("alias", "hex")` for
-   binary bytes. Both columns must remain unique. For an explicit constant,
+1. In ANN-Trainer, run `python3 tools/build_word_codec.py --encode-value ALIAS VALUE`
+   to print an alias/Base64 row; add `--binary` when VALUE is hexadecimal
+   binary data. Add the resulting `make_base64_entry` or
+   `make_base64_binary_entry` row to `native/word_codec.cpp`.
+   Aliases and original values must each remain unique. For an explicit constant,
    add the row to `kConstants` and use `FixedAlias` in Python. For a new
    network field or command, also select it in the appropriate `key_entry` or
    `Parser::translation` profile in `native/wire_codec.cpp`. Profiles distinguish
    RPC fields, pool fields, command names and ordinary string data; adding a
    word-table entry alone does not rewrite arbitrary message values.
 2. Run `python3 tools/build_word_codec.py`. It validates the table, compiles the
-   word and wire libraries, regenerates this table in both READMEs, and atomically
+   word and wire libraries, regenerates this table in all three READMEs, and atomically
    installs identical libraries and Python bridges. This includes
    `native_text_codec.py`, `wire_io.py` and `rpc_fields.py`. The default standalone
-   checkout is the sibling `LRAEP-WR-Trainer`; use `--standalone PATH` to choose
-   another checkout or `--local-only` for an author-only build.
+   checkout is the sibling `WR-trainer` (or `LRAEP-WR-Trainer` when present);
+   the production checkout is the sibling `Production-LREAP` when present.
+   Use `--standalone PATH` and `--production PATH` to choose other checkouts,
+   or `--local-only` for an author-only build. Only compiled artifacts and
+   Python bridges are copied; native C++ source stays in the trainer checkouts.
 3. Run `python3 tools/build_word_codec.py --check` and the protocol/native tests.
    The check detects stale README content, source fingerprints, differing
    binaries, or differing Python bridges. Restart running trainer/notebook
@@ -140,8 +169,10 @@ at runtime. A missing or incompatible library produces an explicit error.
 
 `word_buffer` and `fixed_buffer` copy values into mutable buffers and clear
 the buffers on normal and exception exits. `word_matches` compares ASCII
-protocol values with a scoped buffer. The native table retains the original
-bytes so later calls can resolve the same alias.
+protocol values with a scoped buffer. Native Base64 and decoded comparison
+buffers are also cleared immediately on success and exception exits with volatile
+writes, including wire/frame temporaries. The native table retains
+only the Base64 bytes; plaintext is recovered separately for each call.
 
 `transform_word`, `decode_word`, and `encode_word` return ordinary immutable
 Python strings. Callers must release those references after use; their physical
@@ -191,29 +222,45 @@ def artifact_source_id(path, prefix='wr_codec'):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--standalone', type=Path, default=ROOT.parent / 'LRAEP-WR-Trainer')
+    default_standalone = ROOT.parent / 'WR-trainer'
+    if not default_standalone.is_dir():
+        default_standalone = ROOT.parent / 'LRAEP-WR-Trainer'
+    parser.add_argument('--standalone', type=Path, default=default_standalone)
+    default_production = ROOT.parent / 'Production-LREAP'
+    parser.add_argument('--production', type=Path, default=default_production if default_production.is_dir() else None)
+    parser.add_argument('--encode-value', nargs=2, metavar=('ALIAS', 'VALUE'))
+    parser.add_argument('--binary', action='store_true', help='interpret --encode-value VALUE as hexadecimal bytes')
     parser.add_argument('--local-only', action='store_true')
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--compiler', default=os.environ.get('CXX', 'c++'))
     args = parser.parse_args(argv)
+    if args.encode_value:
+        print(encoded_entry(*args.encode_value, binary=args.binary))
+        return 0
+    if args.binary:
+        parser.error('--binary requires --encode-value')
     rows = entries()
     label = platform_directory()
     author_library = WRAPPER.parent / 'bin' / label / 'libword_codec.so'
     libraries = [author_library]
-    standalone = args.standalone / 'src' / 'workrunner'
-    bridges = {standalone / 'native_text_codec.py': WRAPPER.read_bytes()}
-    for name in ('rpc_fields.py', 'wire_io.py'):
-        bridges[standalone / name] = WRAPPER.with_name(name).read_bytes().replace(
-            b'from .word_codec import ', b'from .native_text_codec import ')
-    if not args.local_only:
+    destinations = [] if args.local_only else [args.standalone]
+    if not args.local_only and args.production is not None:
+        destinations.append(args.production)
+    bridges = {}
+    for destination in destinations:
+        standalone = destination / 'src' / 'workrunner'
         if not (standalone / '__init__.py').is_file():
-            raise ValueError('standalone checkout not found: ' + str(args.standalone))
+            raise ValueError('runtime checkout not found: ' + str(destination))
         libraries.append(standalone / 'bin' / label / 'libword_codec.so')
+        bridges[standalone / 'native_text_codec.py'] = WRAPPER.read_bytes()
+        for name in ('rpc_fields.py', 'wire_io.py'):
+            bridges[standalone / name] = WRAPPER.with_name(name).read_bytes().replace(
+                b'from .word_codec import ', b'from .native_text_codec import ')
     source_id = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
     wire_source_id = hashlib.sha256(SOURCE.read_bytes() + b'\0' + WIRE_SOURCE.read_bytes()).hexdigest()
     wire_libraries = [path.with_name('libwire_codec.so') for path in libraries]
     artifact_groups = [(libraries, source_id, 'wr_codec'), (wire_libraries, wire_source_id, 'wr_wire')]
-    readme_paths = [README] if args.local_only else [README, args.standalone / 'README.md']
+    readme_paths = [README] + [destination / 'README.md' for destination in destinations]
     readmes = {path: expected_readme(rows, path) for path in readme_paths}
     if args.check:
         problems = []
@@ -227,8 +274,8 @@ def main(argv=None):
                         problems.append('compiled source fingerprint is stale: ' + str(path))
                 except (OSError, ValueError, AttributeError) as error:
                     problems.append(str(error))
-            if len(paths) == 2 and all(path.is_file() for path in paths):
-                if paths[0].read_bytes() != paths[1].read_bytes():
+            if len(paths) > 1 and all(path.is_file() for path in paths):
+                if any(path.read_bytes() != paths[0].read_bytes() for path in paths[1:]):
                     problems.append('compiled libraries differ: ' + paths[0].name)
         if not args.local_only:
             for deployed, content in bridges.items():

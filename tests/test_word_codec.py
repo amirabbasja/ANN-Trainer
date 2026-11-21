@@ -1,11 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import hashlib
+import importlib.util
 from pathlib import Path
 import random
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from LRAEP_trainer import word_codec
 
@@ -135,6 +138,46 @@ class NativeWordCodecTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=8) as executor:
             actual = list(executor.map(check, pairs))
         self.assertEqual(actual, [(value, placeholder) for placeholder, value in pairs])
+
+    def test_every_base64_table_value_roundtrips_through_native_memory(self):
+        spec = importlib.util.spec_from_file_location('build_word_codec', ROOT / 'tools/build_word_codec.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        rows = builder.entries()
+        self.assertEqual(len(rows), 227)
+        for alias, original in rows:
+            raw = original.encode() if isinstance(original, str) else original
+            with self.subTest(alias=alias):
+                with word_codec.fixed_buffer(word_codec.FixedAlias(alias)) as decoded:
+                    self.assertEqual(decoded, raw)
+                self.assertEqual(decoded, bytearray(len(raw)))
+                self.assertEqual(word_codec.encode_fixed(raw), word_codec.FixedAlias(alias))
+
+    def test_base64_validation_rejects_bad_padding_and_preserves_utf8(self):
+        spec = importlib.util.spec_from_file_location('build_word_codec', ROOT / 'tools/build_word_codec.py')
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'table.cpp'
+            with patch.object(builder, 'SOURCE', source):
+                for encoded in ('Zh==', 'Zg=', 'Zg===', '@@@@'):
+                    source.write_text('make_base64_entry("bad", "' + encoded + '"),')
+                    with self.subTest(encoded=encoded), self.assertRaises(ValueError):
+                        builder.entries()
+                source.write_text(builder.encoded_entry('unicode', 'مقدار🔒'))
+                self.assertEqual(builder.entries(), [('unicode', 'مقدار🔒')])
+                source.write_text(builder.encoded_entry('binary', '00ff', binary=True))
+                self.assertEqual(builder.entries(), [('binary', b'\x00\xff')])
+
+    def test_compiled_tables_contain_base64_instead_of_decoded_literals(self):
+        # Values chosen to be distinct from alias names and exported symbols.
+        protected = (b'pearlhash', b'mining.subscribe', b'coinbasevalue',
+                     b'pearl/cert-v3/noise-seed/', bytes(range(256)))
+        source = (ROOT / 'native/word_codec.cpp').read_bytes()
+        for value in protected:
+            self.assertNotIn(value, source)
+            for name in ('libword_codec.so', 'libwire_codec.so'):
+                self.assertNotIn(value, word_codec.library_path().with_name(name).read_bytes())
 
     def test_compiled_source_fingerprint_and_deployment_check(self):
         expected = hashlib.sha256((ROOT / 'native/word_codec.cpp').read_bytes()).hexdigest()

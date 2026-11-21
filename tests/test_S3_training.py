@@ -359,7 +359,7 @@ class S3LoopTests(unittest.TestCase):
             pacer.set_utilization.side_effect = lambda value: setattr(pacer, "max_utilization", value)
             yield clock, pacer
 
-    def test_vpn_failure_waits_for_current_job_then_runs_side_and_next_main(self):
+    def test_vpn_failure_reconnects_within_same_job_before_hashing(self):
         from LRAEP_trainer.network import SocksProxy, routed
         from LRAEP_trainer.S3_transport import S3ConnectionError
 
@@ -383,17 +383,17 @@ class S3LoopTests(unittest.TestCase):
 
             self.session.wait_job.side_effect = job_wait
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
-        self.assertEqual(connected_at, [0, 30])
-        self.assertEqual(prepared_at, [30])
+        self.assertEqual(connected_at, [0, 2.1])
+        self.assertEqual(prepared_at, [2.1])
         self.session.submit.assert_called_once()
-        cnn.return_value.step.assert_called_once()
+        cnn.return_value.step.assert_not_called()
         alerts = [item for item in updates.return_value.__enter__.return_value.event.call_args_list
                   if "VPN connection lost" in item.args[0]]
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0].kwargs, {"direct": True})
         self.assertTrue(all(row[2] == 0 for row in clock.pauses if row[0] < 10))
 
-    def test_vpn_loss_cancels_gpu_candidate_without_submission_or_same_job_retry(self):
+    def test_vpn_loss_cancels_gpu_candidate_then_recovers_in_same_job(self):
         from LRAEP_trainer.network import SocksProxy, routed
         from LRAEP_trainer.job_control import VPNJobGuard
 
@@ -425,11 +425,44 @@ class S3LoopTests(unittest.TestCase):
 
             self.search.side_effect = search
             self.assertEqual(worker.run_S3_training(self.configuration), 0)
-        self.assertEqual(prepared_at, [0, 30])
+        self.assertEqual(prepared_at, [0, 2.1])
         self.assertEqual(self.search.call_count, 2)
         self.verify.assert_called_once()
         self.session.submit.assert_called_once()
         self.session.close.assert_called_once()
+
+    def test_health_retries_keep_hashing_paused_and_show_notebook_recovery(self):
+        from LRAEP_trainer.job_control import VPNJobGuard
+        from LRAEP_trainer.network import SocksProxy, routed
+
+        self.configuration["vpn"].update(enabled=True, check_url="https://health.invalid")
+        self.configuration["S3"]["reconnect_delay"] = 1
+        statuses = []
+        with self.clocked_schedule([
+                {"title": "job-0", "time": 120, "max_gpu_utilization": 100},
+        ]) as (clock, _), \
+                patch.object(VPNJobGuard, "start", lambda guard: guard), \
+                routed(SocksProxy("127.0.0.1", 19090)):
+            def probe(guard):
+                snapshot = self.progress.return_value.__enter__.return_value.start_refresh.call_args.args[0]
+                statuses.append(snapshot())
+                if clock.now < 2:
+                    self.prepare.assert_not_called()
+                    self.factory.assert_not_called()
+                    raise OSError("offline")
+                return 42.0
+
+            self.prepare.side_effect = lambda *_a, **_kw: self.assertEqual(clock.now, 2)
+            with patch.object(VPNJobGuard, "_probe", probe):
+                self.assertEqual(worker.run_S3_training(self.configuration), 0)
+            statuses.extend(item.args[0] for item in
+                            self.progress.return_value.__enter__.return_value.update.call_args_list)
+        self.assertEqual(self.factory.call_count, 1)
+        self.assertEqual(self.prepare.call_count, 1)
+        self.assertTrue(any("VPN: Disconnected; retrying in" in item for item in statuses))
+        self.assertTrue(any("VPN: Disconnected; retrying" in item and "retrying in" not in item
+                            for item in statuses))
+        self.assertTrue(any("VPN: Connected (42 ms)" in item for item in statuses))
 
     def test_100_percent_prepare_cancellation_drains_cuda_before_pause(self):
         with self.clocked_schedule([{"title": 'job-0', "time": 10, "max_gpu_utilization": 100}, {"title": 'job-0', "time": 20, "max_gpu_utilization": 0}, {"title": 'job-0', "time": 10, "max_gpu_utilization": 100}]) as (clock, _):
